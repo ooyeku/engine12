@@ -7,21 +7,66 @@ const middleware_chain = E12.middleware;
 const rate_limit = E12.rate_limit;
 const cache = E12.cache;
 const templates = E12.templates;
+const Database = E12.orm.Database;
+const ORM = E12.orm.ORM;
 
 const allocator = std.heap.page_allocator;
 
 // ============================================================================
-// TODO MODEL & STORE
+// TODO MODEL & DATABASE
 // ============================================================================
 
 const Todo = struct {
-    id: u32,
-    title: []const u8,
-    description: []const u8,
+    id: i64,
+    title: []u8,
+    description: []u8,
     completed: bool,
     created_at: i64,
     updated_at: i64,
 };
+
+var global_db: ?Database = null;
+var global_orm: ?ORM = null;
+var db_mutex: std.Thread.Mutex = .{};
+
+fn getORM() !*ORM {
+    db_mutex.lock();
+    defer db_mutex.unlock();
+
+    if (global_orm) |*orm| {
+        return orm;
+    }
+
+    return error.DatabaseNotInitialized;
+}
+
+fn initDatabase() !void {
+    db_mutex.lock();
+    defer db_mutex.unlock();
+
+    if (global_db != null) {
+        return; // Already initialized
+    }
+
+    // Open database file
+    const db_path = "todo.db";
+    global_db = try Database.open(db_path, allocator);
+
+    // Create table if it doesn't exist
+    try global_db.?.execute(
+        \\CREATE TABLE IF NOT EXISTS Todo (
+        \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
+        \\  title TEXT NOT NULL,
+        \\  description TEXT NOT NULL,
+        \\  completed INTEGER NOT NULL DEFAULT 0,
+        \\  created_at INTEGER NOT NULL,
+        \\  updated_at INTEGER NOT NULL
+        \\)
+    );
+
+    // Initialize ORM
+    global_orm = ORM.init(global_db.?, allocator);
+}
 
 const TodoStats = struct {
     total: u32,
@@ -30,145 +75,183 @@ const TodoStats = struct {
     completed_percentage: f32,
 };
 
-const TodoStore = struct {
-    const MAX_TODOS = 1000;
+fn createTodo(orm: *ORM, title: []const u8, description: []const u8) !Todo {
+    const now = std.time.milliTimestamp();
+    const title_copy = try allocator.dupe(u8, title);
+    errdefer allocator.free(title_copy);
+    const desc_copy = try allocator.dupe(u8, description);
+    errdefer allocator.free(desc_copy);
 
-    todos: [MAX_TODOS]?Todo = [_]?Todo{null} ** MAX_TODOS,
-    next_id: u32 = 1,
-    mutex: std.Thread.Mutex = .{},
+    const todo = Todo{
+        .id = 0,
+        .title = title_copy,
+        .description = desc_copy,
+        .completed = false,
+        .created_at = now,
+        .updated_at = now,
+    };
 
-    pub fn create(self: *TodoStore, alloc: std.mem.Allocator, title: []const u8, description: []const u8) !Todo {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    try orm.create(Todo, todo);
 
-        if (self.next_id > MAX_TODOS) {
-            return error.StoreFull;
-        }
-
-        const now = std.time.milliTimestamp();
-        const title_copy = try alloc.dupe(u8, title);
-        const desc_copy = try alloc.dupe(u8, description);
-
-        const todo = Todo{
-            .id = self.next_id,
-            .title = title_copy,
-            .description = desc_copy,
-            .completed = false,
-            .created_at = now,
-            .updated_at = now,
-        };
-
-        self.todos[self.next_id - 1] = todo;
-        self.next_id += 1;
-        return todo;
-    }
-
-    pub fn findById(self: *TodoStore, id: u32) ?*Todo {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (id == 0 or id >= self.next_id) return null;
-        const idx = id - 1;
-        if (self.todos[idx]) |*todo| {
-            return todo;
-        }
-        return null;
-    }
-
-    pub fn getAll(self: *TodoStore) []const ?Todo {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        return self.todos[0..self.next_id];
-    }
-
-    pub fn update(self: *TodoStore, alloc: std.mem.Allocator, id: u32, updates: struct {
-        title: ?[]const u8 = null,
-        description: ?[]const u8 = null,
-        completed: ?bool = null,
-    }) !?*Todo {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (id == 0 or id >= self.next_id) return null;
-        const idx = id - 1;
-        if (self.todos[idx]) |*todo| {
-            if (updates.title) |title| {
-                alloc.free(todo.title);
-                todo.title = try alloc.dupe(u8, title);
+    // Get the last insert row ID
+    const last_id = orm.db.lastInsertRowId() catch {
+        // Fallback: query for the most recently created todo
+        var all_todos = try orm.findAll(Todo);
+        defer {
+            for (all_todos.items) |t| {
+                allocator.free(t.title);
+                allocator.free(t.description);
             }
-
-            if (updates.description) |desc| {
-                alloc.free(todo.description);
-                todo.description = try alloc.dupe(u8, desc);
-            }
-
-            if (updates.completed) |completed| {
-                todo.completed = completed;
-            }
-
-            todo.updated_at = std.time.milliTimestamp();
-            return todo;
+            all_todos.deinit(allocator);
         }
-        return null;
-    }
 
-    pub fn delete(self: *TodoStore, id: u32) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        if (id == 0 or id >= self.next_id) return false;
-        const idx = id - 1;
-        if (self.todos[idx]) |todo| {
-            allocator.free(todo.title);
-            allocator.free(todo.description);
-            self.todos[idx] = null;
-            return true;
+        if (all_todos.items.len == 0) {
+            return error.FailedToCreateTodo;
         }
-        return false;
-    }
 
-    pub fn getStats(self: *TodoStore) TodoStats {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        var total: u32 = 0;
-        var completed: u32 = 0;
-
-        for (self.todos[0..self.next_id]) |maybe_todo| {
-            if (maybe_todo) |todo| {
-                total += 1;
-                if (todo.completed) {
-                    completed += 1;
-                }
+        // Find the todo with the highest ID
+        var max_id: i64 = 0;
+        var found_todo: ?Todo = null;
+        for (all_todos.items) |t| {
+            if (t.id > max_id) {
+                max_id = t.id;
+                found_todo = t;
             }
         }
 
-        const pending = total - completed;
-        const completed_percentage = if (total > 0)
-            (@as(f32, @floatFromInt(completed)) / @as(f32, @floatFromInt(total))) * 100.0
-        else
-            0.0;
+        if (found_todo) |t| {
+            return Todo{
+                .id = t.id,
+                .title = try allocator.dupe(u8, t.title),
+                .description = try allocator.dupe(u8, t.description),
+                .completed = t.completed,
+                .created_at = t.created_at,
+                .updated_at = t.updated_at,
+            };
+        }
 
-        return TodoStats{
-            .total = total,
-            .completed = completed,
-            .pending = pending,
-            .completed_percentage = completed_percentage,
+        return error.FailedToCreateTodo;
+    };
+
+    // Fetch the created todo by ID
+    const created = try orm.find(Todo, last_id);
+    if (created) |t| {
+        defer {
+            allocator.free(t.title);
+            allocator.free(t.description);
+        }
+        return Todo{
+            .id = t.id,
+            .title = try allocator.dupe(u8, t.title),
+            .description = try allocator.dupe(u8, t.description),
+            .completed = t.completed,
+            .created_at = t.created_at,
+            .updated_at = t.updated_at,
         };
     }
 
-    pub fn getCapacityPercentage(self: *TodoStore) f32 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+    return error.FailedToCreateTodo;
+}
 
-        return (@as(f32, @floatFromInt(self.next_id - 1)) / @as(f32, @floatFromInt(MAX_TODOS))) * 100.0;
+fn findTodoById(orm: *ORM, id: i64) !?Todo {
+    const todo = try orm.find(Todo, id);
+    return todo;
+}
+
+fn getAllTodos(orm: *ORM) !std.ArrayListUnmanaged(Todo) {
+    return try orm.findAll(Todo);
+}
+
+fn updateTodo(orm: *ORM, id: i64, updates: struct {
+    title: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    completed: ?bool = null,
+}) !?Todo {
+    const existing = try orm.find(Todo, id);
+    if (existing == null) return null;
+
+    var todo = existing.?;
+    defer {
+        allocator.free(todo.title);
+        allocator.free(todo.description);
     }
-};
 
-var global_store = TodoStore{};
+    // Update fields
+    if (updates.title) |title| {
+        allocator.free(todo.title);
+        todo.title = try allocator.dupe(u8, title);
+    }
 
-fn getStore() *TodoStore {
-    return &global_store;
+    if (updates.description) |desc| {
+        allocator.free(todo.description);
+        todo.description = try allocator.dupe(u8, desc);
+    }
+
+    if (updates.completed) |completed| {
+        todo.completed = completed;
+    }
+
+    todo.updated_at = std.time.milliTimestamp();
+
+    // Update in database
+    try orm.update(Todo, todo);
+
+    // Return a copy with allocated strings
+    return Todo{
+        .id = todo.id,
+        .title = try allocator.dupe(u8, todo.title),
+        .description = try allocator.dupe(u8, todo.description),
+        .completed = todo.completed,
+        .created_at = todo.created_at,
+        .updated_at = todo.updated_at,
+    };
+}
+
+fn deleteTodo(orm: *ORM, id: i64) !bool {
+    const existing = try orm.find(Todo, id);
+    if (existing == null) return false;
+
+    defer {
+        allocator.free(existing.?.title);
+        allocator.free(existing.?.description);
+    }
+
+    try orm.delete(Todo, id);
+    return true;
+}
+
+fn getStats(orm: *ORM) !TodoStats {
+    var all_todos = try orm.findAll(Todo);
+    defer {
+        for (all_todos.items) |t| {
+            allocator.free(t.title);
+            allocator.free(t.description);
+        }
+        all_todos.deinit(allocator);
+    }
+
+    var total: u32 = 0;
+    var completed: u32 = 0;
+
+    for (all_todos.items) |todo| {
+        total += 1;
+        if (todo.completed) {
+            completed += 1;
+        }
+    }
+
+    const pending = total - completed;
+    const completed_percentage = if (total > 0)
+        (@as(f32, @floatFromInt(completed)) / @as(f32, @floatFromInt(total))) * 100.0
+    else
+        0.0;
+
+    return TodoStats{
+        .total = total,
+        .completed = completed,
+        .pending = pending,
+        .completed_percentage = completed_percentage,
+    };
 }
 
 // ============================================================================
@@ -186,23 +269,19 @@ fn formatTodoJson(todo: Todo, alloc: std.mem.Allocator) ![]const u8 {
     return list.toOwnedSlice(alloc);
 }
 
-fn formatTodoListJson(todos: []const ?Todo, alloc: std.mem.Allocator) ![]const u8 {
+fn formatTodoListJson(todos: std.ArrayListUnmanaged(Todo), alloc: std.mem.Allocator) ![]const u8 {
     var list = std.ArrayListUnmanaged(u8){};
     defer list.deinit(alloc);
 
     try list.writer(alloc).print("[", .{});
 
-    var first = true;
-    for (todos) |maybe_todo| {
-        if (maybe_todo) |todo| {
-            if (!first) {
-                try list.writer(alloc).print(",", .{});
-            }
-            const todo_json = formatTodoJson(todo, alloc) catch continue;
-            defer alloc.free(todo_json);
-            try list.writer(alloc).print("{s}", .{todo_json});
-            first = false;
+    for (todos.items, 0..) |todo, i| {
+        if (i > 0) {
+            try list.writer(alloc).print(",", .{});
         }
+        const todo_json = try formatTodoJson(todo, alloc);
+        defer alloc.free(todo_json);
+        try list.writer(alloc).print("{s}", .{todo_json});
     }
 
     try list.writer(alloc).print("]", .{});
@@ -321,28 +400,53 @@ fn handleIndex(request: *Request) Response {
 
 fn handleGetTodos(request: *Request) Response {
     _ = request;
-    const store = getStore();
-    const todos = store.getAll();
+    const orm = getORM() catch {
+        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+    };
+
+    var todos = getAllTodos(orm) catch {
+        return Response.json("{\"error\":\"Failed to fetch todos\"}").withStatus(500);
+    };
+    defer {
+        for (todos.items) |todo| {
+            allocator.free(todo.title);
+            allocator.free(todo.description);
+        }
+        todos.deinit(allocator);
+    }
 
     const json = formatTodoListJson(todos, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todos\"}");
+        return Response.json("{\"error\":\"Failed to format todos\"}").withStatus(500);
     };
+    defer allocator.free(json);
     return Response.json(json);
 }
 
 fn handleGetTodo(request: *Request) Response {
-    const id = request.param("id").asU32() catch {
-        return Response.json("{\"error\":\"Invalid ID\"}");
+    const id = request.param("id").asI64() catch {
+        return Response.json("{\"error\":\"Invalid ID\"}").withStatus(400);
     };
 
-    const store = getStore();
-    const todo = store.findById(id) orelse {
-        return Response.json("{\"error\":\"Todo not found\"}");
+    const orm = getORM() catch {
+        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
     };
 
-    const json = formatTodoJson(todo.*, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todo\"}");
+    const todo = findTodoById(orm, id) catch {
+        return Response.json("{\"error\":\"Failed to fetch todo\"}").withStatus(500);
     };
+
+    const found = todo orelse {
+        return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
+    };
+    defer {
+        allocator.free(found.title);
+        allocator.free(found.description);
+    }
+
+    const json = formatTodoJson(found, allocator) catch {
+        return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
+    };
+    defer allocator.free(json);
     return Response.json(json);
 }
 
@@ -413,24 +517,28 @@ fn handleCreateTodo(request: *Request) Response {
         return Response.json(error_json).withStatus(400);
     }
 
-    const store = getStore();
-    const todo = store.create(allocator, parsed.title, parsed.description) catch |err| {
-        const err_msg = switch (err) {
-            error.StoreFull => "{\"error\":\"Store is full\"}",
-            else => "{\"error\":\"Failed to create todo\"}",
-        };
-        return Response.json(err_msg);
+    const orm = getORM() catch {
+        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
     };
 
-    const json = formatTodoJson(todo, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todo\"}");
+    const todo = createTodo(orm, parsed.title, parsed.description) catch {
+        return Response.json("{\"error\":\"Failed to create todo\"}").withStatus(500);
     };
+    defer {
+        allocator.free(todo.title);
+        allocator.free(todo.description);
+    }
+
+    const json = formatTodoJson(todo, allocator) catch {
+        return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
+    };
+    defer allocator.free(json);
     return Response.json(json);
 }
 
 fn handleUpdateTodo(request: *Request) Response {
-    const id = request.param("id").asU32() catch {
-        return Response.json("{\"error\":\"Invalid ID\"}");
+    const id = request.param("id").asI64() catch {
+        return Response.json("{\"error\":\"Invalid ID\"}").withStatus(400);
     };
 
     const parsed = parseTodoFromJson(request.body(), allocator) catch {
@@ -498,48 +606,67 @@ fn handleUpdateTodo(request: *Request) Response {
         return Response.json(error_json).withStatus(400);
     }
 
-    const store = getStore();
-    const updates = store.update(allocator, id, .{
+    const orm = getORM() catch {
+        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+    };
+
+    const updates = updateTodo(orm, id, .{
         .title = if (parsed.title.len > 0) parsed.title else null,
         .description = if (parsed.description.len > 0) parsed.description else null,
         .completed = parsed.completed,
     }) catch {
-        return Response.json("{\"error\":\"Failed to update todo\"}");
+        return Response.json("{\"error\":\"Failed to update todo\"}").withStatus(500);
     };
 
     const todo = updates orelse {
-        return Response.json("{\"error\":\"Todo not found\"}");
+        return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
     };
+    defer {
+        allocator.free(todo.title);
+        allocator.free(todo.description);
+    }
 
-    const json = formatTodoJson(todo.*, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todo\"}");
+    const json = formatTodoJson(todo, allocator) catch {
+        return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
     };
+    defer allocator.free(json);
     return Response.json(json);
 }
 
 fn handleDeleteTodo(request: *Request) Response {
-    const id = request.param("id").asU32() catch {
-        return Response.json("{\"error\":\"Invalid ID\"}");
+    const id = request.param("id").asI64() catch {
+        return Response.json("{\"error\":\"Invalid ID\"}").withStatus(400);
     };
 
-    const store = getStore();
-    const deleted = store.delete(id);
+    const orm = getORM() catch {
+        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+    };
+
+    const deleted = deleteTodo(orm, id) catch {
+        return Response.json("{\"error\":\"Failed to delete todo\"}").withStatus(500);
+    };
 
     if (deleted) {
         return Response.json("{\"success\":true}");
     } else {
-        return Response.json("{\"error\":\"Todo not found\"}");
+        return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
     }
 }
 
 fn handleGetStats(request: *Request) Response {
     _ = request;
-    const store = getStore();
-    const stats = store.getStats();
+    const orm = getORM() catch {
+        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+    };
+
+    const stats = getStats(orm) catch {
+        return Response.json("{\"error\":\"Failed to fetch stats\"}").withStatus(500);
+    };
 
     const json = formatStatsJson(stats, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format stats\"}");
+        return Response.json("{\"error\":\"Failed to format stats\"}").withStatus(500);
     };
+    defer allocator.free(json);
     return Response.json(json);
 }
 
@@ -567,18 +694,24 @@ const DAY_IN_MS: i64 = 24 * 60 * 60 * 1000;
 const SEVEN_DAYS_MS: i64 = 7 * DAY_IN_MS;
 
 fn cleanupOldCompletedTodos() void {
-    const store = getStore();
+    const orm = getORM() catch return;
     const now = std.time.milliTimestamp();
 
     var cleaned: u32 = 0;
 
-    var i: u32 = 0;
-    while (i < store.next_id) : (i += 1) {
-        if (store.todos[i]) |todo| {
-            if (todo.completed and (now - todo.updated_at) > SEVEN_DAYS_MS) {
-                _ = store.delete(todo.id);
-                cleaned += 1;
-            }
+    var all_todos = getAllTodos(orm) catch return;
+    defer {
+        for (all_todos.items) |todo| {
+            allocator.free(todo.title);
+            allocator.free(todo.description);
+        }
+        all_todos.deinit(allocator);
+    }
+
+    for (all_todos.items) |todo| {
+        if (todo.completed and (now - todo.updated_at) > SEVEN_DAYS_MS) {
+            _ = deleteTodo(orm, todo.id) catch continue;
+            cleaned += 1;
         }
     }
 
@@ -588,17 +721,19 @@ fn cleanupOldCompletedTodos() void {
 }
 
 fn generateStatistics() void {
-    _ = getStore().getStats();
+    const orm = getORM() catch return;
+    _ = getStats(orm) catch {};
 }
 
 fn validateStoreHealth() void {
-    const store = getStore();
-    const capacity = store.getCapacityPercentage();
+    const orm = getORM() catch return;
+    const stats = getStats(orm) catch return;
 
-    if (capacity > 95.0) {
-        std.debug.print("[Task] WARNING: Store capacity at {d:.2}% - critically high!\n", .{capacity});
-    } else if (capacity > 80.0) {
-        std.debug.print("[Task] WARNING: Store capacity at {d:.2}% - approaching limit\n", .{capacity});
+    // Database doesn't have capacity limits, but we can warn if there are many todos
+    if (stats.total > 10000) {
+        std.debug.print("[Task] WARNING: Todo count at {d} - very high!\n", .{stats.total});
+    } else if (stats.total > 5000) {
+        std.debug.print("[Task] WARNING: Todo count at {d} - getting high\n", .{stats.total});
     }
 }
 
@@ -607,12 +742,11 @@ fn validateStoreHealth() void {
 // ============================================================================
 
 fn checkTodoStoreHealth() E12.HealthStatus {
-    const store = getStore();
-    const capacity = store.getCapacityPercentage();
+    const orm = getORM() catch return .unhealthy;
+    const stats = getStats(orm) catch return .unhealthy;
 
-    if (capacity > 95.0) {
-        return .unhealthy;
-    } else if (capacity > 80.0) {
+    // Database doesn't have capacity limits, but we can check if there are too many todos
+    if (stats.total > 10000) {
         return .degraded;
     }
 
@@ -628,6 +762,9 @@ fn checkSystemPerformance() E12.HealthStatus {
 // ============================================================================
 
 pub fn createApp() !E12.Engine12 {
+    // Initialize database
+    try initDatabase();
+
     var app = try E12.Engine12.initProduction();
 
     // Middleware

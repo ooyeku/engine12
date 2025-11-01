@@ -62,6 +62,42 @@ pub fn build(b: *std.Build) void {
     mod.addImport("vigil", vigil.module("vigil"));
     mod.addImport("ziggurat", ziggurat_mod);
 
+    // Compile SQLite C sources as a static library to avoid duplicate symbols
+    const sqlite_lib = b.addLibrary(.{
+        .name = "sqlite_orm",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/empty.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .linkage = .static,
+    });
+    sqlite_lib.addCSourceFiles(.{
+        .files = &.{
+            "src/sqlite/sqlite3.c",
+            "src/c_api/e12_orm_c.c",
+        },
+        .flags = &.{
+            "-std=c99",
+            "-DSQLITE_THREADSAFE=1",
+            "-DSQLITE_ENABLE_FTS4=1",
+            "-DSQLITE_ENABLE_FTS5=1",
+            "-DSQLITE_ENABLE_JSON1=1",
+            "-DSQLITE_ENABLE_RTREE=1",
+            "-DSQLITE_ENABLE_EXPLAIN_COMMENTS=1",
+            "-DSQLITE_ENABLE_UNKNOWN_SQL_FUNCTION=1",
+            "-DSQLITE_ENABLE_STAT4=1",
+            "-DSQLITE_ENABLE_COLUMN_METADATA=1",
+            "-DSQLITE_ENABLE_UNLOCK_NOTIFY=1",
+            "-DSQLITE_ENABLE_DBSTAT_VTAB=1",
+            "-DSQLITE_ENABLE_BATCH_ATOMIC_WRITE=1",
+        },
+    });
+    sqlite_lib.addIncludePath(b.path("src"));
+    sqlite_lib.addIncludePath(b.path("src/sqlite"));
+    sqlite_lib.addIncludePath(b.path("src/c_api"));
+    sqlite_lib.linkLibC();
+
     // Build shared library for C API
     const lib = b.addLibrary(.{
         .name = "engine12",
@@ -77,20 +113,30 @@ pub fn build(b: *std.Build) void {
         }),
         .linkage = .dynamic,
     });
-    
+
     // Link C standard library
     lib.linkLibC();
-    
+
+    // Link SQLite static library
+    lib.linkLibrary(sqlite_lib);
+
     // Install shared library
     // Note: Symbols marked with 'export' in Zig are automatically exported for shared libraries
     b.installArtifact(lib);
-    
+
     // Install header file
     const header_install = b.addInstallFile(
         b.path("src/c_api/engine12.h"),
         "include/engine12.h",
     );
     b.getInstallStep().dependOn(&header_install.step);
+
+    // Install ORM header file
+    const orm_header_install = b.addInstallFile(
+        b.path("src/c_api/e12_orm.h"),
+        "include/e12_orm.h",
+    );
+    b.getInstallStep().dependOn(&orm_header_install.step);
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -136,6 +182,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Link SQLite static library to main executable
+    exe.linkLibrary(sqlite_lib);
+    exe.linkLibC();
+
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
     // step). By default the install prefix is `zig-out/` but can be overridden
@@ -157,6 +207,15 @@ pub fn build(b: *std.Build) void {
         .root_module = mod,
     });
 
+    // Add include paths for C headers
+    mod_tests.addIncludePath(b.path("src"));
+    mod_tests.addIncludePath(b.path("src/sqlite"));
+    mod_tests.addIncludePath(b.path("src/c_api"));
+
+    // Link SQLite static library to mod tests
+    mod_tests.linkLibrary(sqlite_lib);
+    mod_tests.linkLibC();
+
     // A run step that will run the test executable.
     const run_mod_tests = b.addRunArtifact(mod_tests);
     run_mod_tests.has_side_effects = true;
@@ -167,6 +226,15 @@ pub fn build(b: *std.Build) void {
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
     });
+
+    // Add include paths for C headers
+    exe_tests.addIncludePath(b.path("src"));
+    exe_tests.addIncludePath(b.path("src/sqlite"));
+    exe_tests.addIncludePath(b.path("src/c_api"));
+
+    // Link SQLite static library to exe tests
+    exe_tests.linkLibrary(sqlite_lib);
+    exe_tests.linkLibC();
 
     // A run step that will run the second test executable.
     const run_exe_tests = b.addRunArtifact(exe_tests);
@@ -194,6 +262,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Add include paths for C headers
+    todo_exe.addIncludePath(b.path("src"));
+    todo_exe.addIncludePath(b.path("src/sqlite"));
+    todo_exe.addIncludePath(b.path("src/c_api"));
+
+    // Link SQLite static library to todo executable
+    todo_exe.linkLibrary(sqlite_lib);
+    todo_exe.linkLibC();
+
+    // Install todo executable
     b.installArtifact(todo_exe);
 
     // TODO run step
@@ -210,6 +288,15 @@ pub fn build(b: *std.Build) void {
     const todo_test_exe = b.addTest(.{
         .root_module = todo_exe.root_module,
     });
+
+    // Add include paths for C headers
+    todo_test_exe.addIncludePath(b.path("src"));
+    todo_test_exe.addIncludePath(b.path("src/sqlite"));
+    todo_test_exe.addIncludePath(b.path("src/c_api"));
+
+    // Link SQLite static library to todo test executable
+    todo_test_exe.linkLibrary(sqlite_lib);
+    todo_test_exe.linkLibC();
 
     const todo_test_step = b.step("todo-test", "Run TODO application tests");
     const run_todo_tests = b.addRunArtifact(todo_test_exe);

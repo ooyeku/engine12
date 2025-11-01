@@ -42,3 +42,4 @@ zig-lock.json
 *.orig
 *.rej
 
+todo.db
