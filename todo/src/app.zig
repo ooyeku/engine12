@@ -391,7 +391,10 @@ fn handleIndex(request: *Request) Response {
         return Response.text("Internal server error: template rendering failed").withStatus(500);
     };
 
-    return Response.html(html);
+    return Response.html(html)
+        .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+        .withHeader("Pragma", "no-cache")
+        .withHeader("Expires", "0");
 }
 
 // ============================================================================
@@ -419,7 +422,10 @@ fn handleGetTodos(request: *Request) Response {
         return Response.json("{\"error\":\"Failed to format todos\"}").withStatus(500);
     };
     defer allocator.free(json);
-    return Response.json(json);
+    return Response.json(json)
+        .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+        .withHeader("Pragma", "no-cache")
+        .withHeader("Expires", "0");
 }
 
 fn handleGetTodo(request: *Request) Response {
@@ -447,7 +453,10 @@ fn handleGetTodo(request: *Request) Response {
         return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
     };
     defer allocator.free(json);
-    return Response.json(json);
+    return Response.json(json)
+        .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+        .withHeader("Pragma", "no-cache")
+        .withHeader("Expires", "0");
 }
 
 fn handleCreateTodo(request: *Request) Response {
@@ -667,7 +676,10 @@ fn handleGetStats(request: *Request) Response {
         return Response.json("{\"error\":\"Failed to format stats\"}").withStatus(500);
     };
     defer allocator.free(json);
-    return Response.json(json);
+    return Response.json(json)
+        .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+        .withHeader("Pragma", "no-cache")
+        .withHeader("Expires", "0");
 }
 
 // ============================================================================
@@ -783,12 +795,6 @@ pub fn createApp() !E12.Engine12 {
     });
 
     app.setRateLimiter(&api_rate_limiter);
-
-    // Response caching for GET endpoints
-    var response_cache = cache.ResponseCache.init(allocator, 300000); // 5 minute default TTL
-    app.setCache(&response_cache);
-    const cacheMw = cache.createCachingMiddleware(&response_cache, "/api/todos", null);
-    try app.usePreRequest(cacheMw);
 
     // Root route - serve templated index page (register BEFORE static files)
     try app.get("/", handleIndex);

@@ -75,26 +75,25 @@ pub const ORM = struct {
         var result = try self.db.query(sql);
         defer result.deinit();
 
-        if (result.nextRow()) |_| {
-            var list = try result.toArrayList(T);
-            defer {
-                for (list.items) |item| {
-                    self.allocator.free(item.title);
-                    self.allocator.free(item.description);
-                }
-                list.deinit(self.allocator);
+        var list = try result.toArrayList(T);
+        defer {
+            for (list.items) |item| {
+                self.allocator.free(item.title);
+                self.allocator.free(item.description);
             }
-            if (list.items.len > 0) {
-                const item = list.items[0];
-                return T{
-                    .id = item.id,
-                    .title = try self.allocator.dupe(u8, item.title),
-                    .description = try self.allocator.dupe(u8, item.description),
-                    .completed = item.completed,
-                    .created_at = item.created_at,
-                    .updated_at = item.updated_at,
-                };
-            }
+            list.deinit(self.allocator);
+        }
+
+        if (list.items.len > 0) {
+            const item = list.items[0];
+            return T{
+                .id = item.id,
+                .title = try self.allocator.dupe(u8, item.title),
+                .description = try self.allocator.dupe(u8, item.description),
+                .completed = item.completed,
+                .created_at = item.created_at,
+                .updated_at = item.updated_at,
+            };
         }
 
         return null;

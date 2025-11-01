@@ -6,7 +6,9 @@ let currentFilter = 'all';
 // API Functions
 async function fetchTodos() {
     try {
-        const response = await fetch(API_BASE);
+        const response = await fetch(API_BASE, {
+            cache: 'no-store',
+        });
         if (!response.ok) throw new Error('Failed to fetch todos');
         const data = await response.json();
         // API returns array directly, not wrapped in object
@@ -26,18 +28,18 @@ async function createTodo(title, description) {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ title, description }),
+            cache: 'no-store',
         });
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || 'Failed to create todo');
         }
-        const data = await response.json();
-        // API returns todo directly, not wrapped
-        const todo = data.todo || data;
-        todos.push(todo);
-        renderTodos();
-        updateStats();
-        return todo;
+        // Consume the successful response
+        await response.json();
+        // After successful create, fetch fresh data from SQLite only
+        await fetchTodos();
+        await fetchStats();
+        return null;
     } catch (error) {
         showError('Failed to create todo: ' + error.message);
         throw error;
@@ -52,20 +54,18 @@ async function updateTodo(id, updates) {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify(updates),
+            cache: 'no-store',
         });
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || 'Failed to update todo');
         }
-        const data = await response.json();
-        const todo = data.todo || data;
-        const index = todos.findIndex(t => t.id === id);
-        if (index !== -1) {
-            todos[index] = todo;
-        }
-        renderTodos();
-        updateStats();
-        return todo;
+        // Consume the successful response
+        await response.json();
+        // After successful update, fetch fresh data from SQLite only
+        await fetchTodos();
+        await fetchStats();
+        return null;
     } catch (error) {
         showError('Failed to update todo: ' + error.message);
         throw error;
@@ -76,14 +76,20 @@ async function deleteTodo(id) {
     try {
         const response = await fetch(`${API_BASE}/${id}`, {
             method: 'DELETE',
+            cache: 'no-store',
         });
+        
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || 'Failed to delete todo');
         }
-        todos = todos.filter(t => t.id !== id);
-        renderTodos();
-        updateStats();
+        
+        // Consume the successful response
+        await response.json();
+        
+        // After successful delete, fetch fresh data from SQLite only
+        await fetchTodos();
+        await fetchStats();
     } catch (error) {
         showError('Failed to delete todo: ' + error.message);
     }
@@ -91,7 +97,9 @@ async function deleteTodo(id) {
 
 async function fetchStats() {
     try {
-        const response = await fetch(`${API_BASE}/stats`);
+        const response = await fetch(`${API_BASE}/stats`, {
+            cache: 'no-store',
+        });
         if (!response.ok) throw new Error('Failed to fetch stats');
         const data = await response.json();
         // API returns stats directly or wrapped in stats property
