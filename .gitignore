@@ -1,0 +1,44 @@
+# Zig build artifacts
+zig-out/
+.zig-cache/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+*.cache
+
+# Test coverage
+*.profraw
+*.profdata
+
+# Zig package manager
+zig-cache/
+zig-lock.json
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Backup files
+*.orig
+*.rej
+
