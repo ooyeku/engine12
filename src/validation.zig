@@ -259,3 +259,268 @@ test "ValidationSchema validate" {
     try std.testing.expect(!errors.isEmpty());
 }
 
+test "ValidationErrors multiple errors" {
+    var errors = ValidationErrors.init(std.testing.allocator);
+    defer errors.deinit();
+    
+    try errors.add("name", "Name is required", "required");
+    try errors.add("email", "Invalid email format", "invalid_email");
+    try errors.add("password", "Password too short", "min_length");
+    
+    try std.testing.expectEqual(errors.errors.items.len, 3);
+    try std.testing.expect(!errors.isEmpty());
+}
+
+test "ValidationErrors getAll returns all errors" {
+    var errors = ValidationErrors.init(std.testing.allocator);
+    defer errors.deinit();
+    
+    try errors.add("field1", "Error 1", "code1");
+    try errors.add("field2", "Error 2", "code2");
+    
+    const all_errors = errors.getAll();
+    try std.testing.expectEqual(all_errors.len, 2);
+    try std.testing.expectEqualStrings(all_errors[0].field, "field1");
+    try std.testing.expectEqualStrings(all_errors[1].field, "field2");
+}
+
+test "ValidationErrors toJson formats correctly" {
+    var errors = ValidationErrors.init(std.testing.allocator);
+    defer errors.deinit();
+    
+    try errors.add("name", "Name is required", "required");
+    try errors.add("email", "Invalid email", "invalid");
+    
+    const json = try errors.toJson();
+    defer std.testing.allocator.free(json);
+    
+    try std.testing.expect(std.mem.indexOf(u8, json, "name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "email") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "required") != null);
+}
+
+test "ValidationErrors empty toJson" {
+    var errors = ValidationErrors.init(std.testing.allocator);
+    defer errors.deinit();
+    
+    const json = try errors.toJson();
+    defer std.testing.allocator.free(json);
+    
+    try std.testing.expect(std.mem.indexOf(u8, json, "errors") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "[]") != null);
+}
+
+test "FieldValidator multiple rules" {
+    var validator = FieldValidator.init(std.testing.allocator, "password", "123");
+    defer validator.deinit();
+    
+    try validator.rule(&required);
+    try validator.rule(&minLength8);
+    
+    const err = validator.validate();
+    try std.testing.expect(err != null);
+    // Should return first error (required passes, minLength fails)
+}
+
+test "FieldValidator all rules pass" {
+    var validator = FieldValidator.init(std.testing.allocator, "password", "longpassword123");
+    defer validator.deinit();
+    
+    try validator.rule(&required);
+    try validator.rule(&minLength8);
+    
+    const err = validator.validate();
+    try std.testing.expect(err == null);
+}
+
+test "FieldValidator empty value with required rule" {
+    var validator = FieldValidator.init(std.testing.allocator, "name", "");
+    defer validator.deinit();
+    
+    try validator.rule(&required);
+    
+    const err = validator.validate();
+    try std.testing.expect(err != null);
+    try std.testing.expectEqualStrings(err.?, "Field is required");
+}
+
+test "FieldValidator maxLength rule" {
+    var long_value = std.ArrayList(u8).init(std.testing.allocator);
+    defer long_value.deinit();
+    try long_value.writer().print("{s}", .{"x"} ** 101);
+    
+    var validator = FieldValidator.init(std.testing.allocator, "description", long_value.items);
+    defer validator.deinit();
+    
+    try validator.rule(&maxLength100);
+    
+    const err = validator.validate();
+    try std.testing.expect(err != null);
+}
+
+test "FieldValidator maxLength rule passes" {
+    var validator = FieldValidator.init(std.testing.allocator, "description", "short");
+    defer validator.deinit();
+    
+    try validator.rule(&maxLength100);
+    
+    const err = validator.validate();
+    try std.testing.expect(err == null);
+}
+
+test "FieldValidator email rule valid email" {
+    var validator = FieldValidator.init(std.testing.allocator, "email", "test@example.com");
+    defer validator.deinit();
+    
+    try validator.rule(&email);
+    
+    const err = validator.validate();
+    try std.testing.expect(err == null);
+}
+
+test "FieldValidator email rule invalid email" {
+    var validator = FieldValidator.init(std.testing.allocator, "email", "notanemail");
+    defer validator.deinit();
+    
+    try validator.rule(&email);
+    
+    const err = validator.validate();
+    try std.testing.expect(err != null);
+    try std.testing.expectEqualStrings(err.?, "Invalid email format");
+}
+
+test "FieldValidator email rule empty email" {
+    var validator = FieldValidator.init(std.testing.allocator, "email", "");
+    defer validator.deinit();
+    
+    try validator.rule(&email);
+    
+    // Empty email should pass (handled by required rule)
+    const err = validator.validate();
+    try std.testing.expect(err == null);
+}
+
+test "FieldValidator isInt rule valid integer" {
+    var validator = FieldValidator.init(std.testing.allocator, "age", "25");
+    defer validator.deinit();
+    
+    try validator.rule(&isInt);
+    
+    const err = validator.validate();
+    try std.testing.expect(err == null);
+}
+
+test "FieldValidator isInt rule invalid integer" {
+    var validator = FieldValidator.init(std.testing.allocator, "age", "25.5");
+    defer validator.deinit();
+    
+    try validator.rule(&isInt);
+    
+    const err = validator.validate();
+    try std.testing.expect(err != null);
+}
+
+test "FieldValidator isInt rule negative integer" {
+    var validator = FieldValidator.init(std.testing.allocator, "temperature", "-10");
+    defer validator.deinit();
+    
+    try validator.rule(&isInt);
+    
+    const err = validator.validate();
+    try std.testing.expect(err == null);
+}
+
+test "FieldValidator isInt rule empty value" {
+    var validator = FieldValidator.init(std.testing.allocator, "age", "");
+    defer validator.deinit();
+    
+    try validator.rule(&isInt);
+    
+    const err = validator.validate();
+    try std.testing.expect(err == null);
+}
+
+test "ValidationSchema multiple fields" {
+    var schema = ValidationSchema.init(std.testing.allocator);
+    defer schema.deinit();
+    
+    var name_validator = try schema.field("name", "");
+    try name_validator.rule(&required);
+    
+    var email_validator = try schema.field("email", "invalid");
+    try email_validator.rule(&email);
+    
+    var errors = try schema.validate();
+    defer errors.deinit();
+    
+    try std.testing.expect(!errors.isEmpty());
+    try std.testing.expect(errors.errors.items.len >= 1);
+}
+
+test "ValidationSchema no errors" {
+    var schema = ValidationSchema.init(std.testing.allocator);
+    defer schema.deinit();
+    
+    var name_validator = try schema.field("name", "John Doe");
+    try name_validator.rule(&required);
+    
+    var errors = try schema.validate();
+    defer errors.deinit();
+    
+    try std.testing.expect(errors.isEmpty());
+}
+
+test "ValidationSchema empty schema" {
+    var schema = ValidationSchema.init(std.testing.allocator);
+    defer schema.deinit();
+    
+    var errors = try schema.validate();
+    defer errors.deinit();
+    
+    try std.testing.expect(errors.isEmpty());
+}
+
+test "FieldValidator no rules" {
+    var validator = FieldValidator.init(std.testing.allocator, "name", "value");
+    defer validator.deinit();
+    
+    const err = validator.validate();
+    try std.testing.expect(err == null);
+}
+
+test "FieldValidator boundary values minLength" {
+    var validator = FieldValidator.init(std.testing.allocator, "password", "1234567");
+    defer validator.deinit();
+    
+    try validator.rule(&minLength8);
+    
+    const err = validator.validate();
+    try std.testing.expect(err != null);
+    
+    var validator2 = FieldValidator.init(std.testing.allocator, "password", "12345678");
+    defer validator2.deinit();
+    
+    try validator2.rule(&minLength8);
+    
+    const err2 = validator2.validate();
+    try std.testing.expect(err2 == null);
+}
+
+test "FieldValidator boundary values maxLength" {
+    var validator = FieldValidator.init(std.testing.allocator, "description", "x" ** 100);
+    defer validator.deinit();
+    
+    try validator.rule(&maxLength100);
+    
+    const err = validator.validate();
+    try std.testing.expect(err == null);
+    
+    var validator2 = FieldValidator.init(std.testing.allocator, "description", "x" ** 101);
+    defer validator2.deinit();
+    
+    try validator2.rule(&maxLength100);
+    
+    const err2 = validator2.validate();
+    try std.testing.expect(err2 != null);
+}
+

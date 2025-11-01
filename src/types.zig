@@ -122,12 +122,18 @@ test "ServerProfile_Testing defaults" {
     try std.testing.expectEqual(profile.max_concurrent_tasks, 2);
 }
 
+fn dummyHandler(_: *Request) Response {
+    return Response.ok();
+}
+
 test "Route struct creation" {
     const route = Route{
         .path = "/test",
-        .handler = undefined,
+        .method = "GET",
+        .handler_ptr = &dummyHandler,
     };
     try std.testing.expectEqualStrings(route.path, "/test");
+    try std.testing.expectEqualStrings(route.method, "GET");
 }
 
 test "BackgroundWorker struct creation with interval" {

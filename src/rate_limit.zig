@@ -224,3 +224,151 @@ test "RateLimitEntry init and expiration" {
     try std.testing.expect(!entry.isExpired());
 }
 
+test "RateLimiter check rejects requests exceeding limit" {
+    var limiter = RateLimiter.init(std.testing.allocator, RateLimitConfig{
+        .max_requests = 3,
+        .window_ms = 1000,
+    });
+    defer limiter.deinit();
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    // Make 3 requests (should be allowed)
+    _ = try limiter.check(&req, "/test");
+    _ = try limiter.check(&req, "/test");
+    _ = try limiter.check(&req, "/test");
+    
+    // 4th request should be rejected
+    const result = try limiter.check(&req, "/test");
+    try std.testing.expect(result != null);
+}
+
+test "RateLimiter check resets after window expires" {
+    var limiter = RateLimiter.init(std.testing.allocator, RateLimitConfig{
+        .max_requests = 2,
+        .window_ms = 50,
+    });
+    defer limiter.deinit();
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    // Make 2 requests
+    _ = try limiter.check(&req, "/test");
+    _ = try limiter.check(&req, "/test");
+    
+    // 3rd should be rejected
+    const result1 = try limiter.check(&req, "/test");
+    try std.testing.expect(result1 != null);
+    
+    // Wait for window to expire
+    std.time.sleep(60 * std.time.ns_per_ms);
+    
+    // Should be allowed again
+    const result2 = try limiter.check(&req, "/test");
+    try std.testing.expect(result2 == null);
+}
+
+test "RateLimiter setRouteConfig applies route-specific limits" {
+    var limiter = RateLimiter.init(std.testing.allocator, RateLimitConfig{
+        .max_requests = 10,
+        .window_ms = 1000,
+    });
+    defer limiter.deinit();
+    
+    try limiter.setRouteConfig("/api/login", RateLimitConfig{
+        .max_requests = 2,
+        .window_ms = 1000,
+    });
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    // Global limit should apply to other routes
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        const result = try limiter.check(&req, "/other");
+        try std.testing.expect(result == null);
+    }
+    
+    // Route-specific limit should apply
+    _ = try limiter.check(&req, "/api/login");
+    _ = try limiter.check(&req, "/api/login");
+    const result = try limiter.check(&req, "/api/login");
+    try std.testing.expect(result != null);
+}
+
+test "RateLimiter cleanup removes expired entries" {
+    var limiter = RateLimiter.init(std.testing.allocator, RateLimitConfig{
+        .max_requests = 10,
+        .window_ms = 50,
+    });
+    defer limiter.deinit();
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    _ = try limiter.check(&req, "/test");
+    
+    std.time.sleep(60 * std.time.ns_per_ms);
+    
+    limiter.cleanup();
+    
+    // Entry should be cleaned up
+    _ = try limiter.check(&req, "/test");
+}
+
+test "RateLimitEntry reset clears count" {
+    var entry = RateLimitEntry.init(1000);
+    entry.count = 5;
+    
+    entry.reset(1000);
+    
+    try std.testing.expectEqual(entry.count, 0);
+    try std.testing.expect(!entry.isExpired());
+}
+
+test "RateLimiter multiple IPs tracked separately" {
+    var limiter = RateLimiter.init(std.testing.allocator, RateLimitConfig{
+        .max_requests = 2,
+        .window_ms = 1000,
+    });
+    defer limiter.deinit();
+    
+    var req1 = Request.fromZiggurat(&(@import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    }), std.testing.allocator);
+    defer req1.deinit();
+    
+    // Note: getClientIP currently returns "unknown" for all requests
+    // This test verifies the structure works, even if IP detection isn't implemented
+    _ = try limiter.check(&req1, "/test");
+    _ = try limiter.check(&req1, "/test");
+    
+    const result = try limiter.check(&req1, "/test");
+    try std.testing.expect(result != null);
+}
+

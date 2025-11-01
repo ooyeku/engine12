@@ -270,3 +270,88 @@ test "FileServer isValidPath" {
     try std.testing.expect(server.isValidPath("normal/file.txt") == true);
 }
 
+test "FileServer isValidPath with null bytes" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var server = FileServer.init(allocator, "/static", "public");
+    try std.testing.expect(server.isValidPath("file\x00.txt") == false);
+}
+
+test "FileServer getMimeType with various extensions" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var server = FileServer.init(allocator, "/static", "public");
+    try std.testing.expectEqualStrings(server.getMimeType("test.html"), "text/html");
+    try std.testing.expectEqualStrings(server.getMimeType("style.css"), "text/css");
+    try std.testing.expectEqualStrings(server.getMimeType("script.js"), "application/javascript");
+    try std.testing.expectEqualStrings(server.getMimeType("data.json"), "application/json");
+    try std.testing.expectEqualStrings(server.getMimeType("image.png"), "image/png");
+    try std.testing.expectEqualStrings(server.getMimeType("image.jpg"), "image/jpeg");
+    try std.testing.expectEqualStrings(server.getMimeType("image.jpeg"), "image/jpeg");
+    try std.testing.expectEqualStrings(server.getMimeType("image.svg"), "image/svg+xml");
+    try std.testing.expectEqualStrings(server.getMimeType("favicon.ico"), "image/x-icon");
+    try std.testing.expectEqualStrings(server.getMimeType("font.woff"), "font/woff");
+    try std.testing.expectEqualStrings(server.getMimeType("font.woff2"), "font/woff2");
+    try std.testing.expectEqualStrings(server.getMimeType("font.ttf"), "font/ttf");
+    try std.testing.expectEqualStrings(server.getMimeType("readme.txt"), "text/plain");
+    try std.testing.expectEqualStrings(server.getMimeType("data.xml"), "application/xml");
+    try std.testing.expectEqualStrings(server.getMimeType("unknown"), "application/octet-stream");
+}
+
+test "FileServer getMimeType with no extension" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var server = FileServer.init(allocator, "/static", "public");
+    try std.testing.expectEqualStrings(server.getMimeType("noextension"), "application/octet-stream");
+}
+
+test "FileServer getMimeType with multiple dots" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var server = FileServer.init(allocator, "/static", "public");
+    try std.testing.expectEqualStrings(server.getMimeType("file.min.js"), "application/javascript");
+    try std.testing.expectEqualStrings(server.getMimeType("archive.tar.gz"), "application/octet-stream");
+}
+
+test "FileServer isValidPath edge cases" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var server = FileServer.init(allocator, "/static", "public");
+    
+    // Empty path
+    try std.testing.expect(server.isValidPath("") == true);
+    
+    // Path with multiple ../ attempts
+    try std.testing.expect(server.isValidPath("../../../etc/passwd") == false);
+    
+    // Path with mixed separators
+    try std.testing.expect(server.isValidPath("path/..\\file.txt") == false);
+    
+    // Normal nested paths
+    try std.testing.expect(server.isValidPath("subdir/file.txt") == true);
+    try std.testing.expect(server.isValidPath("a/b/c/d/file.txt") == true);
+}
+
+test "FileServer init with custom settings" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const server = FileServer.init(allocator, "/assets", "static");
+    try std.testing.expectEqualStrings(server.base_path, "/assets");
+    try std.testing.expectEqualStrings(server.directory, "static");
+    try std.testing.expectEqualStrings(server.index_file, "index.html");
+    try std.testing.expect(server.enable_cache == true);
+    try std.testing.expect(server.max_file_size == FileServer.MAX_FILE_SIZE);
+}
+

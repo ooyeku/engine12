@@ -303,3 +303,280 @@ test "MiddlewareChain execute response middleware" {
     _ = transformed;
 }
 
+test "MiddlewareChain addPreRequest fails when max exceeded" {
+    var chain = MiddlewareChain{};
+    
+    const mw = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            _ = req;
+            return .proceed;
+        }
+    };
+    
+    // Fill up to max
+    var i: usize = 0;
+    while (i < MiddlewareChain.MAX_MIDDLEWARE) : (i += 1) {
+        try chain.addPreRequest(&mw.mw);
+    }
+    
+    // Should fail on next add
+    try std.testing.expectError(error.TooManyMiddleware, chain.addPreRequest(&mw.mw));
+}
+
+test "MiddlewareChain addResponse fails when max exceeded" {
+    var chain = MiddlewareChain{};
+    
+    const mw = struct {
+        fn mw(resp: Response) Response {
+            return resp;
+        }
+    };
+    
+    // Fill up to max
+    var i: usize = 0;
+    while (i < MiddlewareChain.MAX_MIDDLEWARE) : (i += 1) {
+        try chain.addResponse(&mw.mw);
+    }
+    
+    // Should fail on next add
+    try std.testing.expectError(error.TooManyMiddleware, chain.addResponse(&mw.mw));
+}
+
+test "MiddlewareChain clear removes all middleware" {
+    var chain = MiddlewareChain{};
+    
+    const mw1 = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            _ = req;
+            return .proceed;
+        }
+    };
+    
+    const mw2 = struct {
+        fn mw(resp: Response) Response {
+            return resp;
+        }
+    };
+    
+    try chain.addPreRequest(&mw1.mw);
+    try chain.addResponse(&mw2.mw);
+    
+    chain.clear();
+    
+    try std.testing.expectEqual(chain.pre_request_count, 0);
+    try std.testing.expectEqual(chain.response_count, 0);
+}
+
+test "MiddlewareChain execute multiple pre-request middleware in order" {
+    var chain = MiddlewareChain{};
+    
+    // Track calls via request context
+    const mw1 = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            req.context.put("mw1_called", "true") catch {};
+            return .proceed;
+        }
+    };
+    
+    const mw2 = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            req.context.put("mw2_called", "true") catch {};
+            return .proceed;
+        }
+    };
+    
+    const mw3 = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            req.context.put("mw3_called", "true") catch {};
+            return .proceed;
+        }
+    };
+    
+    try chain.addPreRequest(&mw1.mw);
+    try chain.addPreRequest(&mw2.mw);
+    try chain.addPreRequest(&mw3.mw);
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    _ = chain.executePreRequest(&req);
+    
+    // Verify all middleware were called
+    try std.testing.expect(req.context.get("mw1_called") != null);
+    try std.testing.expect(req.context.get("mw2_called") != null);
+    try std.testing.expect(req.context.get("mw3_called") != null);
+    try std.testing.expectEqual(chain.pre_request_count, 3);
+}
+
+test "MiddlewareChain executePreRequest stops on first abort" {
+    var chain = MiddlewareChain{};
+    
+    const mw1 = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            _ = req;
+            return .abort;
+        }
+    };
+    
+    const mw2 = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            req.context.put("mw2_called", "true") catch {};
+            return .proceed;
+        }
+    };
+    
+    try chain.addPreRequest(&mw1.mw);
+    try chain.addPreRequest(&mw2.mw);
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const result = chain.executePreRequest(&req);
+    try std.testing.expect(result != null);
+    try std.testing.expect(req.context.get("mw2_called") == null);
+}
+
+test "MiddlewareChain executeResponse transforms through all middleware" {
+    var chain = MiddlewareChain{};
+    
+    const mw1 = struct {
+        fn mw(resp: Response) Response {
+            return resp.withStatus(201);
+        }
+    };
+    
+    const mw2 = struct {
+        fn mw(resp: Response) Response {
+            return resp.withContentType("application/json");
+        }
+    };
+    
+    try chain.addResponse(&mw1.mw);
+    try chain.addResponse(&mw2.mw);
+    
+    const original = Response.ok();
+    const transformed = chain.executeResponse(original);
+    _ = transformed;
+}
+
+test "MiddlewareChain executePreRequest with rate limit context" {
+    var chain = MiddlewareChain{};
+    
+    const mw = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            try req.context.put("rate_limited", "true");
+            return .abort;
+        }
+    };
+    
+    try chain.addPreRequest(&mw.mw);
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const result = chain.executePreRequest(&req);
+    try std.testing.expect(result != null);
+}
+
+test "MiddlewareChain executePreRequest with body size exceeded context" {
+    var chain = MiddlewareChain{};
+    
+    const mw = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            try req.context.put("body_size_exceeded", "true");
+            try req.context.put("body_size_limit", "1000");
+            return .abort;
+        }
+    };
+    
+    try chain.addPreRequest(&mw.mw);
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const result = chain.executePreRequest(&req);
+    try std.testing.expect(result != null);
+}
+
+test "MiddlewareChain executePreRequest with CSRF error context" {
+    var chain = MiddlewareChain{};
+    
+    const mw = struct {
+        fn mw(req: *Request) MiddlewareResult {
+            try req.context.put("csrf_error", "true");
+            return .abort;
+        }
+    };
+    
+    try chain.addPreRequest(&mw.mw);
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const result = chain.executePreRequest(&req);
+    try std.testing.expect(result != null);
+}
+
+test "MiddlewareChain executeResponse with cache hit" {
+    var chain = MiddlewareChain{};
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    try req.context.put("cache_hit", "true");
+    try req.context.put("cached_etag", "\"abc123\"");
+    
+    const resp = Response.ok();
+    const transformed = chain.executeResponse(resp, &req);
+    _ = transformed;
+}
+
+test "MiddlewareChain empty chain executes successfully" {
+    var chain = MiddlewareChain{};
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const result = chain.executePreRequest(&req);
+    try std.testing.expect(result == null);
+    
+    const resp = Response.ok();
+    const transformed = chain.executeResponse(resp);
+    _ = transformed;
+}
+

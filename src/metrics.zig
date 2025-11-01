@@ -197,3 +197,115 @@ test "RequestTiming elapsed" {
     try std.testing.expect(elapsed >= 10);
 }
 
+test "MetricsCollector incrementError" {
+    var collector = MetricsCollector.init(std.testing.allocator);
+    defer collector.deinit();
+    
+    try std.testing.expectEqual(collector.error_count, 0);
+    collector.incrementError();
+    try std.testing.expectEqual(collector.error_count, 1);
+    collector.incrementError();
+    try std.testing.expectEqual(collector.error_count, 2);
+}
+
+test "MetricsCollector recordRouteTiming calculates stats correctly" {
+    var collector = MetricsCollector.init(std.testing.allocator);
+    defer collector.deinit();
+    
+    try collector.recordRouteTiming("/api/todos", 100);
+    try collector.recordRouteTiming("/api/todos", 200);
+    try collector.recordRouteTiming("/api/todos", 150);
+    
+    const timing = collector.route_timings.get("/api/todos");
+    try std.testing.expect(timing != null);
+    if (timing) |t| {
+        try std.testing.expectEqual(t.count, 3);
+        try std.testing.expectEqual(t.total_ms, 450);
+        try std.testing.expectEqual(t.min_ms, 100);
+        try std.testing.expectEqual(t.max_ms, 200);
+    }
+}
+
+test "MetricsCollector recordRouteTiming multiple routes" {
+    var collector = MetricsCollector.init(std.testing.allocator);
+    defer collector.deinit();
+    
+    try collector.recordRouteTiming("/api/users", 50);
+    try collector.recordRouteTiming("/api/posts", 100);
+    try collector.recordRouteTiming("/api/users", 75);
+    
+    try std.testing.expect(collector.route_timings.get("/api/users") != null);
+    try std.testing.expect(collector.route_timings.get("/api/posts") != null);
+    
+    const users_timing = collector.route_timings.get("/api/users");
+    if (users_timing) |t| {
+        try std.testing.expectEqual(t.count, 2);
+    }
+}
+
+test "MetricsCollector getPrometheusMetrics format" {
+    var collector = MetricsCollector.init(std.testing.allocator);
+    defer collector.deinit();
+    
+    collector.incrementRequest();
+    collector.incrementRequest();
+    collector.incrementError();
+    try collector.recordRouteTiming("/api/test", 100);
+    
+    const metrics = try collector.getPrometheusMetrics();
+    defer std.testing.allocator.free(metrics);
+    
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "http_requests_total") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "http_errors_total") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "http_route_duration_ms") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "/api/test") != null);
+}
+
+test "MetricsCollector getPrometheusMetrics with zero requests" {
+    var collector = MetricsCollector.init(std.testing.allocator);
+    defer collector.deinit();
+    
+    const metrics = try collector.getPrometheusMetrics();
+    defer std.testing.allocator.free(metrics);
+    
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "http_requests_total 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "http_errors_total 0") != null);
+}
+
+test "RequestTiming finish records metrics" {
+    var collector = MetricsCollector.init(std.testing.allocator);
+    defer collector.deinit();
+    
+    var timing = RequestTiming.start("/api/test");
+    std.time.sleep(10 * std.time.ns_per_ms);
+    try timing.finish(&collector);
+    
+    try std.testing.expectEqual(collector.request_count, 1);
+    try std.testing.expect(collector.route_timings.get("/api/test") != null);
+}
+
+test "Metric init and addLabel" {
+    var metric = Metric.init(std.testing.allocator, "test_metric", 42.0, MetricType.counter);
+    defer metric.deinit();
+    
+    try metric.addLabel("env", "production");
+    try metric.addLabel("service", "api");
+    
+    try std.testing.expectEqualStrings(metric.name, "test_metric");
+    try std.testing.expectEqual(metric.value, 42.0);
+    try std.testing.expectEqual(metric.metric_type, MetricType.counter);
+    try std.testing.expectEqual(metric.labels.count(), 2);
+}
+
+test "MetricsCollector record metric" {
+    var collector = MetricsCollector.init(std.testing.allocator);
+    defer collector.deinit();
+    
+    var metric = Metric.init(std.testing.allocator, "test", 1.0, MetricType.counter);
+    defer metric.deinit();
+    
+    try collector.record(metric);
+    
+    try std.testing.expectEqual(collector.metrics.items.len, 1);
+}
+

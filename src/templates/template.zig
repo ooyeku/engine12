@@ -2,7 +2,9 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const escape = @import("escape.zig");
 const type_checker = @import("type_checker.zig");
+
 const codegen = @import("codegen.zig");
+const filters = @import("filters.zig");
 
 /// Template engine public API
 /// Compiles templates at comptime and provides type-safe rendering
@@ -12,16 +14,16 @@ pub const Template = struct {
         const content = @embedFile(file_path);
         return compile(content);
     }
-    
+
     /// Compile template from string literal
     pub fn compile(comptime template_str: []const u8) type {
         const parsed_ast = comptime Parser.parse(template_str) catch |err| {
             @compileError("Template parse error: " ++ @errorName(err));
         };
-        
+
         return struct {
             const template_ast = parsed_ast;
-            
+
             /// Render template with context
             pub fn render(
                 comptime Context: type,
@@ -91,4 +93,3 @@ test "template with raw variable" {
     defer std.testing.allocator.free(html);
     try std.testing.expectEqualStrings(html, "<div>Hello</div>");
 }
-

@@ -252,3 +252,120 @@ test "Logger log levels" {
     try std.testing.expectEqualStrings(info_entry.message, "Info message");
 }
 
+test "RouteRegistry getByMethod filters correctly" {
+    var registry = RouteRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    
+    try registry.register("GET", "/api/users", "getUsers");
+    try registry.register("POST", "/api/users", "createUser");
+    try registry.register("GET", "/api/posts", "getPosts");
+    try registry.register("PUT", "/api/users", "updateUser");
+    
+    var get_routes = std.ArrayListUnmanaged(RouteInfo){};
+    defer {
+        for (get_routes.items) |*route| {
+            route.deinit(std.testing.allocator);
+        }
+        get_routes.deinit(std.testing.allocator);
+    }
+    
+    try registry.getByMethod("GET", &get_routes);
+    
+    try std.testing.expectEqual(get_routes.items.len, 2);
+}
+
+test "RouteRegistry toJson formats correctly" {
+    var registry = RouteRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    
+    try registry.register("GET", "/api/todos", "handleTodos");
+    try registry.register("POST", "/api/todos", "createTodo");
+    
+    const json = try registry.toJson(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    
+    try std.testing.expect(std.mem.indexOf(u8, json, "GET") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "POST") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "/api/todos") != null);
+}
+
+test "RouteRegistry empty registry" {
+    var registry = RouteRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    
+    const routes = registry.getAll();
+    try std.testing.expectEqual(routes.len, 0);
+    
+    const json = try registry.toJson(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    
+    try std.testing.expect(std.mem.indexOf(u8, json, "[]") != null);
+}
+
+test "LogEntry toJson with fields" {
+    var entry = try LogEntry.init(std.testing.allocator, .info, "Test message");
+    defer entry.deinit();
+    
+    try entry.addField("user_id", "123");
+    try entry.addField("action", "login");
+    
+    const json = try entry.toJson(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    
+    try std.testing.expect(std.mem.indexOf(u8, json, "info") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Test message") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "user_id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "action") != null);
+}
+
+test "LogEntry toJson without fields" {
+    var entry = try LogEntry.init(std.testing.allocator, .warn, "Warning message");
+    defer entry.deinit();
+    
+    const json = try entry.toJson(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    
+    try std.testing.expect(std.mem.indexOf(u8, json, "warn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Warning message") != null);
+}
+
+test "Logger all log levels" {
+    var logger = Logger.init(std.testing.allocator, .debug);
+    
+    var debug_entry = try logger.debug("Debug");
+    defer debug_entry.deinit();
+    try std.testing.expectEqualStrings(debug_entry.message, "Debug");
+    
+    var info_entry = try logger.info("Info");
+    defer info_entry.deinit();
+    try std.testing.expectEqualStrings(info_entry.message, "Info");
+    
+    var warn_entry = try logger.warn("Warn");
+    defer warn_entry.deinit();
+    try std.testing.expectEqualStrings(warn_entry.message, "Warn");
+    
+    var error_entry = try logger.logError("Error");
+    defer error_entry.deinit();
+    try std.testing.expectEqualStrings(error_entry.message, "Error");
+}
+
+test "Logger min level filtering" {
+    var logger = Logger.init(std.testing.allocator, .warn);
+    
+    var debug_entry = try logger.debug("Debug");
+    defer debug_entry.deinit();
+    try std.testing.expectEqual(debug_entry.message.len, 0);
+    
+    var info_entry = try logger.info("Info");
+    defer info_entry.deinit();
+    try std.testing.expectEqual(info_entry.message.len, 0);
+    
+    var warn_entry = try logger.warn("Warn");
+    defer warn_entry.deinit();
+    try std.testing.expectEqualStrings(warn_entry.message, "Warn");
+    
+    var error_entry = try logger.logError("Error");
+    defer error_entry.deinit();
+    try std.testing.expectEqualStrings(error_entry.message, "Error");
+}
+

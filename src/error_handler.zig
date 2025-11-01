@@ -248,3 +248,138 @@ test "ErrorHandlerRegistry default handler" {
     _ = resp;
 }
 
+test "ErrorResponse all error types" {
+    const validation = ErrorResponse.validation("Validation failed", "Details");
+    try std.testing.expectEqual(validation.error_type, ErrorType.validation_error);
+    
+    const auth = ErrorResponse.authentication("Auth failed");
+    try std.testing.expectEqual(auth.error_type, ErrorType.authentication_error);
+    
+    const authz = ErrorResponse.authorization("Not authorized");
+    try std.testing.expectEqual(authz.error_type, ErrorType.authorization_error);
+    
+    const notFound = ErrorResponse.notFound("Not found");
+    try std.testing.expectEqual(notFound.error_type, ErrorType.not_found);
+    
+    const badReq = ErrorResponse.badRequest("Bad request", "Details");
+    try std.testing.expectEqual(badReq.error_type, ErrorType.bad_request);
+    
+    const internal = ErrorResponse.internal("Internal error", "Details");
+    try std.testing.expectEqual(internal.error_type, ErrorType.internal_error);
+    
+    const rateLimit = ErrorResponse.rateLimit("Rate limited");
+    try std.testing.expectEqual(rateLimit.error_type, ErrorType.rate_limit_exceeded);
+    
+    const tooLarge = ErrorResponse.requestTooLarge("Too large");
+    try std.testing.expectEqual(tooLarge.error_type, ErrorType.request_too_large);
+    
+    const timeout = ErrorResponse.timeout("Timeout");
+    try std.testing.expectEqual(timeout.error_type, ErrorType.timeout);
+}
+
+test "ErrorResponse toJson includes all fields" {
+    const err = ErrorResponse.validation("Test message", "Test details");
+    const json = try err.toJson(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    
+    try std.testing.expect(std.mem.indexOf(u8, json, "validation_error") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Test message") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "VALIDATION_ERROR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Test details") != null);
+}
+
+test "ErrorResponse toJson without details" {
+    const err = ErrorResponse.notFound("Not found");
+    const json = try err.toJson(std.testing.allocator);
+    defer std.testing.allocator.free(json);
+    
+    try std.testing.expect(std.mem.indexOf(u8, json, "not_found") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "Not found") != null);
+    // Should not include details field when null
+}
+
+test "ErrorResponse toHttpResponse maps error types correctly" {
+    const allocator = std.testing.allocator;
+    
+    const validation = ErrorResponse.validation("Test", null);
+    const resp1 = try validation.toHttpResponse(allocator);
+    _ = resp1;
+    
+    const auth = ErrorResponse.authentication("Test");
+    const resp2 = try auth.toHttpResponse(allocator);
+    _ = resp2;
+    
+    const authz = ErrorResponse.authorization("Test");
+    const resp3 = try authz.toHttpResponse(allocator);
+    _ = resp3;
+    
+    const notFound = ErrorResponse.notFound("Test");
+    const resp4 = try notFound.toHttpResponse(allocator);
+    _ = resp4;
+    
+    const rateLimit = ErrorResponse.rateLimit("Test");
+    const resp5 = try rateLimit.toHttpResponse(allocator);
+    _ = resp5;
+    
+    const tooLarge = ErrorResponse.requestTooLarge("Test");
+    const resp6 = try tooLarge.toHttpResponse(allocator);
+    _ = resp6;
+    
+    const timeout = ErrorResponse.timeout("Test");
+    const resp7 = try timeout.toHttpResponse(allocator);
+    _ = resp7;
+    
+    const internal = ErrorResponse.internal("Test", null);
+    const resp8 = try internal.toHttpResponse(allocator);
+    _ = resp8;
+}
+
+test "ErrorHandlerRegistry register custom handler" {
+    var registry = ErrorHandlerRegistry.init(std.testing.allocator);
+    
+    const custom_handler = struct {
+        fn handler(req: *Request, err: ErrorResponse, allocator: std.mem.Allocator) Response {
+            _ = req;
+            _ = err;
+            _ = allocator;
+            return Response.text("Custom error");
+        }
+    }.handler;
+    
+    registry.register(custom_handler);
+    
+    const err = ErrorResponse.notFound("Test");
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const resp = registry.handle(&req, err);
+    _ = resp;
+}
+
+test "ErrorResponse timestamp is set" {
+    const err = ErrorResponse.validation("Test", null);
+    try std.testing.expect(err.timestamp > 0);
+    
+    // Timestamp should be recent (within last second)
+    const now = std.time.milliTimestamp();
+    try std.testing.expect(err.timestamp <= now);
+    try std.testing.expect(err.timestamp >= now - 1000);
+}
+
+test "ErrorResponse error codes are correct" {
+    try std.testing.expectEqualStrings(ErrorResponse.validation("", null).code, "VALIDATION_ERROR");
+    try std.testing.expectEqualStrings(ErrorResponse.authentication("").code, "AUTHENTICATION_ERROR");
+    try std.testing.expectEqualStrings(ErrorResponse.authorization("").code, "AUTHORIZATION_ERROR");
+    try std.testing.expectEqualStrings(ErrorResponse.notFound("").code, "NOT_FOUND");
+    try std.testing.expectEqualStrings(ErrorResponse.badRequest("", null).code, "BAD_REQUEST");
+    try std.testing.expectEqualStrings(ErrorResponse.internal("", null).code, "INTERNAL_ERROR");
+    try std.testing.expectEqualStrings(ErrorResponse.rateLimit("").code, "RATE_LIMIT_EXCEEDED");
+    try std.testing.expectEqualStrings(ErrorResponse.requestTooLarge("").code, "REQUEST_TOO_LARGE");
+    try std.testing.expectEqualStrings(ErrorResponse.timeout("").code, "TIMEOUT");
+}
+

@@ -368,3 +368,386 @@ test "Request form body parsing" {
     try std.testing.expect(completed != null);
     try std.testing.expectEqualStrings(completed.?, "true");
 }
+
+test "Request path with query string extraction" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos?limit=10&offset=20&sort=asc",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    try std.testing.expectEqualStrings(req.path(), "/api/todos");
+    try std.testing.expectEqualStrings(req.fullPath(), "/api/todos?limit=10&offset=20&sort=asc");
+}
+
+test "Request path without query string" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    try std.testing.expectEqualStrings(req.path(), "/api/todos");
+    try std.testing.expectEqualStrings(req.fullPath(), "/api/todos");
+}
+
+test "Request empty path" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    try std.testing.expectEqualStrings(req.path(), "");
+    try std.testing.expectEqualStrings(req.method(), "GET");
+}
+
+test "Request query parsing with empty values" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test?key1=&key2=value&key3=",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const key1 = try req.query("key1");
+    try std.testing.expect(key1 != null);
+    try std.testing.expectEqualStrings(key1.?, "");
+    
+    const key2 = try req.query("key2");
+    try std.testing.expect(key2 != null);
+    try std.testing.expectEqualStrings(key2.?, "value");
+    
+    const key3 = try req.query("key3");
+    try std.testing.expect(key3 != null);
+    try std.testing.expectEqualStrings(key3.?, "");
+}
+
+test "Request query parsing with missing parameter" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test?key1=value1",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const missing = try req.query("nonexistent");
+    try std.testing.expect(missing == null);
+}
+
+test "Request query parsing with URL encoded values" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test?q=hello%20world&tag=test%2Bvalue",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const q = try req.query("q");
+    try std.testing.expect(q != null);
+    try std.testing.expectEqualStrings(q.?, "hello world");
+    
+    const tag = try req.query("tag");
+    try std.testing.expect(tag != null);
+    try std.testing.expectEqualStrings(tag.?, "test+value");
+}
+
+test "Request queryParam with default value" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test?limit=50",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const limit = try req.queryParam("limit");
+    const limit_u32 = limit.asU32Default(10);
+    try std.testing.expectEqual(limit_u32, 50);
+    
+    const missing_limit = try req.queryParam("nonexistent");
+    const default_limit = missing_limit.asU32Default(10);
+    try std.testing.expectEqual(default_limit, 10);
+}
+
+test "Request queryParams caching" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test?key=value",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const params1 = try req.queryParams();
+    const params2 = try req.queryParams();
+    
+    // Should return same map (cached)
+    try std.testing.expectEqual(params1.count(), params2.count());
+    try std.testing.expectEqualStrings(params1.get("key").?, params2.get("key").?);
+}
+
+test "Request form body parsing with empty values" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test",
+        .method = .POST,
+        .body = "key1=&key2=value&key3=",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const form = try req.formBody();
+    const key1 = form.get("key1");
+    try std.testing.expect(key1 != null);
+    try std.testing.expectEqualStrings(key1.?, "");
+    
+    const key2 = form.get("key2");
+    try std.testing.expect(key2 != null);
+    try std.testing.expectEqualStrings(key2.?, "value");
+}
+
+test "Request form body parsing with URL encoded values" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test",
+        .method = .POST,
+        .body = "name=John%20Doe&email=test%40example.com",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const form = try req.formBody();
+    const name = form.get("name");
+    try std.testing.expect(name != null);
+    try std.testing.expectEqualStrings(name.?, "John Doe");
+    
+    const email = form.get("email");
+    try std.testing.expect(email != null);
+    try std.testing.expectEqualStrings(email.?, "test@example.com");
+}
+
+test "Request empty form body" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test",
+        .method = .POST,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const form = try req.formBody();
+    try std.testing.expectEqual(form.count(), 0);
+}
+
+test "Request param with empty value" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos/",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    var params = std.StringHashMap([]const u8).init(req.arena.allocator());
+    const empty_value = try req.arena.allocator().dupe(u8, "");
+    try params.put("id", empty_value);
+    req.setRouteParams(params);
+    
+    const id = req.param("id").asString();
+    try std.testing.expectEqualStrings(id, "");
+}
+
+test "Request param with missing parameter" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const missing = req.param("nonexistent").asString();
+    try std.testing.expectEqualStrings(missing, "");
+}
+
+test "Request param type conversions" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos/123",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    var params = std.StringHashMap([]const u8).init(req.arena.allocator());
+    const id_value = try req.arena.allocator().dupe(u8, "123");
+    try params.put("id", id_value);
+    req.setRouteParams(params);
+    
+    const id_u32 = try req.param("id").asU32();
+    try std.testing.expectEqual(id_u32, 123);
+    
+    const id_i32 = try req.param("id").asI32();
+    try std.testing.expectEqual(id_i32, 123);
+    
+    const id_u64 = try req.param("id").asU64();
+    try std.testing.expectEqual(id_u64, 123);
+}
+
+test "Request param invalid number conversion" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos/abc",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    var params = std.StringHashMap([]const u8).init(req.arena.allocator());
+    const id_value = try req.arena.allocator().dupe(u8, "abc");
+    try params.put("id", id_value);
+    req.setRouteParams(params);
+    
+    const id_u32 = req.param("id").asU32Default(999);
+    try std.testing.expectEqual(id_u32, 999);
+    
+    const id_i32 = req.param("id").asI32Default(-1);
+    try std.testing.expectEqual(id_i32, -1);
+}
+
+test "Request param negative number" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos/-5",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    var params = std.StringHashMap([]const u8).init(req.arena.allocator());
+    const id_value = try req.arena.allocator().dupe(u8, "-5");
+    try params.put("id", id_value);
+    req.setRouteParams(params);
+    
+    const id_i32 = try req.param("id").asI32();
+    try std.testing.expectEqual(id_i32, -5);
+    
+    // u32 should fail on negative
+    const id_u32 = req.param("id").asU32Default(0);
+    try std.testing.expectEqual(id_u32, 0);
+}
+
+test "Request param float conversion" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos/3.14",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    var params = std.StringHashMap([]const u8).init(req.arena.allocator());
+    const value = try req.arena.allocator().dupe(u8, "3.14");
+    try params.put("value", value);
+    req.setRouteParams(params);
+    
+    const float_value = try req.param("value").asF64();
+    try std.testing.expect(float_value > 3.13 and float_value < 3.15);
+}
+
+test "Request setRouteParams replaces existing params" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos/123",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    var params1 = std.StringHashMap([]const u8).init(req.arena.allocator());
+    const id1 = try req.arena.allocator().dupe(u8, "123");
+    try params1.put("id", id1);
+    req.setRouteParams(params1);
+    
+    var params2 = std.StringHashMap([]const u8).init(req.arena.allocator());
+    const id2 = try req.arena.allocator().dupe(u8, "456");
+    try params2.put("id", id2);
+    req.setRouteParams(params2);
+    
+    const id = req.param("id").asString();
+    try std.testing.expectEqualStrings(id, "456");
+}
+
+test "Request context multiple values" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    try req.set("user_id", "12345");
+    try req.set("role", "admin");
+    try req.set("session_id", "abc123");
+    
+    try std.testing.expectEqualStrings(req.get("user_id").?, "12345");
+    try std.testing.expectEqualStrings(req.get("role").?, "admin");
+    try std.testing.expectEqualStrings(req.get("session_id").?, "abc123");
+    
+    const missing = req.get("nonexistent");
+    try std.testing.expect(missing == null);
+}
+
+test "Request context overwrite value" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    try req.set("key", "value1");
+    try std.testing.expectEqualStrings(req.get("key").?, "value1");
+    
+    try req.set("key", "value2");
+    try std.testing.expectEqualStrings(req.get("key").?, "value2");
+}
+
+test "Request empty body" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test",
+        .method = .POST,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    try std.testing.expectEqualStrings(req.body(), "");
+}
+
+test "Request all HTTP methods" {
+    const methods = [_]ziggurat.request.Method{ .GET, .POST, .PUT, .DELETE, .PATCH, .HEAD, .OPTIONS };
+    
+    for (methods) |method| {
+        var ziggurat_req = ziggurat.request.Request{
+            .path = "/api/test",
+            .method = method,
+            .body = "",
+        };
+        var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+        defer req.deinit();
+        
+        const method_str = req.method();
+        try std.testing.expect(method_str.len > 0);
+    }
+}

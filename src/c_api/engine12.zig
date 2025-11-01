@@ -60,6 +60,24 @@ fn getHandler(id: usize) ?*const fn (*CRequest, *anyopaque) *CResponse {
     return handler_registry.get(id);
 }
 
+// C API type definitions matching engine12.h
+pub const E12MiddlewareResult = enum(c_int) {
+    E12_MIDDLEWARE_PROCEED = 0,
+    E12_MIDDLEWARE_ABORT = 1,
+};
+
+pub const E12HealthStatus = enum(c_int) {
+    E12_HEALTH_HEALTHY = 0,
+    E12_HEALTH_DEGRADED = 1,
+    E12_HEALTH_UNHEALTHY = 2,
+};
+
+// C function pointer types
+pub const E12PreRequestMiddlewareFn = *const fn (*CRequest, *anyopaque) E12MiddlewareResult;
+pub const E12ResponseMiddlewareFn = *const fn (*CResponse, *anyopaque) *CResponse;
+pub const E12BackgroundTaskFn = *const fn (*anyopaque) void;
+pub const E12HealthCheckFn = *const fn (*anyopaque) E12HealthStatus;
+
 // Route entry for runtime dispatch
 const RouteEntry = struct {
     method: []const u8,
@@ -84,6 +102,12 @@ pub const CEngine12 = struct {
         }
         self.routes.deinit(self.allocator);
         self.engine.deinit();
+
+        // Clean up handler registry entries for this app's handlers
+        // Note: We can't easily track which handlers belong to which app,
+        // so we just clear unused handlers periodically or leave them
+        // (they're just function pointers, no memory leak)
+
         allocator.destroy(self);
     }
 };
@@ -106,11 +130,11 @@ fn initHandleStorage() void {
     }
 }
 
-fn getCEngine12(handle: *CEngine12Handle) *CEngine12 {
+fn getCEngine12(handle: *CEngine12Handle) ?*CEngine12 {
     initHandleStorage();
     handle_storage_mutex.lock();
     defer handle_storage_mutex.unlock();
-    return handle_storage.get(handle).?;
+    return handle_storage.get(handle);
 }
 
 fn storeCEngine12(handle: *CEngine12Handle, impl: *CEngine12) void {
@@ -129,8 +153,13 @@ fn removeCEngine12(handle: *CEngine12Handle) void {
 
 pub const CRequest = struct {
     request: *Request, // Store pointer instead of copying
+    persistent_path: ?[]const u8, // Cached path in persistent memory
 
     pub fn deinit(self: *CRequest) void {
+        // Free persistent path if it was allocated
+        if (self.persistent_path) |path| {
+            allocator.free(path);
+        }
         // Don't deinit request - it's owned by the caller
         allocator.destroy(self);
     }
@@ -313,7 +342,10 @@ fn createCRouterMiddleware(app_ptr: *CEngine12) middleware.PreRequestMiddlewareF
                         req.context.put("c_api_error", "Failed to create C request wrapper") catch {};
                         return .abort;
                     };
-                    c_req.* = CRequest{ .request = req };
+                    c_req.* = CRequest{
+                        .request = req,
+                        .persistent_path = null,
+                    };
 
                     // Call C handler
                     const handler_fn = getHandler(entry.handler_id) orelse {
@@ -396,11 +428,12 @@ export fn e12_init(env: c_int, out_app: **CEngine12Handle) c_int {
 
 export fn e12_free(app: ?*CEngine12Handle) void {
     if (app) |handle| {
-        const c_app = getCEngine12(handle);
-        c_app.deinit();
-        removeCEngine12(handle);
-        const u8_ptr: *u8 = @ptrCast(handle);
-        allocator.destroy(u8_ptr);
+        if (getCEngine12(handle)) |c_app| {
+            c_app.deinit();
+            removeCEngine12(handle);
+            const u8_ptr: *u8 = @ptrCast(handle);
+            allocator.destroy(u8_ptr);
+        }
     }
 }
 
@@ -412,7 +445,11 @@ export fn e12_start(app: ?*CEngine12Handle) c_int {
         return 1; // E12_ERROR_INVALID_ARGUMENT
     }
 
-    const c_app = getCEngine12(app.?);
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    };
+
     c_app.engine.start() catch |err| {
         setLastError(@errorName(err));
         return 5; // E12_ERROR_SERVER_START_FAILED
@@ -429,7 +466,11 @@ export fn e12_stop(app: ?*CEngine12Handle) c_int {
         return 1;
     }
 
-    const c_app = getCEngine12(app.?);
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1;
+    };
+
     c_app.engine.stop() catch |err| {
         setLastError(@errorName(err));
         return 99; // E12_ERROR_UNKNOWN
@@ -440,7 +481,7 @@ export fn e12_stop(app: ?*CEngine12Handle) c_int {
 
 export fn e12_is_running(app: ?*CEngine12Handle) bool {
     if (app == null) return false;
-    const c_app = getCEngine12(app.?);
+    const c_app = getCEngine12(app.?) orelse return false;
     return c_app.engine.is_running;
 }
 
@@ -520,7 +561,10 @@ fn registerCRoute(
                     const c_req = allocator.create(CRequest) catch {
                         return Response.text("Internal error").withStatus(500).toZiggurat();
                     };
-                    c_req.* = CRequest{ .request = &req };
+                    c_req.* = CRequest{
+                        .request = &req,
+                        .persistent_path = null,
+                    };
 
                     // Call C handler
                     const handler_fn = getHandler(entry.handler_id) orelse {
@@ -575,8 +619,15 @@ export fn e12_get(
         return 1;
     }
 
-    const c_app = getCEngine12(app.?);
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1;
+    };
     const path_slice = std.mem.span(path);
+    if (path_slice.len == 0) {
+        setLastError("Path must not be empty");
+        return 1;
+    }
     const handler_id = registerHandler(handler.?);
 
     registerCRoute(c_app, "GET", path_slice, handler_id, user_data) catch |err| {
@@ -600,8 +651,15 @@ export fn e12_post(
         return 1;
     }
 
-    const c_app = getCEngine12(app.?);
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1;
+    };
     const path_slice = std.mem.span(path);
+    if (path_slice.len == 0) {
+        setLastError("Path must not be empty");
+        return 1;
+    }
     const handler_id = registerHandler(handler.?);
 
     registerCRoute(c_app, "POST", path_slice, handler_id, user_data) catch |err| {
@@ -625,8 +683,15 @@ export fn e12_put(
         return 1;
     }
 
-    const c_app = getCEngine12(app.?);
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1;
+    };
     const path_slice = std.mem.span(path);
+    if (path_slice.len == 0) {
+        setLastError("Path must not be empty");
+        return 1;
+    }
     const handler_id = registerHandler(handler.?);
 
     registerCRoute(c_app, "PUT", path_slice, handler_id, user_data) catch |err| {
@@ -650,8 +715,15 @@ export fn e12_delete(
         return 1;
     }
 
-    const c_app = getCEngine12(app.?);
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1;
+    };
     const path_slice = std.mem.span(path);
+    if (path_slice.len == 0) {
+        setLastError("Path must not be empty");
+        return 1;
+    }
     const handler_id = registerHandler(handler.?);
 
     registerCRoute(c_app, "DELETE", path_slice, handler_id, user_data) catch |err| {
@@ -665,11 +737,23 @@ export fn e12_delete(
 // Request API
 export fn e12_request_path(req: ?*CRequest) [*c]const u8 {
     if (req == null) return null;
-    const request_ptr = req.?.request;
+    const c_req = req.?;
+
+    // If path is already cached in persistent memory, return it
+    if (c_req.persistent_path) |persistent_path| {
+        return persistent_path.ptr;
+    }
+
+    // Get path from request (may be a slice without query string)
+    const request_ptr = c_req.request;
     const path = request_ptr.path();
-    // Need to ensure string is null-terminated and persists
-    const path_copy = allocator.dupeZ(u8, path) catch return null;
-    return path_copy.ptr;
+
+    // Duplicate path to persistent memory (null-terminated for C API)
+    // This ensures the pointer remains valid after request deinitialization
+    const persistent_path = allocator.dupeZ(u8, path) catch return null;
+    c_req.persistent_path = persistent_path;
+
+    return persistent_path.ptr;
 }
 
 export fn e12_request_method(req: ?*CRequest) c_int {
@@ -693,11 +777,21 @@ export fn e12_request_body_len(req: ?*CRequest) usize {
     return body.len;
 }
 
+export fn e12_request_header(req: ?*CRequest, name: [*c]const u8) [*c]const u8 {
+    if (req == null or name == null) return null;
+    const name_slice = std.mem.span(name);
+    const request_ptr = req.?.request;
+    const value = request_ptr.header(name_slice) orelse return null;
+    // Header value is owned by request, valid for request lifetime
+    return value.ptr;
+}
+
 export fn e12_request_param(req: ?*CRequest, name: [*c]const u8) [*c]const u8 {
     if (req == null or name == null) return null;
     const name_slice = std.mem.span(name);
     const request_ptr = req.?.request;
     const value = request_ptr.route_params.get(name_slice) orelse return null;
+    // Route param value is owned by request's arena, valid for request lifetime
     return value.ptr;
 }
 
@@ -733,7 +827,508 @@ export fn e12_request_get(req: ?*CRequest, key: [*c]const u8) [*c]const u8 {
     const key_slice = std.mem.span(key);
     const request_ptr = req.?.request;
     const value = request_ptr.get(key_slice) orelse return null;
+    // Context value is owned by request's arena, valid for request lifetime
     return value.ptr;
+}
+
+// Middleware registry entry
+const MiddlewareEntry = struct {
+    pre_request_fn: ?E12PreRequestMiddlewareFn,
+    response_fn: ?E12ResponseMiddlewareFn,
+    user_data: *anyopaque,
+};
+
+// Middleware registry using array for efficient lookup by ID
+// Note: Limited to 16 entries due to switch statement limitations
+// This can be expanded by adding more cases to the switch statements
+const MAX_MIDDLEWARE_ENTRIES = 16;
+var middleware_entries: [MAX_MIDDLEWARE_ENTRIES]?MiddlewareEntry = [_]?MiddlewareEntry{null} ** MAX_MIDDLEWARE_ENTRIES;
+var middleware_registry_mutex: std.Thread.Mutex = std.Thread.Mutex{};
+var middleware_next_id: usize = 0;
+
+// Task registry entry for C API background tasks
+const TaskRegistryEntry = struct {
+    task_fn: E12BackgroundTaskFn,
+    user_data: *anyopaque,
+};
+
+// Task registry using array for efficient lookup by ID
+const MAX_TASK_ENTRIES = 32;
+var task_registry: [MAX_TASK_ENTRIES]?TaskRegistryEntry = [_]?TaskRegistryEntry{null} ** MAX_TASK_ENTRIES;
+var task_registry_next_id: usize = 0;
+var task_registry_mutex: std.Thread.Mutex = std.Thread.Mutex{};
+
+// Health check registry entry for C API health checks
+const HealthCheckRegistryEntry = struct {
+    check_fn: E12HealthCheckFn,
+    user_data: *anyopaque,
+};
+
+// Health check registry using array for efficient lookup by ID
+const MAX_HEALTH_CHECK_ENTRIES = 16;
+var health_check_registry: [MAX_HEALTH_CHECK_ENTRIES]?HealthCheckRegistryEntry = [_]?HealthCheckRegistryEntry{null} ** MAX_HEALTH_CHECK_ENTRIES;
+var health_check_registry_next_id: usize = 0;
+var health_check_registry_mutex: std.Thread.Mutex = std.Thread.Mutex{};
+
+// Comptime function to generate task wrapper functions for each possible ID
+fn makeTaskWrapper(comptime id: usize) types.BackgroundTask {
+    return struct {
+        fn wrapper() void {
+            task_registry_mutex.lock();
+            defer task_registry_mutex.unlock();
+            if (task_registry[id]) |entry| {
+                entry.task_fn(entry.user_data);
+            }
+        }
+    }.wrapper;
+}
+
+// Runtime dispatch to the correct comptime-generated wrapper
+fn getTaskWrapper(id: usize) types.BackgroundTask {
+    return switch (id) {
+        0 => makeTaskWrapper(0),
+        1 => makeTaskWrapper(1),
+        2 => makeTaskWrapper(2),
+        3 => makeTaskWrapper(3),
+        4 => makeTaskWrapper(4),
+        5 => makeTaskWrapper(5),
+        6 => makeTaskWrapper(6),
+        7 => makeTaskWrapper(7),
+        8 => makeTaskWrapper(8),
+        9 => makeTaskWrapper(9),
+        10 => makeTaskWrapper(10),
+        11 => makeTaskWrapper(11),
+        12 => makeTaskWrapper(12),
+        13 => makeTaskWrapper(13),
+        14 => makeTaskWrapper(14),
+        15 => makeTaskWrapper(15),
+        16 => makeTaskWrapper(16),
+        17 => makeTaskWrapper(17),
+        18 => makeTaskWrapper(18),
+        19 => makeTaskWrapper(19),
+        20 => makeTaskWrapper(20),
+        21 => makeTaskWrapper(21),
+        22 => makeTaskWrapper(22),
+        23 => makeTaskWrapper(23),
+        24 => makeTaskWrapper(24),
+        25 => makeTaskWrapper(25),
+        26 => makeTaskWrapper(26),
+        27 => makeTaskWrapper(27),
+        28 => makeTaskWrapper(28),
+        29 => makeTaskWrapper(29),
+        30 => makeTaskWrapper(30),
+        31 => makeTaskWrapper(31),
+        else => makeTaskWrapper(0), // Fallback
+    };
+}
+
+// Comptime function to generate health check wrapper functions for each possible ID
+fn makeHealthCheckWrapper(comptime id: usize) types.HealthCheckFn {
+    return struct {
+        fn wrapper() types.HealthStatus {
+            health_check_registry_mutex.lock();
+            defer health_check_registry_mutex.unlock();
+            if (health_check_registry[id]) |entry| {
+                const result = entry.check_fn(entry.user_data);
+                return switch (result) {
+                    .E12_HEALTH_HEALTHY => .healthy,
+                    .E12_HEALTH_DEGRADED => .degraded,
+                    .E12_HEALTH_UNHEALTHY => .unhealthy,
+                };
+            }
+            return .unhealthy;
+        }
+    }.wrapper;
+}
+
+// Runtime dispatch to the correct comptime-generated wrapper
+fn getHealthCheckWrapper(id: usize) types.HealthCheckFn {
+    return switch (id) {
+        0 => makeHealthCheckWrapper(0),
+        1 => makeHealthCheckWrapper(1),
+        2 => makeHealthCheckWrapper(2),
+        3 => makeHealthCheckWrapper(3),
+        4 => makeHealthCheckWrapper(4),
+        5 => makeHealthCheckWrapper(5),
+        6 => makeHealthCheckWrapper(6),
+        7 => makeHealthCheckWrapper(7),
+        8 => makeHealthCheckWrapper(8),
+        9 => makeHealthCheckWrapper(9),
+        10 => makeHealthCheckWrapper(10),
+        11 => makeHealthCheckWrapper(11),
+        12 => makeHealthCheckWrapper(12),
+        13 => makeHealthCheckWrapper(13),
+        14 => makeHealthCheckWrapper(14),
+        15 => makeHealthCheckWrapper(15),
+        else => makeHealthCheckWrapper(0), // Fallback
+    };
+}
+
+fn registerPreRequestMiddleware(middleware_fn: E12PreRequestMiddlewareFn, user_data: *anyopaque) !usize {
+    middleware_registry_mutex.lock();
+    defer middleware_registry_mutex.unlock();
+
+    if (middleware_next_id >= MAX_MIDDLEWARE_ENTRIES) {
+        return error.TooManyMiddleware;
+    }
+
+    const id = middleware_next_id;
+    middleware_next_id += 1;
+
+    middleware_entries[id] = .{
+        .pre_request_fn = middleware_fn,
+        .response_fn = null,
+        .user_data = user_data,
+    };
+
+    return id;
+}
+
+fn registerResponseMiddleware(middleware_fn: E12ResponseMiddlewareFn, user_data: *anyopaque) !usize {
+    middleware_registry_mutex.lock();
+    defer middleware_registry_mutex.unlock();
+
+    if (middleware_next_id >= MAX_MIDDLEWARE_ENTRIES) {
+        return error.TooManyMiddleware;
+    }
+
+    const id = middleware_next_id;
+    middleware_next_id += 1;
+
+    middleware_entries[id] = .{
+        .pre_request_fn = null,
+        .response_fn = middleware_fn,
+        .user_data = user_data,
+    };
+
+    return id;
+}
+
+fn getMiddlewareEntry(id: usize) ?MiddlewareEntry {
+    middleware_registry_mutex.lock();
+    defer middleware_registry_mutex.unlock();
+
+    if (id >= MAX_MIDDLEWARE_ENTRIES) return null;
+    return middleware_entries[id];
+}
+
+// Create unique wrapper functions for each middleware by generating them with the ID baked in
+// Using comptime allows us to create unique functions for each ID
+fn makePreRequestWrapper(comptime id: usize) middleware.PreRequestMiddlewareFn {
+    return struct {
+        fn mw(req: *Request) middleware.MiddlewareResult {
+            const entry = getMiddlewareEntry(id) orelse return .abort;
+            const mw_fn = entry.pre_request_fn orelse return .abort;
+
+            const c_req = allocator.create(CRequest) catch return .abort;
+            c_req.* = CRequest{
+                .request = req,
+                .persistent_path = null,
+            };
+            defer allocator.destroy(c_req);
+
+            const result = mw_fn(c_req, entry.user_data);
+            return switch (result) {
+                .E12_MIDDLEWARE_PROCEED => .proceed,
+                .E12_MIDDLEWARE_ABORT => .abort,
+            };
+        }
+    }.mw;
+}
+
+fn makeResponseWrapper(comptime id: usize) middleware.ResponseMiddlewareFn {
+    return struct {
+        fn mw(resp: Response) Response {
+            const entry = getMiddlewareEntry(id) orelse return resp;
+            const mw_fn = entry.response_fn orelse return resp;
+
+            const c_resp = allocator.create(CResponse) catch return resp;
+            c_resp.* = CResponse{
+                .response = resp,
+                .persistent_body = null,
+            };
+
+            const result = mw_fn(c_resp, entry.user_data);
+            const new_resp = result.response;
+            allocator.destroy(c_resp);
+            return new_resp;
+        }
+    }.mw;
+}
+
+// Middleware API
+export fn e12_use_pre_request(
+    app: ?*CEngine12Handle,
+    middleware_fn: ?E12PreRequestMiddlewareFn,
+    user_data: *anyopaque,
+) c_int {
+    clearLastError();
+
+    if (app == null or middleware_fn == null) {
+        setLastError("Invalid arguments");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    }
+
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    };
+
+    // Register middleware with user_data
+    const middleware_id = registerPreRequestMiddleware(middleware_fn.?, user_data) catch |err| {
+        setLastError(@errorName(err));
+        return 99; // E12_ERROR_UNKNOWN
+    };
+
+    // Create wrapper using a switch to select the right wrapper function
+    // This is a workaround since we can't create functions dynamically
+    // Note: This limits us to 16 middleware entries (0-15)
+    // For more entries, we'd need to expand the switch or use a different approach
+    const wrapper = switch (middleware_id) {
+        0 => makePreRequestWrapper(0),
+        1 => makePreRequestWrapper(1),
+        2 => makePreRequestWrapper(2),
+        3 => makePreRequestWrapper(3),
+        4 => makePreRequestWrapper(4),
+        5 => makePreRequestWrapper(5),
+        6 => makePreRequestWrapper(6),
+        7 => makePreRequestWrapper(7),
+        8 => makePreRequestWrapper(8),
+        9 => makePreRequestWrapper(9),
+        10 => makePreRequestWrapper(10),
+        11 => makePreRequestWrapper(11),
+        12 => makePreRequestWrapper(12),
+        13 => makePreRequestWrapper(13),
+        14 => makePreRequestWrapper(14),
+        15 => makePreRequestWrapper(15),
+        else => {
+            setLastError("Too many middleware registered (max 16)");
+            return 2; // E12_ERROR_TOO_MANY_ROUTES
+        },
+    };
+
+    c_app.engine.middleware.addPreRequest(wrapper) catch |err| {
+        setLastError(@errorName(err));
+        return 99; // E12_ERROR_UNKNOWN
+    };
+
+    return 0; // E12_OK
+}
+
+export fn e12_use_response(
+    app: ?*CEngine12Handle,
+    middleware_fn: ?E12ResponseMiddlewareFn,
+    user_data: *anyopaque,
+) c_int {
+    clearLastError();
+
+    if (app == null or middleware_fn == null) {
+        setLastError("Invalid arguments");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    }
+
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    };
+
+    // Register middleware with user_data
+    const middleware_id = registerResponseMiddleware(middleware_fn.?, user_data) catch |err| {
+        setLastError(@errorName(err));
+        return 99; // E12_ERROR_UNKNOWN
+    };
+
+    // Create wrapper using a switch to select the right wrapper function
+    // Note: This limits us to 16 middleware entries (0-15)
+    const wrapper = switch (middleware_id) {
+        0 => makeResponseWrapper(0),
+        1 => makeResponseWrapper(1),
+        2 => makeResponseWrapper(2),
+        3 => makeResponseWrapper(3),
+        4 => makeResponseWrapper(4),
+        5 => makeResponseWrapper(5),
+        6 => makeResponseWrapper(6),
+        7 => makeResponseWrapper(7),
+        8 => makeResponseWrapper(8),
+        9 => makeResponseWrapper(9),
+        10 => makeResponseWrapper(10),
+        11 => makeResponseWrapper(11),
+        12 => makeResponseWrapper(12),
+        13 => makeResponseWrapper(13),
+        14 => makeResponseWrapper(14),
+        15 => makeResponseWrapper(15),
+        else => {
+            setLastError("Too many middleware registered (max 16)");
+            return 2; // E12_ERROR_TOO_MANY_ROUTES
+        },
+    };
+
+    c_app.engine.middleware.addResponse(wrapper) catch |err| {
+        setLastError(@errorName(err));
+        return 99; // E12_ERROR_UNKNOWN
+    };
+
+    return 0; // E12_OK
+}
+
+// Static File Serving
+export fn e12_serve_static(
+    app: ?*CEngine12Handle,
+    mount_path: [*c]const u8,
+    directory: [*c]const u8,
+) c_int {
+    clearLastError();
+
+    if (app == null or mount_path == null or directory == null) {
+        setLastError("Invalid arguments");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    }
+
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    };
+
+    const mount_path_slice = std.mem.span(mount_path);
+    const directory_slice = std.mem.span(directory);
+
+    // Validate inputs
+    if (mount_path_slice.len == 0 or directory_slice.len == 0) {
+        setLastError("Mount path and directory must not be empty");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    }
+
+    // Validate mount path starts with /
+    if (mount_path_slice[0] != '/') {
+        setLastError("Mount path must start with '/'");
+        return 6; // E12_ERROR_INVALID_PATH
+    }
+
+    c_app.engine.serveStatic(mount_path_slice, directory_slice) catch |err| {
+        setLastError(@errorName(err));
+        return switch (err) {
+            error.TooManyStaticRoutes => 2,
+            error.ServerAlreadyBuilt => 3,
+            else => 99,
+        };
+    };
+
+    return 0; // E12_OK
+}
+
+// Background Tasks
+export fn e12_register_task(
+    app: ?*CEngine12Handle,
+    name: [*c]const u8,
+    task: ?E12BackgroundTaskFn,
+    interval_ms: c_uint,
+    user_data: *anyopaque,
+) c_int {
+    clearLastError();
+
+    if (app == null or name == null or task == null) {
+        setLastError("Invalid arguments");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    }
+
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    };
+
+    const name_slice = std.mem.span(name);
+    if (name_slice.len == 0) {
+        setLastError("Task name must not be empty");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    }
+
+    // Register task callback and user_data in registry
+    task_registry_mutex.lock();
+
+    if (task_registry_next_id >= MAX_TASK_ENTRIES) {
+        task_registry_mutex.unlock();
+        setLastError("Too many tasks");
+        return 2;
+    }
+
+    const task_id = task_registry_next_id;
+    task_registry_next_id += 1;
+
+    task_registry[task_id] = .{
+        .task_fn = task.?,
+        .user_data = user_data,
+    };
+
+    task_registry_mutex.unlock();
+
+    // Get the comptime-generated wrapper function for this ID
+    const wrapper_fn = getTaskWrapper(task_id);
+
+    if (interval_ms == 0) {
+        c_app.engine.runTask(name_slice, wrapper_fn) catch |err| {
+            setLastError(@errorName(err));
+            return switch (err) {
+                error.TooManyWorkers => 2,
+            };
+        };
+    } else {
+        c_app.engine.schedulePeriodicTask(name_slice, wrapper_fn, interval_ms) catch |err| {
+            setLastError(@errorName(err));
+            return switch (err) {
+                error.TooManyWorkers => 2,
+            };
+        };
+    }
+
+    return 0; // E12_OK
+}
+
+// Health Checks
+export fn e12_register_health_check(
+    app: ?*CEngine12Handle,
+    check: ?E12HealthCheckFn,
+    user_data: *anyopaque,
+) c_int {
+    clearLastError();
+
+    if (app == null or check == null) {
+        setLastError("Invalid arguments");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    }
+
+    const c_app = getCEngine12(app.?) orelse {
+        setLastError("Invalid Engine12 instance");
+        return 1; // E12_ERROR_INVALID_ARGUMENT
+    };
+
+    // Register health check callback and user_data in registry
+    health_check_registry_mutex.lock();
+    defer health_check_registry_mutex.unlock();
+
+    if (health_check_registry_next_id >= MAX_HEALTH_CHECK_ENTRIES) {
+        setLastError("Too many health checks");
+        return 2;
+    }
+
+    const check_id = health_check_registry_next_id;
+    health_check_registry_next_id += 1;
+
+    health_check_registry[check_id] = .{
+        .check_fn = check.?,
+        .user_data = user_data,
+    };
+
+    // Get the comptime-generated wrapper function for this ID
+    const wrapper_fn = getHealthCheckWrapper(check_id);
+
+    c_app.engine.registerHealthCheck(wrapper_fn) catch |err| {
+        setLastError(@errorName(err));
+        return switch (err) {
+            error.TooManyHealthChecks => 2,
+        };
+    };
+
+    return 0; // E12_OK
 }
 
 // Response API

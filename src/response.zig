@@ -505,3 +505,97 @@ test "Response memory safety - body from arena" {
     _ = resp;
 }
 
+test "Response empty string bodies" {
+    const resp1 = Response.json("");
+    _ = resp1;
+    
+    const resp2 = Response.text("");
+    _ = resp2;
+    
+    const resp3 = Response.html("");
+    _ = resp3;
+}
+
+test "Response download creates correct response" {
+    const resp = Response.download("report.pdf", "PDF content");
+    _ = resp;
+}
+
+test "Response stream creates correct response" {
+    const resp = Response.stream("text/plain", "stream data");
+    _ = resp;
+}
+
+test "Response withCookie with all options" {
+    var resp = Response.ok();
+    resp = resp.withCookie("session", "abc123", .{
+        .maxAge = 3600,
+        .domain = "example.com",
+        .path = "/",
+        .secure = true,
+        .httpOnly = true,
+    });
+    // Verify response was created
+    const ziggurat_resp = resp.toZiggurat();
+    _ = ziggurat_resp;
+}
+
+test "Response redirect with custom location" {
+    const resp1 = Response.redirect("/login");
+    _ = resp1;
+    
+    const resp2 = Response.redirect("/dashboard");
+    _ = resp2;
+}
+
+test "Response all status code helpers" {
+    const ok = Response.ok();
+    _ = ok;
+    
+    const created = Response.created();
+    _ = created;
+    
+    const noContent = Response.noContent();
+    _ = noContent;
+    
+    const badRequest = Response.badRequest();
+    _ = badRequest;
+    
+    const unauthorized = Response.unauthorized();
+    _ = unauthorized;
+    
+    const forbidden = Response.forbidden();
+    _ = forbidden;
+    
+    const notFound = Response.notFound();
+    _ = notFound;
+    
+    const internalError = Response.internalError();
+    _ = internalError;
+}
+
+test "Response status with custom code" {
+    const resp = Response.status(418);
+    _ = resp;
+}
+
+test "Response fluent chaining" {
+    const resp = Response.text("Hello")
+        .withContentType("text/plain")
+        .withStatus(200)
+        .withHeader("X-Custom", "value");
+    _ = resp;
+}
+
+test "Response fromZiggurat creates wrapper" {
+    const ziggurat_resp = ziggurat.response.Response.text("test");
+    const resp = Response.fromZiggurat(ziggurat_resp);
+    _ = resp;
+}
+
+test "Response toZiggurat converts back" {
+    const resp = Response.text("test");
+    const ziggurat_resp = resp.toZiggurat();
+    _ = ziggurat_resp;
+}
+

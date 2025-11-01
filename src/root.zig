@@ -16,6 +16,7 @@ pub const csrf = @import("csrf.zig");
 pub const cache = @import("cache.zig");
 pub const router = @import("router.zig");
 pub const templates = @import("templates/template.zig");
+pub const dev_tools = @import("dev_tools.zig");
 
 // Re-export main types for convenience
 pub const Engine12 = engine12.Engine12;

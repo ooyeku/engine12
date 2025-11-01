@@ -279,3 +279,150 @@ test "CacheEntry init and expiration" {
     try std.testing.expectEqualStrings(entry.body, "test body");
     try std.testing.expect(!entry.isExpired());
 }
+
+test "ResponseCache set and get with custom TTL" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+    
+    try cache.set("/test", "test body", 5000, "text/plain");
+    
+    const entry = cache.get("/test");
+    try std.testing.expect(entry != null);
+    if (entry) |e| {
+        try std.testing.expectEqualStrings(e.body, "test body");
+        try std.testing.expectEqual(e.ttl_ms, 5000);
+    }
+}
+
+test "ResponseCache set overwrites existing entry" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+    
+    try cache.set("/test", "old body", null, "text/plain");
+    try cache.set("/test", "new body", null, "text/plain");
+    
+    const entry = cache.get("/test");
+    try std.testing.expect(entry != null);
+    if (entry) |e| {
+        try std.testing.expectEqualStrings(e.body, "new body");
+    }
+}
+
+test "ResponseCache invalidatePrefix removes matching entries" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+    
+    try cache.set("/api/users", "users body", null, "application/json");
+    try cache.set("/api/posts", "posts body", null, "application/json");
+    try cache.set("/api/users/123", "user body", null, "application/json");
+    try cache.set("/other", "other body", null, "text/plain");
+    
+    cache.invalidatePrefix("/api/users");
+    
+    try std.testing.expect(cache.get("/api/users") == null);
+    try std.testing.expect(cache.get("/api/users/123") == null);
+    try std.testing.expect(cache.get("/api/posts") != null);
+    try std.testing.expect(cache.get("/other") != null);
+}
+
+test "ResponseCache cleanup removes expired entries" {
+    var cache = ResponseCache.init(std.testing.allocator, 10);
+    defer cache.deinit();
+    
+    try cache.set("/test1", "body1", null, "text/plain");
+    try cache.set("/test2", "body2", 50, "text/plain");
+    
+    try std.testing.expect(cache.get("/test1") != null);
+    try std.testing.expect(cache.get("/test2") != null);
+    
+    std.time.sleep(20 * std.time.ns_per_ms);
+    
+    cache.cleanup();
+    
+    try std.testing.expect(cache.get("/test1") == null);
+    try std.testing.expect(cache.get("/test2") != null);
+}
+
+test "ResponseCache get returns null for non-existent key" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+    
+    const entry = cache.get("/nonexistent");
+    try std.testing.expect(entry == null);
+}
+
+test "CacheEntry same body generates same ETag" {
+    var entry1 = try CacheEntry.init(std.testing.allocator, "test body", 1000, "text/plain");
+    defer entry1.deinit(std.testing.allocator);
+    
+    var entry2 = try CacheEntry.init(std.testing.allocator, "test body", 1000, "text/plain");
+    defer entry2.deinit(std.testing.allocator);
+    
+    // Same body should generate same hash
+    try std.testing.expectEqualStrings(entry1.etag, entry2.etag);
+}
+
+test "CacheEntry different body generates different ETag" {
+    var entry1 = try CacheEntry.init(std.testing.allocator, "body1", 1000, "text/plain");
+    defer entry1.deinit(std.testing.allocator);
+    
+    var entry2 = try CacheEntry.init(std.testing.allocator, "body2", 1000, "text/plain");
+    defer entry2.deinit(std.testing.allocator);
+    
+    // Different bodies should generate different ETags
+    try std.testing.expect(!std.mem.eql(u8, entry1.etag, entry2.etag));
+}
+
+test "ResponseCache multiple entries" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+    
+    try cache.set("/api/users", "users", null, "application/json");
+    try cache.set("/api/posts", "posts", null, "application/json");
+    try cache.set("/api/comments", "comments", null, "application/json");
+    
+    try std.testing.expect(cache.get("/api/users") != null);
+    try std.testing.expect(cache.get("/api/posts") != null);
+    try std.testing.expect(cache.get("/api/comments") != null);
+}
+
+test "ResponseCache invalidate non-existent key" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+    
+    // Should not crash
+    cache.invalidate("/nonexistent");
+}
+
+test "ResponseCache invalidatePrefix empty prefix" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+    
+    try cache.set("/test", "body", null, "text/plain");
+    
+    // Empty prefix should not match anything
+    cache.invalidatePrefix("");
+    
+    try std.testing.expect(cache.get("/test") != null);
+}
+
+test "generateETag creates valid ETag" {
+    const etag = try generateETag("test body", std.testing.allocator);
+    defer std.testing.allocator.free(etag);
+    
+    try std.testing.expect(etag.len > 0);
+    // ETag should be quoted
+    try std.testing.expect(etag[0] == '"');
+    try std.testing.expect(etag[etag.len - 1] == '"');
+}
+
+test "CacheEntry expiration check" {
+    var entry = try CacheEntry.init(std.testing.allocator, "test", 10, "text/plain");
+    defer entry.deinit(std.testing.allocator);
+    
+    try std.testing.expect(!entry.isExpired());
+    
+    std.time.sleep(15 * std.time.ns_per_ms);
+    
+    try std.testing.expect(entry.isExpired());
+}

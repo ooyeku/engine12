@@ -126,3 +126,131 @@ pub const RouteGroup = struct {
     }
 };
 
+// Tests
+test "RouteGroup usePreRequest adds middleware" {
+    var group = RouteGroup{
+        .engine_ptr = undefined,
+        .prefix = "/api",
+        .middleware = middleware_chain.MiddlewareChain{},
+        .register_get = undefined,
+        .register_post = undefined,
+        .register_put = undefined,
+        .register_delete = undefined,
+    };
+    
+    const mw = struct {
+        fn mw(req: *Request) middleware_chain.MiddlewareResult {
+            _ = req;
+            return .proceed;
+        }
+    };
+    
+    try group.usePreRequest(&mw.mw);
+    try std.testing.expectEqual(group.middleware.pre_request_count, 1);
+}
+
+test "RouteGroup useResponse adds middleware" {
+    var group = RouteGroup{
+        .engine_ptr = undefined,
+        .prefix = "/api",
+        .middleware = middleware_chain.MiddlewareChain{},
+        .register_get = undefined,
+        .register_post = undefined,
+        .register_put = undefined,
+        .register_delete = undefined,
+    };
+    
+    const mw = struct {
+        fn mw(resp: Response) Response {
+            return resp;
+        }
+    };
+    
+    try group.useResponse(&mw.mw);
+    try std.testing.expectEqual(group.middleware.response_count, 1);
+}
+
+test "RouteGroup group creates nested group" {
+    var group = RouteGroup{
+        .engine_ptr = undefined,
+        .prefix = "/api",
+        .middleware = middleware_chain.MiddlewareChain{},
+        .register_get = undefined,
+        .register_post = undefined,
+        .register_put = undefined,
+        .register_delete = undefined,
+    };
+    
+    const nested = group.group("/v1");
+    try std.testing.expect(nested.prefix.len > 0);
+}
+
+test "RouteGroup combinePrefix with empty prefix1" {
+    var group = RouteGroup{
+        .engine_ptr = undefined,
+        .prefix = "",
+        .middleware = middleware_chain.MiddlewareChain{},
+        .register_get = undefined,
+        .register_post = undefined,
+        .register_put = undefined,
+        .register_delete = undefined,
+    };
+    
+    const combined = group.combinePrefix("", "/api");
+    try std.testing.expectEqualStrings(combined, "/api");
+}
+
+test "RouteGroup combinePrefix with empty prefix2" {
+    var group = RouteGroup{
+        .engine_ptr = undefined,
+        .prefix = "/api",
+        .middleware = middleware_chain.MiddlewareChain{},
+        .register_get = undefined,
+        .register_post = undefined,
+        .register_put = undefined,
+        .register_delete = undefined,
+    };
+    
+    const combined = group.combinePrefix("/api", "");
+    try std.testing.expectEqualStrings(combined, "/api");
+}
+
+test "RouteGroup buildFullPath" {
+    var group = RouteGroup{
+        .engine_ptr = undefined,
+        .prefix = "/api",
+        .middleware = middleware_chain.MiddlewareChain{},
+        .register_get = undefined,
+        .register_post = undefined,
+        .register_put = undefined,
+        .register_delete = undefined,
+    };
+    
+    const full_path = group.buildFullPath("/todos");
+    try std.testing.expectEqualStrings(full_path, "/todos");
+}
+
+test "RouteGroup middleware inheritance" {
+    var group = RouteGroup{
+        .engine_ptr = undefined,
+        .prefix = "/api",
+        .middleware = middleware_chain.MiddlewareChain{},
+        .register_get = undefined,
+        .register_post = undefined,
+        .register_put = undefined,
+        .register_delete = undefined,
+    };
+    
+    const mw = struct {
+        fn mw(req: *Request) middleware_chain.MiddlewareResult {
+            _ = req;
+            return .proceed;
+        }
+    };
+    
+    try group.usePreRequest(&mw.mw);
+    
+    const nested = group.group("/v1");
+    try std.testing.expectEqual(nested.middleware.pre_request_count, 1);
+}
+

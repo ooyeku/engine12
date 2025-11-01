@@ -39,6 +39,7 @@ typedef enum {
     E12_METHOD_POST = 1,
     E12_METHOD_PUT = 2,
     E12_METHOD_DELETE = 3,
+    E12_METHOD_PATCH = 4,
 } E12Method;
 
 // Middleware result
@@ -120,6 +121,9 @@ E12ErrorCode e12_put(Engine12* app, const char* path, E12HandlerFn handler, void
 
 /// Register a DELETE route
 E12ErrorCode e12_delete(Engine12* app, const char* path, E12HandlerFn handler, void* user_data);
+
+/// Register a PATCH route
+E12ErrorCode e12_patch(Engine12* app, const char* path, E12HandlerFn handler, void* user_data);
 
 // ============================================================================
 // Middleware
@@ -248,6 +252,11 @@ E12Response* e12_response_html(const char* body);
 /// @param status_code HTTP status code
 /// @return Response handle (must be freed with e12_response_free)
 E12Response* e12_response_status(uint16_t status_code);
+
+/// Create a redirect response
+/// @param location Redirect location URL
+/// @return Response handle (must be freed with e12_response_free)
+E12Response* e12_response_redirect(const char* location);
 
 /// Set response status code
 /// @param resp Response handle

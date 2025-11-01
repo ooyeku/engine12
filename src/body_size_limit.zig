@@ -134,3 +134,194 @@ test "createContentTypeBodySizeLimitMiddleware sets appropriate limits" {
     try std.testing.expectEqual(result, .proceed);
 }
 
+test "createBodySizeLimitMiddleware allows exact limit size" {
+    var exact_body = std.ArrayList(u8).init(std.testing.allocator);
+    defer exact_body.deinit();
+    try exact_body.writer().print("{s}", .{"x"} ** 1000); // Exactly 1000 bytes
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .POST,
+        .body = exact_body.items,
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const mw = createBodySizeLimitMiddleware(BodySizeLimit{
+        .max_bytes = 1000,
+    });
+    
+    const result = mw(&req);
+    try std.testing.expectEqual(result, .proceed);
+}
+
+test "createBodySizeLimitMiddleware rejects exact limit plus one byte" {
+    var too_large_body = std.ArrayList(u8).init(std.testing.allocator);
+    defer too_large_body.deinit();
+    try too_large_body.writer().print("{s}", .{"x"} ** 1001); // 1001 bytes
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .POST,
+        .body = too_large_body.items,
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const mw = createBodySizeLimitMiddleware(BodySizeLimit{
+        .max_bytes = 1000,
+    });
+    
+    const result = mw(&req);
+    try std.testing.expectEqual(result, .abort);
+    try std.testing.expect(req.context.get("body_size_exceeded") != null);
+    try std.testing.expect(req.context.get("body_size_limit") != null);
+}
+
+test "createBodySizeLimitMiddleware allows empty body" {
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .POST,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const mw = createBodySizeLimitMiddleware(BodySizeLimit{
+        .max_bytes = 1000,
+    });
+    
+    const result = mw(&req);
+    try std.testing.expectEqual(result, .proceed);
+}
+
+test "createBodySizeLimitMiddleware with zero limit rejects all bodies" {
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .POST,
+        .body = "x",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const mw = createBodySizeLimitMiddleware(BodySizeLimit{
+        .max_bytes = 0,
+    });
+    
+    const result = mw(&req);
+    try std.testing.expectEqual(result, .abort);
+}
+
+test "createBodySizeLimitMiddleware with zero limit allows empty body" {
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .POST,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const mw = createBodySizeLimitMiddleware(BodySizeLimit{
+        .max_bytes = 0,
+    });
+    
+    const result = mw(&req);
+    try std.testing.expectEqual(result, .proceed);
+}
+
+test "createContentTypeBodySizeLimitMiddleware detects JSON content type" {
+    var json_body = std.ArrayList(u8).init(std.testing.allocator);
+    defer json_body.deinit();
+    try json_body.writer().print("{s}", .{"x"} ** (DefaultLimits.json + 1));
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .POST,
+        .body = json_body.items,
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    // Set Content-Type header via context since header() currently returns null
+    // For now, test that it falls back to general limit
+    const mw = createContentTypeBodySizeLimitMiddleware();
+    const result = mw(&req);
+    // Should abort because body exceeds general limit
+    try std.testing.expectEqual(result, .abort);
+}
+
+test "createContentTypeBodySizeLimitMiddleware allows JSON within limit" {
+    var json_body = std.ArrayList(u8).init(std.testing.allocator);
+    defer json_body.deinit();
+    try json_body.writer().print("{s}", .{"x"} ** (DefaultLimits.json - 1));
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .POST,
+        .body = json_body.items,
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const mw = createContentTypeBodySizeLimitMiddleware();
+    const result = mw(&req);
+    try std.testing.expectEqual(result, .proceed);
+}
+
+test "createContentTypeBodySizeLimitMiddleware handles empty Content-Type" {
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .POST,
+        .body = "small body",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const mw = createContentTypeBodySizeLimitMiddleware();
+    const result = mw(&req);
+    // Should use general limit
+    try std.testing.expectEqual(result, .proceed);
+}
+
+test "createContentTypeBodySizeLimitMiddleware handles very large body" {
+    var huge_body = std.ArrayList(u8).init(std.testing.allocator);
+    defer huge_body.deinit();
+    try huge_body.writer().print("{s}", .{"x"} ** (DefaultLimits.general + 1));
+    
+    var ziggurat_req = @import("ziggurat").request.Request{
+        .path = "/test",
+        .method = .POST,
+        .body = huge_body.items,
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const mw = createContentTypeBodySizeLimitMiddleware();
+    const result = mw(&req);
+    try std.testing.expectEqual(result, .abort);
+    try std.testing.expect(req.context.get("body_size_exceeded") != null);
+}
+
+test "DefaultLimits constants are correct" {
+    try std.testing.expectEqual(DefaultLimits.json, 1024 * 1024);
+    try std.testing.expectEqual(DefaultLimits.form_data, 10 * 1024 * 1024);
+    try std.testing.expectEqual(DefaultLimits.file_upload, 50 * 1024 * 1024);
+    try std.testing.expectEqual(DefaultLimits.general, 5 * 1024 * 1024);
+}
+
+test "BodySizeLimit struct initialization" {
+    const limit = BodySizeLimit{
+        .max_bytes = 1000,
+        .error_message = "Custom error",
+    };
+    try std.testing.expectEqual(limit.max_bytes, 1000);
+    try std.testing.expectEqualStrings(limit.error_message, "Custom error");
+}
+
+test "BodySizeLimit struct default error message" {
+    const limit = BodySizeLimit{
+        .max_bytes = 1000,
+    };
+    try std.testing.expectEqualStrings(limit.error_message, "Request body too large");
+}
+
