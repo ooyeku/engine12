@@ -1,0 +1,93 @@
+# Engine12
+
+A professional backend framework for Zig, designed for building high-performance web applications and APIs.
+
+## Quick Start
+
+```zig
+const std = @import("std");
+const Engine12 = @import("Engine12");
+
+fn handleRoot(req: *Engine12.Request) Engine12.Response {
+    _ = req;
+    return Engine12.Response.text("Hello, World!");
+}
+
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+
+    try app.get("/", handleRoot);
+    try app.start();
+}
+```
+
+## Installation
+
+Add Engine12 to your `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .Engine12 = .{
+        .url = "git+https://github.com/yourusername/Engine12.git",
+        .hash = "...",
+    },
+},
+```
+
+Then add it to your `build.zig`:
+
+```zig
+const Engine12 = b.dependency("Engine12", .{
+    .target = target,
+    .optimize = optimize,
+});
+
+exe.addModule("Engine12", Engine12.module("Engine12"));
+```
+
+## Features
+
+- **HTTP Routing** - GET, POST, PUT, DELETE, PATCH with route parameters
+- **Middleware System** - Pre-request and response middleware chains
+- **SQLite ORM** - Type-safe database operations with migrations
+- **Template Engine** - Server-side HTML rendering
+- **Request/Response API** - Clean, memory-safe HTTP handling
+- **Rate Limiting** - Per-route rate limiting
+- **CSRF Protection** - Built-in CSRF token validation
+- **Metrics & Health Checks** - Request timing and health monitoring
+- **Background Tasks** - Periodic and one-time task scheduling
+- **Static File Serving** - Serve static assets
+- **C API** - Language bindings for non-Zig code
+
+See [TODO.md](TODO.md) for a complete feature list and roadmap.
+
+## Documentation
+
+- [API Reference](docs/api-reference.md) - Complete API documentation
+- [Tutorial](docs/tutorial.md) - Step-by-step guide to building your first app
+- [Architecture Guide](docs/architecture.md) - System design and architecture
+- [Examples](docs/examples/todo-app.md) - Complete todo app walkthrough
+- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
+
+## Example
+
+See the [todo app example](todo/src/app.zig) for a complete working application demonstrating:
+- Database setup and migrations
+- CRUD operations with the ORM
+- Template rendering
+- Route handlers
+- Frontend integration
+
+## Requirements
+
+- Zig 0.15.1 or later
+
+## License
+
+[Add your license here]
+
+## Contributing
+
+Contributions welcome! Please see our contributing guidelines.
+

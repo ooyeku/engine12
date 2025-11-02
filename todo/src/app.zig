@@ -374,15 +374,15 @@ fn handleIndex(request: *Request) Response {
 
     // Create context
     const context = IndexContext{
-        .title = "Engine12 TODO",
-        .subtitle = "A beautiful, minimal task manager",
-        .title_placeholder = "Enter task title...",
+        .title = "Todo List",
+        .subtitle = "Enter your todos here",
+        .title_placeholder = "Enter todo title...",
         .description_placeholder = "Enter description (optional)...",
-        .add_button_text = "Add Task",
+        .add_button_text = "Add Todo",
         .filter_all = "All",
         .filter_pending = "Pending",
         .filter_completed = "Completed",
-        .empty_state_message = "No tasks yet. Add one above to get started!",
+        .empty_state_message = "No todos yet. Add one above to get started!",
     };
 
     // Render template - use page allocator for persistent memory
