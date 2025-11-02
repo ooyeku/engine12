@@ -26,9 +26,9 @@
 | Query Builder | Working | - | WHERE, ORDER BY, LIMIT, JOIN |
 | Type-Safe Queries | Working | - | Compile-time checking |
 | Row Mapping | Working | - | Auto struct mapping |
-| Database Transactions | Missing | High | ACID transactions |
-| Connection Pooling | Partial | High | Config options needed |
-| Migrations | Missing | High | Schema versioning |
+| Database Transactions | Working | - | ACID transactions |
+| Connection Pooling | Working | - | Configurable pool |
+| Migrations | Working | - | Schema versioning |
 
 ## Authentication & Authorization
 

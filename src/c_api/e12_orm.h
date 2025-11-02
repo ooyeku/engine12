@@ -13,6 +13,8 @@ extern "C" {
 typedef void E12Database;
 typedef void E12Result;
 typedef void E12Row;
+typedef void E12Transaction;
+typedef void E12ConnectionPool;
 
 // Error codes
 typedef enum {
@@ -108,6 +110,63 @@ bool e12_row_is_null(E12Row* row, int col_index);
 /// Free a row handle
 /// @param row Row handle to free
 void e12_row_free(E12Row* row);
+
+// ============================================================================
+// Transaction Operations
+// ============================================================================
+
+/// Begin a database transaction
+/// @param db Database handle
+/// @param out_transaction Output parameter for the transaction handle
+/// @return E12_ORM_OK on success, error code on failure
+E12ORMErrorCode e12_db_begin_transaction(E12Database* db, E12Transaction** out_transaction);
+
+/// Commit a transaction
+/// @param transaction Transaction handle
+/// @return E12_ORM_OK on success, error code on failure
+E12ORMErrorCode e12_db_commit(E12Transaction* transaction);
+
+/// Rollback a transaction
+/// @param transaction Transaction handle
+/// @return E12_ORM_OK on success, error code on failure
+E12ORMErrorCode e12_db_rollback(E12Transaction* transaction);
+
+/// Free a transaction handle
+/// @param transaction Transaction handle to free
+void e12_transaction_free(E12Transaction* transaction);
+
+// ============================================================================
+// Connection Pool Operations
+// ============================================================================
+
+/// Connection pool configuration
+typedef struct {
+    size_t max_connections;
+    uint64_t idle_timeout_ms;
+    uint64_t acquire_timeout_ms;
+} E12ConnectionPoolConfig;
+
+/// Create a connection pool
+/// @param path Database file path
+/// @param config Pool configuration
+/// @param out_pool Output parameter for the pool handle
+/// @return E12_ORM_OK on success, error code on failure
+E12ORMErrorCode e12_pool_create(const char* path, const E12ConnectionPoolConfig* config, E12ConnectionPool** out_pool);
+
+/// Acquire a connection from the pool
+/// @param pool Pool handle
+/// @param out_db Output parameter for the database handle
+/// @return E12_ORM_OK on success, error code on failure
+E12ORMErrorCode e12_pool_acquire(E12ConnectionPool* pool, E12Database** out_db);
+
+/// Return a connection to the pool
+/// @param pool Pool handle
+/// @param db Database handle to return
+void e12_pool_release(E12ConnectionPool* pool, E12Database* db);
+
+/// Close a connection pool
+/// @param pool Pool handle to close
+void e12_pool_close(E12ConnectionPool* pool);
 
 // ============================================================================
 // Error Handling

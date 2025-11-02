@@ -41,6 +41,13 @@ typedef struct {
     E12ResultImpl* result;
 } E12RowImpl;
 
+// Transaction structure
+typedef struct {
+    E12DatabaseImpl* db;
+    bool committed;
+    bool rolled_back;
+} E12TransactionImpl;
+
 // ============================================================================
 // Database Operations
 // ============================================================================
@@ -274,6 +281,154 @@ void e12_row_free(E12Row* row) {
     
     E12RowImpl* row_impl = (E12RowImpl*)row;
     free(row_impl);
+}
+
+// ============================================================================
+// Transaction Operations
+// ============================================================================
+
+E12ORMErrorCode e12_db_begin_transaction(E12Database* db, E12Transaction** out_transaction) {
+    clear_error();
+    
+    if (!db || !out_transaction) {
+        set_error(E12_ORM_ERROR_INVALID_ARGUMENT, "Invalid arguments");
+        return E12_ORM_ERROR_INVALID_ARGUMENT;
+    }
+    
+    E12DatabaseImpl* db_impl = (E12DatabaseImpl*)db;
+    
+    // Begin transaction
+    char* err_msg = NULL;
+    int rc = sqlite3_exec(db_impl->db, "BEGIN TRANSACTION", NULL, NULL, &err_msg);
+    
+    if (rc != SQLITE_OK) {
+        set_error(E12_ORM_ERROR_QUERY_FAILED, err_msg ? err_msg : "Failed to begin transaction");
+        if (err_msg) {
+            sqlite3_free(err_msg);
+        }
+        return E12_ORM_ERROR_QUERY_FAILED;
+    }
+    
+    // Create transaction handle
+    E12TransactionImpl* trans_impl = (E12TransactionImpl*)malloc(sizeof(E12TransactionImpl));
+    if (!trans_impl) {
+        sqlite3_exec(db_impl->db, "ROLLBACK", NULL, NULL, NULL);
+        set_error(E12_ORM_ERROR, "Memory allocation failed");
+        return E12_ORM_ERROR;
+    }
+    
+    trans_impl->db = db_impl;
+    trans_impl->committed = false;
+    trans_impl->rolled_back = false;
+    
+    *out_transaction = (E12Transaction*)trans_impl;
+    return E12_ORM_OK;
+}
+
+E12ORMErrorCode e12_db_commit(E12Transaction* transaction) {
+    clear_error();
+    
+    if (!transaction) {
+        set_error(E12_ORM_ERROR_INVALID_ARGUMENT, "Invalid transaction");
+        return E12_ORM_ERROR_INVALID_ARGUMENT;
+    }
+    
+    E12TransactionImpl* trans_impl = (E12TransactionImpl*)transaction;
+    
+    if (trans_impl->committed || trans_impl->rolled_back) {
+        set_error(E12_ORM_ERROR, "Transaction already completed");
+        return E12_ORM_ERROR;
+    }
+    
+    char* err_msg = NULL;
+    int rc = sqlite3_exec(trans_impl->db->db, "COMMIT", NULL, NULL, &err_msg);
+    
+    if (rc != SQLITE_OK) {
+        set_error(E12_ORM_ERROR_QUERY_FAILED, err_msg ? err_msg : "Failed to commit transaction");
+        if (err_msg) {
+            sqlite3_free(err_msg);
+        }
+        return E12_ORM_ERROR_QUERY_FAILED;
+    }
+    
+    trans_impl->committed = true;
+    return E12_ORM_OK;
+}
+
+E12ORMErrorCode e12_db_rollback(E12Transaction* transaction) {
+    clear_error();
+    
+    if (!transaction) {
+        set_error(E12_ORM_ERROR_INVALID_ARGUMENT, "Invalid transaction");
+        return E12_ORM_ERROR_INVALID_ARGUMENT;
+    }
+    
+    E12TransactionImpl* trans_impl = (E12TransactionImpl*)transaction;
+    
+    if (trans_impl->committed || trans_impl->rolled_back) {
+        set_error(E12_ORM_ERROR, "Transaction already completed");
+        return E12_ORM_ERROR;
+    }
+    
+    char* err_msg = NULL;
+    int rc = sqlite3_exec(trans_impl->db->db, "ROLLBACK", NULL, NULL, &err_msg);
+    
+    if (rc != SQLITE_OK) {
+        set_error(E12_ORM_ERROR_QUERY_FAILED, err_msg ? err_msg : "Failed to rollback transaction");
+        if (err_msg) {
+            sqlite3_free(err_msg);
+        }
+        return E12_ORM_ERROR_QUERY_FAILED;
+    }
+    
+    trans_impl->rolled_back = true;
+    return E12_ORM_OK;
+}
+
+void e12_transaction_free(E12Transaction* transaction) {
+    if (!transaction) return;
+    
+    E12TransactionImpl* trans_impl = (E12TransactionImpl*)transaction;
+    
+    // Auto-rollback if not committed or rolled back
+    if (!trans_impl->committed && !trans_impl->rolled_back) {
+        sqlite3_exec(trans_impl->db->db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    
+    free(trans_impl);
+}
+
+// ============================================================================
+// Connection Pool Operations
+// ============================================================================
+
+// Note: Connection pooling is primarily implemented at the Zig level
+// These C functions are stubs for future expansion
+
+E12ORMErrorCode e12_pool_create(const char* path, const E12ConnectionPoolConfig* config, E12ConnectionPool** out_pool) {
+    clear_error();
+    (void)path;
+    (void)config;
+    (void)out_pool;
+    set_error(E12_ORM_ERROR, "Connection pooling not yet implemented in C API");
+    return E12_ORM_ERROR;
+}
+
+E12ORMErrorCode e12_pool_acquire(E12ConnectionPool* pool, E12Database** out_db) {
+    clear_error();
+    (void)pool;
+    (void)out_db;
+    set_error(E12_ORM_ERROR, "Connection pooling not yet implemented in C API");
+    return E12_ORM_ERROR;
+}
+
+void e12_pool_release(E12ConnectionPool* pool, E12Database* db) {
+    (void)pool;
+    (void)db;
+}
+
+void e12_pool_close(E12ConnectionPool* pool) {
+    (void)pool;
 }
 
 // ============================================================================

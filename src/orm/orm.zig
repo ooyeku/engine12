@@ -3,6 +3,8 @@ pub const Database = @import("database.zig").Database;
 const QueryResult = @import("row.zig").QueryResult;
 const QueryBuilder = @import("query_builder.zig").QueryBuilder;
 const model = @import("model.zig");
+const MigrationRunner = @import("migration_runner.zig").MigrationRunner;
+const Migration = @import("migration.zig").Migration;
 
 pub const ORM = struct {
     db: Database,
@@ -13,6 +15,12 @@ pub const ORM = struct {
             .db = db,
             .allocator = allocator,
         };
+    }
+
+    pub fn initWithPool(pool: *Database.ConnectionPool, allocator: std.mem.Allocator) ORM {
+        _ = pool;
+        _ = allocator;
+        @panic("Pool-based ORM not yet implemented");
     }
 
     pub fn create(self: *ORM, comptime T: type, instance: T) !void {
@@ -189,6 +197,33 @@ pub const ORM = struct {
 
     pub fn execute(self: *ORM, sql: []const u8) !void {
         try self.db.execute(sql);
+    }
+
+    pub fn transaction(self: *ORM, comptime T: type, callback: fn (*Database.Transaction) anyerror!T) !T {
+        var trans = try self.db.beginTransaction();
+        defer trans.deinit();
+
+        const result = callback(&trans) catch |err| {
+            trans.rollback() catch {};
+            return err;
+        };
+
+        try trans.commit();
+        return result;
+    }
+
+    pub fn runMigrations(self: *ORM, migrations: []const Migration) !void {
+        var runner = MigrationRunner.init(&self.db, self.allocator);
+        try runner.runMigrations(migrations);
+    }
+
+    pub fn getMigrationVersion(self: *ORM) !?u32 {
+        var runner = MigrationRunner.init(&self.db, self.allocator);
+        return try runner.getCurrentVersion();
+    }
+
+    pub fn migrate(self: *ORM, migrations: []const Migration) !void {
+        try self.runMigrations(migrations);
     }
 
     pub fn close(self: *ORM) void {
@@ -593,4 +628,128 @@ test "ORM close" {
     var orm = ORM.init(db, allocator);
 
     orm.close();
+}
+
+test "ORM transaction success" {
+    const allocator = std.testing.allocator;
+
+    const User = struct {
+        id: i64,
+        name: []const u8,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    try db.execute("CREATE TABLE User (id INTEGER PRIMARY KEY, name TEXT)");
+
+    var orm = ORM.init(db, allocator);
+
+    const result = try orm.transaction(void, struct {
+        fn callback(trans: *Database.Transaction) !void {
+            try trans.execute("INSERT INTO User (name) VALUES ('Alice')");
+            try trans.execute("INSERT INTO User (name) VALUES ('Bob')");
+        }
+    }.callback);
+
+    _ = result;
+
+    var users = try orm.findAll(User);
+    defer {
+        for (users.items) |user| {
+            allocator.free(user.name);
+        }
+        users.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), users.items.len);
+}
+
+test "ORM transaction rollback on error" {
+    const allocator = std.testing.allocator;
+
+    const User = struct {
+        id: i64,
+        name: []u8,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    try db.execute("CREATE TABLE User (id INTEGER PRIMARY KEY, name TEXT)");
+
+    var orm = ORM.init(db, allocator);
+
+    _ = orm.transaction(void, struct {
+        fn callback(trans: *Database.Transaction) !void {
+            try trans.execute("INSERT INTO User (name) VALUES ('Alice')");
+            return error.TestError;
+        }
+    }.callback) catch |err| {
+        try std.testing.expectEqual(error.TestError, err);
+    };
+
+    var users = try orm.findAll(User);
+    defer users.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), users.items.len);
+}
+
+test "ORM transaction with return value" {
+    const allocator = std.testing.allocator;
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    try db.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, value INTEGER)");
+
+    var orm = ORM.init(db, allocator);
+
+    const result = try orm.transaction(i64, struct {
+        fn callback(trans: *Database.Transaction) !i64 {
+            try trans.execute("INSERT INTO test (value) VALUES (42)");
+            return 42;
+        }
+    }.callback);
+
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "ORM runMigrations" {
+    const allocator = std.testing.allocator;
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    var orm = ORM.init(db, allocator);
+
+    const migrations = [_]Migration{
+        Migration.init(1, "create_users", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);", "DROP TABLE users;"),
+    };
+
+    try orm.runMigrations(&migrations);
+
+    const version = try orm.getMigrationVersion();
+    try std.testing.expect(version != null);
+    try std.testing.expectEqual(@as(u32, 1), version.?);
+}
+
+test "ORM migrate" {
+    const allocator = std.testing.allocator;
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    var orm = ORM.init(db, allocator);
+
+    const migrations = [_]Migration{
+        Migration.init(1, "create_users", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);", "DROP TABLE users;"),
+        Migration.init(2, "add_email", "ALTER TABLE users ADD COLUMN email TEXT;", "ALTER TABLE users DROP COLUMN email;"),
+    };
+
+    try orm.migrate(&migrations);
+
+    const version = try orm.getMigrationVersion();
+    try std.testing.expect(version != null);
+    try std.testing.expectEqual(@as(u32, 2), version.?);
 }
