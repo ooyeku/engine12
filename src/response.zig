@@ -203,6 +203,55 @@ pub const Response = struct {
         };
         return resp.withStatus(500);
     }
+
+    /// Set cache-control headers to prevent caching
+    /// Sets no-cache, no-store, must-revalidate, Pragma: no-cache, and Expires: 0
+    /// 
+    /// Example:
+    /// ```zig
+    /// return Response.json(data).noCache();
+    /// ```
+    pub fn noCache(self: Response) Response {
+        return self
+            .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+            .withHeader("Pragma", "no-cache")
+            .withHeader("Expires", "0");
+    }
+
+    /// Create an error JSON response with status 500
+    /// 
+    /// Example:
+    /// ```zig
+    /// return Response.errorJson("Internal server error", allocator);
+    /// ```
+    pub fn errorJson(message: []const u8, allocator: std.mem.Allocator) !Response {
+        const error_msg = try std.fmt.allocPrint(allocator, "{{\"error\":\"{s}\"}}", .{message});
+        return Response.json(error_msg).withStatus(500);
+    }
+
+    /// Create an error JSON response with custom status code
+    /// 
+    /// Example:
+    /// ```zig
+    /// return Response.errorJsonWithStatus("Not found", 404, allocator);
+    /// ```
+    pub fn errorJsonWithStatus(message: []const u8, status_code: u16, allocator: std.mem.Allocator) !Response {
+        const error_msg = try std.fmt.allocPrint(allocator, "{{\"error\":\"{s}\"}}", .{message});
+        return Response.json(error_msg).withStatus(status_code);
+    }
+
+    /// Create a success JSON response with status 200
+    /// 
+    /// Example:
+    /// ```zig
+    /// const data = try Json.serialize(MyStruct, my_data, allocator);
+    /// defer allocator.free(data);
+    /// return Response.successJson(data, allocator);
+    /// ```
+    pub fn successJson(data: []const u8, allocator: std.mem.Allocator) !Response {
+        _ = allocator;
+        return Response.json(data);
+    }
     
     /// Create a redirect response
     /// 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Request = @import("request.zig").Request;
+const Json = @import("json.zig").Json;
 
 /// Query parameter parsing utilities
 pub const QueryParser = struct {
@@ -84,34 +85,20 @@ pub const QueryParser = struct {
 /// Body parsing utilities
 pub const BodyParser = struct {
     /// Parse JSON body into a struct
-    /// Returns an error if parsing fails
+    /// Uses Engine12's Json module for type-safe deserialization
     /// 
     /// Example:
     /// ```zig
     /// const Todo = struct { title: []const u8, completed: bool };
-    /// const todo = try BodyParser.json(Todo, req.body(), req.allocator());
+    /// const todo = try BodyParser.json(Todo, req.body(), req.arena.allocator());
     /// ```
     pub fn json(comptime T: type, body: []const u8, allocator: std.mem.Allocator) !T {
-        // Simple JSON parser for common cases
-        // For production, consider using a proper JSON library
-        _ = allocator;
-        return parseJsonStruct(T, body);
+        return Json.deserialize(T, body, allocator);
     }
     
     /// Parse JSON body into a struct, returning null on error
     pub fn jsonOptional(comptime T: type, body: []const u8, allocator: std.mem.Allocator) ?T {
         return json(T, body, allocator) catch null;
-    }
-    
-    /// Simple JSON struct parser (basic implementation)
-    fn parseJsonStruct(comptime T: type, body: []const u8) !T {
-        // This is a placeholder - for a full implementation, use a proper JSON parser
-        // For now, just validate it's valid JSON-like structure
-        _ = body;
-        
-        // TODO: Implement proper JSON parsing
-        // T is used in the return type
-        return error.NotImplemented;
     }
     
     /// Parse URL-encoded form data

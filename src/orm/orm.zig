@@ -6,6 +6,11 @@ const model = @import("model.zig");
 const MigrationRunner = @import("migration_runner.zig").MigrationRunner;
 const Migration = @import("migration.zig").Migration;
 
+// Re-export utility modules
+pub const SqlEscape = @import("sql_escape.zig").SqlEscape;
+pub const Schema = @import("schema.zig").Schema;
+pub const DatabaseSingleton = @import("singleton.zig").DatabaseSingleton;
+
 pub const ORM = struct {
     db: Database,
     allocator: std.mem.Allocator,

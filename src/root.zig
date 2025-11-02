@@ -18,6 +18,8 @@ pub const router = @import("router.zig");
 pub const templates = @import("templates/template.zig");
 pub const dev_tools = @import("dev_tools.zig");
 pub const orm = @import("orm/orm.zig");
+pub const json = @import("json.zig");
+pub const utils = @import("utils.zig");
 
 // Re-export main types for convenience
 pub const Engine12 = engine12.Engine12;
