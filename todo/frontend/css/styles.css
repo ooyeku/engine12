@@ -294,6 +294,186 @@ header h1 {
     animation: slideIn 0.3s ease-out;
 }
 
+/* Toolbar */
+.toolbar {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.search-bar {
+    flex: 1;
+    min-width: 200px;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.search-bar input {
+    width: 100%;
+    padding: 0.75rem;
+    padding-right: 2.5rem;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 0.9375rem;
+}
+
+.btn-icon {
+    position: absolute;
+    right: 0.5rem;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0.25rem;
+    font-size: 1.2rem;
+}
+
+.toolbar-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.select-input {
+    padding: 0.75rem;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+}
+
+.btn-secondary {
+    padding: 0.75rem 1rem;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-secondary:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+/* Form enhancements */
+.form-row {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.priority-select, .date-input, .tags-input {
+    padding: 0.875rem;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 0.9375rem;
+}
+
+.date-input {
+    flex: 1;
+    min-width: 150px;
+}
+
+.tags-input {
+    flex: 1;
+}
+
+/* Priority badges */
+.priority-badge {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    margin-left: 0.5rem;
+}
+
+.priority-high {
+    background-color: rgba(248, 113, 113, 0.2);
+    color: var(--error);
+}
+
+.priority-medium {
+    background-color: rgba(251, 191, 36, 0.2);
+    color: #fbbf24;
+}
+
+.priority-low {
+    background-color: rgba(74, 222, 128, 0.2);
+    color: var(--success);
+}
+
+.todo-item.priority-high {
+    border-left: 3px solid var(--error);
+}
+
+.todo-item.priority-medium {
+    border-left: 3px solid #fbbf24;
+}
+
+.todo-item.priority-low {
+    border-left: 3px solid var(--success);
+}
+
+/* Tags */
+.todo-tags {
+    margin-left: 2rem;
+    margin-bottom: 0.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.tag {
+    display: inline-block;
+    padding: 0.25rem 0.5rem;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* Due dates */
+.due-date {
+    font-weight: 500;
+}
+
+.due-date.overdue {
+    color: var(--error);
+    font-weight: 600;
+}
+
+.todo-item.overdue {
+    border-left: 3px solid var(--error);
+}
+
+.todo-dates {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.todo-title-wrapper {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
 @keyframes slideIn {
     from {
         transform: translateX(400px);
@@ -331,6 +511,23 @@ header h1 {
         flex-direction: column;
         align-items: flex-start;
         gap: 0.5rem;
+    }
+
+    .toolbar {
+        flex-direction: column;
+    }
+    
+    .search-bar {
+        width: 100%;
+    }
+    
+    .toolbar-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+    
+    .form-row {
+        flex-direction: column;
     }
 }
 

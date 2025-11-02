@@ -21,6 +21,9 @@ const Todo = struct {
     title: []u8,
     description: []u8,
     completed: bool,
+    priority: []u8,
+    due_date: ?i64,
+    tags: []u8,
     created_at: i64,
     updated_at: i64,
 };
@@ -59,10 +62,43 @@ fn initDatabase() !void {
         \\  title TEXT NOT NULL,
         \\  description TEXT NOT NULL,
         \\  completed INTEGER NOT NULL DEFAULT 0,
+        \\  priority TEXT NOT NULL DEFAULT 'medium',
+        \\  due_date INTEGER,
+        \\  tags TEXT NOT NULL DEFAULT '',
         \\  created_at INTEGER NOT NULL,
         \\  updated_at INTEGER NOT NULL
         \\)
     );
+
+    // Migrate existing tables to add new columns if they don't exist
+    // Check if priority column exists
+    var result = global_db.?.query("PRAGMA table_info(Todo)") catch null;
+    if (result) |*table_info| {
+        defer table_info.deinit();
+        var has_priority = false;
+        var has_due_date = false;
+        var has_tags = false;
+
+        while (table_info.nextRow()) |row| {
+            // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
+            // Column name is at index 1
+            if (row.getText(1)) |col_name| {
+                if (std.mem.eql(u8, col_name, "priority")) has_priority = true;
+                if (std.mem.eql(u8, col_name, "due_date")) has_due_date = true;
+                if (std.mem.eql(u8, col_name, "tags")) has_tags = true;
+            }
+        }
+
+        if (!has_priority) {
+            global_db.?.execute("ALTER TABLE Todo ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'") catch {};
+        }
+        if (!has_due_date) {
+            global_db.?.execute("ALTER TABLE Todo ADD COLUMN due_date INTEGER") catch {};
+        }
+        if (!has_tags) {
+            global_db.?.execute("ALTER TABLE Todo ADD COLUMN tags TEXT NOT NULL DEFAULT ''") catch {};
+        }
+    }
 
     // Initialize ORM
     global_orm = ORM.init(global_db.?, allocator);
@@ -73,20 +109,28 @@ const TodoStats = struct {
     completed: u32,
     pending: u32,
     completed_percentage: f32,
+    overdue: u32,
 };
 
-fn createTodo(orm: *ORM, title: []const u8, description: []const u8) !Todo {
+fn createTodo(orm: *ORM, title: []const u8, description: []const u8, priority: []const u8, due_date: ?i64, tags: []const u8) !Todo {
     const now = std.time.milliTimestamp();
     const title_copy = try allocator.dupe(u8, title);
     errdefer allocator.free(title_copy);
     const desc_copy = try allocator.dupe(u8, description);
     errdefer allocator.free(desc_copy);
+    const priority_copy = try allocator.dupe(u8, priority);
+    errdefer allocator.free(priority_copy);
+    const tags_copy = try allocator.dupe(u8, tags);
+    errdefer allocator.free(tags_copy);
 
     const todo = Todo{
         .id = 0,
         .title = title_copy,
         .description = desc_copy,
         .completed = false,
+        .priority = priority_copy,
+        .due_date = due_date,
+        .tags = tags_copy,
         .created_at = now,
         .updated_at = now,
     };
@@ -101,6 +145,8 @@ fn createTodo(orm: *ORM, title: []const u8, description: []const u8) !Todo {
             for (all_todos.items) |t| {
                 allocator.free(t.title);
                 allocator.free(t.description);
+                allocator.free(t.priority);
+                allocator.free(t.tags);
             }
             all_todos.deinit(allocator);
         }
@@ -125,6 +171,9 @@ fn createTodo(orm: *ORM, title: []const u8, description: []const u8) !Todo {
                 .title = try allocator.dupe(u8, t.title),
                 .description = try allocator.dupe(u8, t.description),
                 .completed = t.completed,
+                .priority = try allocator.dupe(u8, t.priority),
+                .due_date = t.due_date,
+                .tags = try allocator.dupe(u8, t.tags),
                 .created_at = t.created_at,
                 .updated_at = t.updated_at,
             };
@@ -139,12 +188,17 @@ fn createTodo(orm: *ORM, title: []const u8, description: []const u8) !Todo {
         defer {
             allocator.free(t.title);
             allocator.free(t.description);
+            allocator.free(t.priority);
+            allocator.free(t.tags);
         }
         return Todo{
             .id = t.id,
             .title = try allocator.dupe(u8, t.title),
             .description = try allocator.dupe(u8, t.description),
             .completed = t.completed,
+            .priority = try allocator.dupe(u8, t.priority),
+            .due_date = t.due_date,
+            .tags = try allocator.dupe(u8, t.tags),
             .created_at = t.created_at,
             .updated_at = t.updated_at,
         };
@@ -166,6 +220,9 @@ fn updateTodo(orm: *ORM, id: i64, updates: struct {
     title: ?[]const u8 = null,
     description: ?[]const u8 = null,
     completed: ?bool = null,
+    priority: ?[]const u8 = null,
+    due_date: ?i64 = null,
+    tags: ?[]const u8 = null,
 }) !?Todo {
     const existing = try orm.find(Todo, id);
     if (existing == null) return null;
@@ -174,6 +231,8 @@ fn updateTodo(orm: *ORM, id: i64, updates: struct {
     defer {
         allocator.free(todo.title);
         allocator.free(todo.description);
+        allocator.free(todo.priority);
+        allocator.free(todo.tags);
     }
 
     // Update fields
@@ -191,6 +250,20 @@ fn updateTodo(orm: *ORM, id: i64, updates: struct {
         todo.completed = completed;
     }
 
+    if (updates.priority) |priority| {
+        allocator.free(todo.priority);
+        todo.priority = try allocator.dupe(u8, priority);
+    }
+
+    if (updates.due_date) |due_date| {
+        todo.due_date = due_date;
+    }
+
+    if (updates.tags) |tags| {
+        allocator.free(todo.tags);
+        todo.tags = try allocator.dupe(u8, tags);
+    }
+
     todo.updated_at = std.time.milliTimestamp();
 
     // Update in database
@@ -202,6 +275,9 @@ fn updateTodo(orm: *ORM, id: i64, updates: struct {
         .title = try allocator.dupe(u8, todo.title),
         .description = try allocator.dupe(u8, todo.description),
         .completed = todo.completed,
+        .priority = try allocator.dupe(u8, todo.priority),
+        .due_date = todo.due_date,
+        .tags = try allocator.dupe(u8, todo.tags),
         .created_at = todo.created_at,
         .updated_at = todo.updated_at,
     };
@@ -214,6 +290,8 @@ fn deleteTodo(orm: *ORM, id: i64) !bool {
     defer {
         allocator.free(existing.?.title);
         allocator.free(existing.?.description);
+        allocator.free(existing.?.priority);
+        allocator.free(existing.?.tags);
     }
 
     try orm.delete(Todo, id);
@@ -226,17 +304,25 @@ fn getStats(orm: *ORM) !TodoStats {
         for (all_todos.items) |t| {
             allocator.free(t.title);
             allocator.free(t.description);
+            allocator.free(t.priority);
+            allocator.free(t.tags);
         }
         all_todos.deinit(allocator);
     }
 
     var total: u32 = 0;
     var completed: u32 = 0;
+    var overdue: u32 = 0;
+    const now = std.time.milliTimestamp();
 
     for (all_todos.items) |todo| {
         total += 1;
         if (todo.completed) {
             completed += 1;
+        } else if (todo.due_date) |due_date| {
+            if (due_date < now) {
+                overdue += 1;
+            }
         }
     }
 
@@ -251,6 +337,7 @@ fn getStats(orm: *ORM) !TodoStats {
         .completed = completed,
         .pending = pending,
         .completed_percentage = completed_percentage,
+        .overdue = overdue,
     };
 }
 
@@ -262,9 +349,12 @@ fn formatTodoJson(todo: Todo, alloc: std.mem.Allocator) ![]const u8 {
     var list = std.ArrayListUnmanaged(u8){};
     defer list.deinit(alloc);
 
+    const due_date_str = if (todo.due_date) |dd| try std.fmt.allocPrint(alloc, "{}", .{dd}) else try alloc.dupe(u8, "null");
+    defer alloc.free(due_date_str);
+
     try list.writer(alloc).print(
-        \\{{"id":{},"title":"{s}","description":"{s}","completed":{},"created_at":{},"updated_at":{}}}
-    , .{ todo.id, todo.title, todo.description, todo.completed, todo.created_at, todo.updated_at });
+        \\{{"id":{},"title":"{s}","description":"{s}","completed":{},"priority":"{s}","due_date":{s},"tags":"{s}","created_at":{},"updated_at":{}}}
+    , .{ todo.id, todo.title, todo.description, todo.completed, todo.priority, due_date_str, todo.tags, todo.created_at, todo.updated_at });
 
     return list.toOwnedSlice(alloc);
 }
@@ -293,8 +383,8 @@ fn formatStatsJson(stats: TodoStats, alloc: std.mem.Allocator) ![]const u8 {
     defer list.deinit(alloc);
 
     try list.writer(alloc).print(
-        \\{{"total":{},"completed":{},"pending":{},"completed_percentage":{d:.2}}}
-    , .{ stats.total, stats.completed, stats.pending, stats.completed_percentage });
+        \\{{"total":{},"completed":{},"pending":{},"completed_percentage":{d:.2},"overdue":{}}}
+    , .{ stats.total, stats.completed, stats.pending, stats.completed_percentage, stats.overdue });
 
     return list.toOwnedSlice(alloc);
 }
@@ -303,10 +393,16 @@ fn parseTodoFromJson(json_str: []const u8, alloc: std.mem.Allocator) !struct {
     title: []const u8,
     description: []const u8,
     completed: ?bool,
+    priority: ?[]const u8,
+    due_date: ?i64,
+    tags: ?[]const u8,
 } {
     var title: ?[]const u8 = null;
     var description: ?[]const u8 = null;
     var completed: ?bool = null;
+    var priority: ?[]const u8 = null;
+    var due_date: ?i64 = null;
+    var tags: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < json_str.len) {
@@ -339,6 +435,46 @@ fn parseTodoFromJson(json_str: []const u8, alloc: std.mem.Allocator) !struct {
             } else {
                 break;
             }
+        } else if (std.mem.indexOf(u8, json_str[i..], "\"priority\"") != null) {
+            const priority_start = std.mem.indexOf(u8, json_str[i..], "\"priority\"") orelse break;
+            const colon = std.mem.indexOf(u8, json_str[i + priority_start ..], ":") orelse break;
+            const quote_start = std.mem.indexOf(u8, json_str[i + priority_start + colon ..], "\"") orelse break;
+            const val_start = i + priority_start + colon + quote_start + 1;
+            const quote_end = std.mem.indexOf(u8, json_str[val_start..], "\"") orelse break;
+            priority = try alloc.dupe(u8, json_str[val_start .. val_start + quote_end]);
+            i = val_start + quote_end;
+        } else if (std.mem.indexOf(u8, json_str[i..], "\"due_date\"") != null) {
+            const due_start = std.mem.indexOf(u8, json_str[i..], "\"due_date\"") orelse break;
+            const colon = std.mem.indexOf(u8, json_str[i + due_start ..], ":") orelse break;
+            const val_start = i + due_start + colon + 1;
+            // Skip whitespace
+            var j = val_start;
+            while (j < json_str.len and (json_str[j] == ' ' or json_str[j] == '\t')) j += 1;
+            if (std.mem.startsWith(u8, json_str[j..], "null")) {
+                due_date = null;
+                i = j + 4;
+            } else {
+                // Parse number
+                var num_end = j;
+                while (num_end < json_str.len and json_str[num_end] >= '0' and json_str[num_end] <= '9') {
+                    num_end += 1;
+                }
+                if (num_end > j) {
+                    const num_str = json_str[j..num_end];
+                    due_date = try std.fmt.parseInt(i64, num_str, 10);
+                    i = num_end;
+                } else {
+                    break;
+                }
+            }
+        } else if (std.mem.indexOf(u8, json_str[i..], "\"tags\"") != null) {
+            const tags_start = std.mem.indexOf(u8, json_str[i..], "\"tags\"") orelse break;
+            const colon = std.mem.indexOf(u8, json_str[i + tags_start ..], ":") orelse break;
+            const quote_start = std.mem.indexOf(u8, json_str[i + tags_start + colon ..], "\"") orelse break;
+            const val_start = i + tags_start + colon + quote_start + 1;
+            const quote_end = std.mem.indexOf(u8, json_str[val_start..], "\"") orelse break;
+            tags = try alloc.dupe(u8, json_str[val_start .. val_start + quote_end]);
+            i = val_start + quote_end;
         } else {
             i += 1;
         }
@@ -348,6 +484,9 @@ fn parseTodoFromJson(json_str: []const u8, alloc: std.mem.Allocator) !struct {
         .title = title orelse "",
         .description = description orelse "",
         .completed = completed,
+        .priority = priority,
+        .due_date = due_date,
+        .tags = tags,
     };
 }
 
@@ -414,6 +553,8 @@ fn handleGetTodos(request: *Request) Response {
         for (todos.items) |todo| {
             allocator.free(todo.title);
             allocator.free(todo.description);
+            allocator.free(todo.priority);
+            allocator.free(todo.tags);
         }
         todos.deinit(allocator);
     }
@@ -447,6 +588,8 @@ fn handleGetTodo(request: *Request) Response {
     defer {
         allocator.free(found.title);
         allocator.free(found.description);
+        allocator.free(found.priority);
+        allocator.free(found.tags);
     }
 
     const json = formatTodoJson(found, allocator) catch {
@@ -466,6 +609,8 @@ fn handleCreateTodo(request: *Request) Response {
     defer {
         if (parsed.title.len > 0) allocator.free(parsed.title);
         if (parsed.description.len > 0) allocator.free(parsed.description);
+        if (parsed.priority) |p| allocator.free(p);
+        if (parsed.tags) |t| allocator.free(t);
     }
 
     // Use validation framework
@@ -512,6 +657,44 @@ fn handleCreateTodo(request: *Request) Response {
         };
     }
 
+    // Validate priority if provided
+    if (parsed.priority) |priority| {
+        const priority_validator = schema.field("priority", priority) catch {
+            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        };
+        const validPriority = struct {
+            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
+                _ = alloc;
+                if (!std.mem.eql(u8, value, "low") and !std.mem.eql(u8, value, "medium") and !std.mem.eql(u8, value, "high")) {
+                    return "Priority must be 'low', 'medium', or 'high'";
+                }
+                return null;
+            }
+        };
+        priority_validator.rule(validPriority.validate) catch {
+            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        };
+    }
+
+    // Validate tags if provided (max 500 chars)
+    if (parsed.tags) |tags| {
+        const tags_validator = schema.field("tags", tags) catch {
+            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        };
+        const tagsMaxLength = struct {
+            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
+                _ = alloc;
+                if (value.len > 500) {
+                    return "Tags must be 500 characters or less";
+                }
+                return null;
+            }
+        };
+        tags_validator.rule(tagsMaxLength.validate) catch {
+            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        };
+    }
+
     // Run validation
     var validation_errors = schema.validate() catch {
         return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
@@ -530,12 +713,16 @@ fn handleCreateTodo(request: *Request) Response {
         return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
     };
 
-    const todo = createTodo(orm, parsed.title, parsed.description) catch {
+    const priority_value = parsed.priority orelse "medium";
+    const tags_value = parsed.tags orelse "";
+    const todo = createTodo(orm, parsed.title, parsed.description, priority_value, parsed.due_date, tags_value) catch {
         return Response.json("{\"error\":\"Failed to create todo\"}").withStatus(500);
     };
     defer {
         allocator.free(todo.title);
         allocator.free(todo.description);
+        allocator.free(todo.priority);
+        allocator.free(todo.tags);
     }
 
     const json = formatTodoJson(todo, allocator) catch {
@@ -557,6 +744,8 @@ fn handleUpdateTodo(request: *Request) Response {
     defer {
         if (parsed.title.len > 0) allocator.free(parsed.title);
         if (parsed.description.len > 0) allocator.free(parsed.description);
+        if (parsed.priority) |p| allocator.free(p);
+        if (parsed.tags) |t| allocator.free(t);
     }
 
     // Use validation framework
@@ -601,6 +790,44 @@ fn handleUpdateTodo(request: *Request) Response {
         };
     }
 
+    // Validate priority if provided
+    if (parsed.priority) |priority| {
+        const priority_validator = schema.field("priority", priority) catch {
+            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        };
+        const validPriority = struct {
+            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
+                _ = alloc;
+                if (!std.mem.eql(u8, value, "low") and !std.mem.eql(u8, value, "medium") and !std.mem.eql(u8, value, "high")) {
+                    return "Priority must be 'low', 'medium', or 'high'";
+                }
+                return null;
+            }
+        };
+        priority_validator.rule(validPriority.validate) catch {
+            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        };
+    }
+
+    // Validate tags if provided (max 500 chars)
+    if (parsed.tags) |tags| {
+        const tags_validator = schema.field("tags", tags) catch {
+            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        };
+        const tagsMaxLength = struct {
+            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
+                _ = alloc;
+                if (value.len > 500) {
+                    return "Tags must be 500 characters or less";
+                }
+                return null;
+            }
+        };
+        tags_validator.rule(tagsMaxLength.validate) catch {
+            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        };
+    }
+
     // Run validation
     var validation_errors = schema.validate() catch {
         return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
@@ -623,6 +850,9 @@ fn handleUpdateTodo(request: *Request) Response {
         .title = if (parsed.title.len > 0) parsed.title else null,
         .description = if (parsed.description.len > 0) parsed.description else null,
         .completed = parsed.completed,
+        .priority = parsed.priority,
+        .due_date = parsed.due_date,
+        .tags = parsed.tags,
     }) catch {
         return Response.json("{\"error\":\"Failed to update todo\"}").withStatus(500);
     };
@@ -633,6 +863,8 @@ fn handleUpdateTodo(request: *Request) Response {
     defer {
         allocator.free(todo.title);
         allocator.free(todo.description);
+        allocator.free(todo.priority);
+        allocator.free(todo.tags);
     }
 
     const json = formatTodoJson(todo, allocator) catch {
@@ -660,6 +892,80 @@ fn handleDeleteTodo(request: *Request) Response {
     } else {
         return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
     }
+}
+
+fn handleSearchTodos(request: *Request) Response {
+    const query_param = request.query("q") catch {
+        return Response.json("{\"error\":\"Missing query parameter\"}").withStatus(400);
+    };
+
+    const search_query = query_param orelse {
+        return Response.json("{\"error\":\"Missing query parameter\"}").withStatus(400);
+    };
+
+    const orm = getORM() catch {
+        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+    };
+
+    // Escape single quotes for SQL safety (SQLite escapes by doubling)
+    var escaped_query = std.ArrayListUnmanaged(u8){};
+    defer escaped_query.deinit(request.arena.allocator());
+    for (search_query) |char| {
+        if (char == '\'') {
+            escaped_query.append(request.arena.allocator(), '\'') catch {
+                return Response.json("{\"error\":\"Failed to escape query\"}").withStatus(500);
+            };
+            escaped_query.append(request.arena.allocator(), '\'') catch {
+                return Response.json("{\"error\":\"Failed to escape query\"}").withStatus(500);
+            };
+        } else {
+            escaped_query.append(request.arena.allocator(), char) catch {
+                return Response.json("{\"error\":\"Failed to escape query\"}").withStatus(500);
+            };
+        }
+    }
+    const safe_query = escaped_query.items;
+
+    // Build search query - search in title, description, and tags
+    const search_pattern = std.fmt.allocPrint(request.arena.allocator(), "%{s}%", .{safe_query}) catch {
+        return Response.json("{\"error\":\"Failed to format search query\"}").withStatus(500);
+    };
+    const sql = std.fmt.allocPrint(request.arena.allocator(),
+        \\SELECT * FROM Todo WHERE 
+        \\  title LIKE '{s}' OR 
+        \\  description LIKE '{s}' OR 
+        \\  tags LIKE '{s}'
+        \\ORDER BY created_at DESC
+    , .{ search_pattern, search_pattern, search_pattern }) catch {
+        return Response.json("{\"error\":\"Failed to build search query\"}").withStatus(500);
+    };
+
+    var result = orm.db.query(sql) catch {
+        return Response.json("{\"error\":\"Failed to search todos\"}").withStatus(500);
+    };
+    defer result.deinit();
+
+    var todos = result.toArrayList(Todo) catch {
+        return Response.json("{\"error\":\"Failed to parse search results\"}").withStatus(500);
+    };
+    defer {
+        for (todos.items) |todo| {
+            allocator.free(todo.title);
+            allocator.free(todo.description);
+            allocator.free(todo.priority);
+            allocator.free(todo.tags);
+        }
+        todos.deinit(allocator);
+    }
+
+    const json = formatTodoListJson(todos, allocator) catch {
+        return Response.json("{\"error\":\"Failed to format todos\"}").withStatus(500);
+    };
+    defer allocator.free(json);
+    return Response.json(json)
+        .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+        .withHeader("Pragma", "no-cache")
+        .withHeader("Expires", "0");
 }
 
 fn handleGetStats(request: *Request) Response {
@@ -716,6 +1022,8 @@ fn cleanupOldCompletedTodos() void {
         for (all_todos.items) |todo| {
             allocator.free(todo.title);
             allocator.free(todo.description);
+            allocator.free(todo.priority);
+            allocator.free(todo.tags);
         }
         all_todos.deinit(allocator);
     }
@@ -729,6 +1037,39 @@ fn cleanupOldCompletedTodos() void {
 
     if (cleaned > 0) {
         std.debug.print("[Task] Cleaned up {d} old completed todos\n", .{cleaned});
+    }
+}
+
+fn checkOverdueTodos() void {
+    const orm = getORM() catch return;
+    const now = std.time.milliTimestamp();
+
+    var overdue_count: u32 = 0;
+
+    var all_todos = getAllTodos(orm) catch return;
+    defer {
+        for (all_todos.items) |todo| {
+            allocator.free(todo.title);
+            allocator.free(todo.description);
+            allocator.free(todo.priority);
+            allocator.free(todo.tags);
+        }
+        all_todos.deinit(allocator);
+    }
+
+    for (all_todos.items) |todo| {
+        if (!todo.completed) {
+            if (todo.due_date) |due_date| {
+                if (due_date < now) {
+                    overdue_count += 1;
+                    std.debug.print("[Task] Overdue todo: {s} (due: {d}, now: {d})\n", .{ todo.title, due_date, now });
+                }
+            }
+        }
+    }
+
+    if (overdue_count > 0) {
+        std.debug.print("[Task] Found {d} overdue todos\n", .{overdue_count});
     }
 }
 
@@ -806,6 +1147,7 @@ pub fn createApp() !E12.Engine12 {
 
     // API routes
     try app.get("/api/todos", handleGetTodos);
+    try app.get("/api/todos/search", handleSearchTodos);
     try app.get("/api/todos/stats", handleGetStats);
     try app.get("/api/todos/:id", handleGetTodo);
     try app.post("/api/todos", handleCreateTodo);
@@ -814,6 +1156,7 @@ pub fn createApp() !E12.Engine12 {
 
     // Background tasks
     try app.schedulePeriodicTask("cleanup_old_todos", &cleanupOldCompletedTodos, 3600000);
+    try app.schedulePeriodicTask("check_overdue_todos", &checkOverdueTodos, 3600000); // Every hour
     try app.schedulePeriodicTask("generate_stats", &generateStatistics, 300000);
     try app.schedulePeriodicTask("validate_store_health", &validateStoreHealth, 600000);
 

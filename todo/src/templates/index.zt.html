@@ -13,6 +13,26 @@
             <p class="subtitle">{{ .subtitle }}</p>
         </header>
 
+        <div class="toolbar">
+            <div class="search-bar">
+                <input type="text" id="search-input" placeholder="Search todos..." />
+                <button id="clear-search" class="btn-icon" style="display: none;">✕</button>
+            </div>
+            <div class="toolbar-actions">
+                <select id="sort-select" class="select-input">
+                    <option value="created_desc">Newest First</option>
+                    <option value="created_asc">Oldest First</option>
+                    <option value="title_asc">Title (A-Z)</option>
+                    <option value="title_desc">Title (Z-A)</option>
+                    <option value="priority_desc">Priority (High-Low)</option>
+                    <option value="priority_asc">Priority (Low-High)</option>
+                    <option value="due_asc">Due Date (Earliest)</option>
+                    <option value="due_desc">Due Date (Latest)</option>
+                </select>
+                <button id="export-btn" class="btn-secondary">Export</button>
+            </div>
+        </div>
+
         <div class="stats-bar">
             <div class="stat">
                 <span class="stat-label">Total</span>
@@ -30,11 +50,26 @@
                 <span class="stat-label">Progress</span>
                 <span class="stat-value" id="stat-progress">0%</span>
             </div>
+            <div class="stat">
+                <span class="stat-label">Overdue</span>
+                <span class="stat-value" id="stat-overdue">0</span>
+            </div>
         </div>
 
         <div class="todo-form">
-            <input type="text" id="todo-title" placeholder="{{ .title_placeholder }}" maxlength="200">
+            <div class="form-row">
+                <input type="text" id="todo-title" placeholder="{{ .title_placeholder }}" maxlength="200">
+                <select id="todo-priority" class="priority-select">
+                    <option value="low">Low Priority</option>
+                    <option value="medium" selected>Medium Priority</option>
+                    <option value="high">High Priority</option>
+                </select>
+            </div>
             <textarea id="todo-description" placeholder="{{ .description_placeholder }}" maxlength="1000"></textarea>
+            <div class="form-row">
+                <input type="date" id="todo-due-date" class="date-input">
+                <input type="text" id="todo-tags" placeholder="Tags (comma separated)" class="tags-input">
+            </div>
             <button id="add-todo-btn" class="btn btn-primary">{{ .add_button_text }}</button>
         </div>
 
@@ -42,6 +77,8 @@
             <button class="filter-btn active" data-filter="all">{{ .filter_all }}</button>
             <button class="filter-btn" data-filter="pending">{{ .filter_pending }}</button>
             <button class="filter-btn" data-filter="completed">{{ .filter_completed }}</button>
+            <button class="filter-btn" data-filter="overdue">Overdue</button>
+            <button class="filter-btn" data-filter="high-priority">High Priority</button>
         </div>
 
         <div class="todo-list" id="todo-list">
@@ -56,4 +93,3 @@
     <script src="/js/app.js"></script>
 </body>
 </html>
-

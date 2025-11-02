@@ -86,22 +86,63 @@ pub const ORM = struct {
         var list = try result.toArrayList(T);
         defer {
             for (list.items) |item| {
-                self.allocator.free(item.title);
-                self.allocator.free(item.description);
+                inline for (std.meta.fields(T)) |field| {
+                    const field_type = @TypeOf(@field(item, field.name));
+                    if (@typeInfo(field_type) == .pointer) {
+                        const ptr_info = @typeInfo(field_type).pointer;
+                        if (ptr_info.size == .slice and ptr_info.child == u8) {
+                            self.allocator.free(@field(item, field.name));
+                        }
+                    } else if (@typeInfo(field_type) == .optional) {
+                        const opt_info = @typeInfo(field_type).optional;
+                        if (@typeInfo(opt_info.child) == .pointer) {
+                            const ptr_info = @typeInfo(opt_info.child).pointer;
+                            if (ptr_info.size == .slice and ptr_info.child == u8) {
+                                if (@field(item, field.name)) |val| {
+                                    self.allocator.free(val);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             list.deinit(self.allocator);
         }
 
         if (list.items.len > 0) {
             const item = list.items[0];
-            return T{
-                .id = item.id,
-                .title = try self.allocator.dupe(u8, item.title),
-                .description = try self.allocator.dupe(u8, item.description),
-                .completed = item.completed,
-                .created_at = item.created_at,
-                .updated_at = item.updated_at,
-            };
+            // Copy all fields dynamically, duplicating string slices
+            var return_value: T = undefined;
+            inline for (std.meta.fields(T)) |field| {
+                const field_type = @TypeOf(@field(item, field.name));
+                if (@typeInfo(field_type) == .pointer) {
+                    const ptr_info = @typeInfo(field_type).pointer;
+                    if (ptr_info.size == .slice and ptr_info.child == u8) {
+                        @field(return_value, field.name) = try self.allocator.dupe(u8, @field(item, field.name));
+                    } else {
+                        @field(return_value, field.name) = @field(item, field.name);
+                    }
+                } else if (@typeInfo(field_type) == .optional) {
+                    const opt_info = @typeInfo(field_type).optional;
+                    if (@typeInfo(opt_info.child) == .pointer) {
+                        const ptr_info = @typeInfo(opt_info.child).pointer;
+                        if (ptr_info.size == .slice and ptr_info.child == u8) {
+                            if (@field(item, field.name)) |val| {
+                                @field(return_value, field.name) = try self.allocator.dupe(u8, val);
+                            } else {
+                                @field(return_value, field.name) = null;
+                            }
+                        } else {
+                            @field(return_value, field.name) = @field(item, field.name);
+                        }
+                    } else {
+                        @field(return_value, field.name) = @field(item, field.name);
+                    }
+                } else {
+                    @field(return_value, field.name) = @field(item, field.name);
+                }
+            }
+            return return_value;
         }
 
         return null;

@@ -2,6 +2,8 @@ const API_BASE = '/api/todos';
 
 let todos = [];
 let currentFilter = 'all';
+let currentSort = 'created_desc';
+let searchQuery = '';
 
 // API Functions
 async function fetchTodos() {
@@ -11,7 +13,6 @@ async function fetchTodos() {
         });
         if (!response.ok) throw new Error('Failed to fetch todos');
         const data = await response.json();
-        // API returns array directly, not wrapped in object
         todos = Array.isArray(data) ? data : [];
         renderTodos();
         updateStats();
@@ -20,23 +21,27 @@ async function fetchTodos() {
     }
 }
 
-async function createTodo(title, description) {
+async function createTodo(title, description, priority = 'medium', dueDate = null, tags = []) {
     try {
         const response = await fetch(API_BASE, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ title, description }),
+            body: JSON.stringify({ 
+                title, 
+                description,
+                priority,
+                due_date: dueDate ? new Date(dueDate).getTime() : null,
+                tags: Array.isArray(tags) ? tags.join(',') : tags
+            }),
             cache: 'no-store',
         });
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || 'Failed to create todo');
         }
-        // Consume the successful response
         await response.json();
-        // After successful create, fetch fresh data from SQLite only
         await fetchTodos();
         await fetchStats();
         return null;
@@ -60,9 +65,7 @@ async function updateTodo(id, updates) {
             const error = await response.json();
             throw new Error(error.error || 'Failed to update todo');
         }
-        // Consume the successful response
         await response.json();
-        // After successful update, fetch fresh data from SQLite only
         await fetchTodos();
         await fetchStats();
         return null;
@@ -84,10 +87,7 @@ async function deleteTodo(id) {
             throw new Error(error.error || 'Failed to delete todo');
         }
         
-        // Consume the successful response
         await response.json();
-        
-        // After successful delete, fetch fresh data from SQLite only
         await fetchTodos();
         await fetchStats();
     } catch (error) {
@@ -102,7 +102,6 @@ async function fetchStats() {
         });
         if (!response.ok) throw new Error('Failed to fetch stats');
         const data = await response.json();
-        // API returns stats directly or wrapped in stats property
         const stats = data.stats || data;
         updateStatsFromData(stats);
     } catch (error) {
@@ -113,45 +112,120 @@ async function fetchStats() {
 // DOM Functions
 function renderTodos() {
     const todoList = document.getElementById('todo-list');
-    const filteredTodos = getFilteredTodos();
+    let filteredTodos = getFilteredTodos();
+    filteredTodos = applySearch(filteredTodos);
+    filteredTodos = applySort(filteredTodos);
 
     if (filteredTodos.length === 0) {
         todoList.innerHTML = '<div class="empty-state"><p>No tasks match your filter.</p></div>';
         return;
     }
 
-    todoList.innerHTML = filteredTodos.map(todo => `
-        <div class="todo-item ${todo.completed ? 'completed' : ''}" data-id="${todo.id}">
-            <div class="todo-header">
-                <input 
-                    type="checkbox" 
-                    class="todo-checkbox" 
-                    ${todo.completed ? 'checked' : ''}
-                    onchange="toggleTodo(${todo.id})"
-                >
-                <div class="todo-title">${escapeHtml(todo.title)}</div>
-            </div>
-            ${todo.description ? `<div class="todo-description">${escapeHtml(todo.description)}</div>` : ''}
-            <div class="todo-meta">
-                <span>Created: ${formatDate(todo.created_at)}</span>
-                <div class="todo-actions">
-                    <button onclick="editTodo(${todo.id})">Edit</button>
-                    <button class="btn-delete" onclick="deleteTodo(${todo.id})">Delete</button>
+    todoList.innerHTML = filteredTodos.map(todo => {
+        const isOverdue = todo.due_date && new Date(parseInt(todo.due_date)) < new Date() && !todo.completed;
+        const priorityClass = `priority-${todo.priority || 'medium'}`;
+        const tags = todo.tags ? todo.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
+        
+        return `
+            <div class="todo-item ${todo.completed ? 'completed' : ''} ${priorityClass} ${isOverdue ? 'overdue' : ''}" data-id="${todo.id}">
+                <div class="todo-header">
+                    <input 
+                        type="checkbox" 
+                        class="todo-checkbox" 
+                        ${todo.completed ? 'checked' : ''}
+                        onchange="toggleTodo(${todo.id})"
+                    >
+                    <div class="todo-title-wrapper">
+                        <div class="todo-title">${escapeHtml(todo.title)}</div>
+                        ${todo.priority && todo.priority !== 'medium' ? `
+                            <span class="priority-badge priority-${todo.priority}">${todo.priority}</span>
+                        ` : ''}
+                    </div>
+                </div>
+                ${todo.description ? `<div class="todo-description">${escapeHtml(todo.description)}</div>` : ''}
+                ${tags.length > 0 ? `
+                    <div class="todo-tags">
+                        ${tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+                    </div>
+                ` : ''}
+                <div class="todo-meta">
+                    <div class="todo-dates">
+                        ${todo.due_date ? `
+                            <span class="due-date ${isOverdue ? 'overdue' : ''}">
+                                Due: ${formatDate(parseInt(todo.due_date))}
+                            </span>
+                        ` : ''}
+                        <span>Created: ${formatDate(todo.created_at)}</span>
+                    </div>
+                    <div class="todo-actions">
+                        <button onclick="editTodo(${todo.id})">Edit</button>
+                        <button class="btn-delete" onclick="confirmDelete(${todo.id})">Delete</button>
+                    </div>
                 </div>
             </div>
-        </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function getFilteredTodos() {
+    let filtered = todos;
+    
     switch (currentFilter) {
         case 'completed':
-            return todos.filter(t => t.completed);
+            return filtered.filter(t => t.completed);
         case 'pending':
-            return todos.filter(t => !t.completed);
+            return filtered.filter(t => !t.completed);
+        case 'overdue':
+            const now = new Date();
+            return filtered.filter(t => 
+                t.due_date && new Date(parseInt(t.due_date)) < now && !t.completed
+            );
+        case 'high-priority':
+            return filtered.filter(t => t.priority === 'high' && !t.completed);
         default:
-            return todos;
+            return filtered;
     }
+}
+
+function applySearch(todos) {
+    if (!searchQuery.trim()) return todos;
+    const query = searchQuery.toLowerCase();
+    return todos.filter(todo => 
+        todo.title.toLowerCase().includes(query) ||
+        (todo.description && todo.description.toLowerCase().includes(query)) ||
+        (todo.tags && todo.tags.toLowerCase().includes(query))
+    );
+}
+
+function applySort(todos) {
+    return [...todos].sort((a, b) => {
+        switch (currentSort) {
+            case 'created_desc':
+                return (b.created_at || 0) - (a.created_at || 0);
+            case 'created_asc':
+                return (a.created_at || 0) - (b.created_at || 0);
+            case 'title_asc':
+                return (a.title || '').localeCompare(b.title || '');
+            case 'title_desc':
+                return (b.title || '').localeCompare(a.title || '');
+            case 'priority_desc':
+                const priorityOrder = { high: 3, medium: 2, low: 1 };
+                return (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
+            case 'priority_asc':
+                const priorityOrderAsc = { high: 3, medium: 2, low: 1 };
+                return (priorityOrderAsc[a.priority] || 0) - (priorityOrderAsc[b.priority] || 0);
+            case 'due_asc':
+                const dueA = a.due_date ? parseInt(a.due_date) : 0;
+                const dueB = b.due_date ? parseInt(b.due_date) : 0;
+                return dueA - dueB;
+            case 'due_desc':
+                const dueA2 = a.due_date ? parseInt(a.due_date) : 0;
+                const dueB2 = b.due_date ? parseInt(b.due_date) : 0;
+                return dueB2 - dueA2;
+            default:
+                return 0;
+        }
+    });
 }
 
 function updateStats() {
@@ -159,11 +233,16 @@ function updateStats() {
     const completed = todos.filter(t => t.completed).length;
     const pending = total - completed;
     const progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+    const now = new Date();
+    const overdue = todos.filter(t => 
+        t.due_date && new Date(parseInt(t.due_date)) < now && !t.completed
+    ).length;
 
     document.getElementById('stat-total').textContent = total;
     document.getElementById('stat-pending').textContent = pending;
     document.getElementById('stat-completed').textContent = completed;
     document.getElementById('stat-progress').textContent = progress + '%';
+    document.getElementById('stat-overdue').textContent = overdue;
 }
 
 function updateStatsFromData(stats) {
@@ -171,12 +250,21 @@ function updateStatsFromData(stats) {
     document.getElementById('stat-pending').textContent = stats.pending || 0;
     document.getElementById('stat-completed').textContent = stats.completed || 0;
     document.getElementById('stat-progress').textContent = (stats.completed_percentage || 0).toFixed(0) + '%';
+    document.getElementById('stat-overdue').textContent = stats.overdue || 0;
 }
 
 function toggleTodo(id) {
     const todo = todos.find(t => t.id === id);
     if (todo) {
         updateTodo(id, { completed: !todo.completed });
+    }
+}
+
+function confirmDelete(id) {
+    const todo = todos.find(t => t.id === id);
+    if (!todo) return;
+    if (confirm(`Are you sure you want to delete "${todo.title}"?`)) {
+        deleteTodo(id);
     }
 }
 
@@ -190,13 +278,28 @@ function editTodo(id) {
     const newDescription = prompt('Enter new description:', todo.description || '');
     if (newDescription === null) return;
 
+    const newPriority = prompt('Enter priority (low/medium/high):', todo.priority || 'medium');
+    if (newPriority === null) return;
+
     const updates = {};
     if (newTitle !== todo.title) updates.title = newTitle;
     if (newDescription !== (todo.description || '')) updates.description = newDescription;
+    if (newPriority !== (todo.priority || 'medium')) updates.priority = newPriority;
 
     if (Object.keys(updates).length > 0) {
         updateTodo(id, updates);
     }
+}
+
+function exportTodos() {
+    const dataStr = JSON.stringify(todos, null, 2);
+    const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `todos-${new Date().toISOString().split('T')[0]}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
 }
 
 function showError(message) {
@@ -215,7 +318,8 @@ function escapeHtml(text) {
 }
 
 function formatDate(timestamp) {
-    const date = new Date(timestamp);
+    if (!timestamp) return '';
+    const date = new Date(parseInt(timestamp));
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
@@ -225,6 +329,9 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('add-todo-btn').addEventListener('click', async () => {
         const titleInput = document.getElementById('todo-title');
         const descInput = document.getElementById('todo-description');
+        const prioritySelect = document.getElementById('todo-priority');
+        const dueDateInput = document.getElementById('todo-due-date');
+        const tagsInput = document.getElementById('todo-tags');
         
         const title = titleInput.value.trim();
         if (!title) {
@@ -233,15 +340,45 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const description = descInput.value.trim();
+        const priority = prioritySelect.value;
+        const dueDate = dueDateInput.value || null;
+        const tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
         
         try {
-            await createTodo(title, description);
+            await createTodo(title, description, priority, dueDate, tags);
             titleInput.value = '';
             descInput.value = '';
+            dueDateInput.value = '';
+            tagsInput.value = '';
+            prioritySelect.value = 'medium';
         } catch (error) {
-            // Error already shown in createTodo
+            // Error already shown
         }
     });
+
+    // Search
+    const searchInput = document.getElementById('search-input');
+    const clearSearch = document.getElementById('clear-search');
+    searchInput.addEventListener('input', (e) => {
+        searchQuery = e.target.value;
+        clearSearch.style.display = searchQuery ? 'block' : 'none';
+        renderTodos();
+    });
+    clearSearch.addEventListener('click', () => {
+        searchInput.value = '';
+        searchQuery = '';
+        clearSearch.style.display = 'none';
+        renderTodos();
+    });
+
+    // Sort
+    document.getElementById('sort-select').addEventListener('change', (e) => {
+        currentSort = e.target.value;
+        renderTodos();
+    });
+
+    // Export
+    document.getElementById('export-btn').addEventListener('click', exportTodos);
 
     // Enter key support
     document.getElementById('todo-title').addEventListener('keypress', (e) => {
@@ -260,11 +397,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+        if (e.ctrlKey || e.metaKey) {
+            if (e.key === 'k') {
+                e.preventDefault();
+                searchInput.focus();
+            } else if (e.key === 'n') {
+                e.preventDefault();
+                document.getElementById('todo-title').focus();
+            }
+        }
+    });
+
     // Initial load
     fetchTodos();
     fetchStats();
 
     // Refresh stats periodically
-    setInterval(fetchStats, 30000); // Every 30 seconds
+    setInterval(fetchStats, 30000);
 });
-
