@@ -124,10 +124,22 @@ The `QueryResult` (`src/orm/row.zig`) handles:
 
 ### Error Messages
 
-The ORM provides improved error messages:
-- Field names and type information included in errors
-- Actionable suggestions for common mistakes
-- Clear indication of missing fields or type mismatches
+The ORM provides improved error messages with detailed context:
+
+- **Table name**: Shows which table caused the error
+- **SQL query**: Shows the exact SQL query that was executed
+- **Column count**: Shows expected vs actual column count
+- **Field information**: Shows struct field names and types
+- **Column information**: Shows database column names
+- **Error type**: Shows the specific error that occurred
+
+When `findAll()` or `where()` operations fail, error messages include:
+- Table name
+- SQL query that was executed
+- Expected vs actual column count
+- Field and column information for debugging
+
+This makes it much easier to diagnose schema mismatches and type errors.
 
 ## Template System
 
@@ -227,6 +239,21 @@ Response bodies use page allocator:
 - Responses persist after request completes
 - Memory is not freed (acceptable for small responses)
 - For large responses, consider streaming
+
+### ORM Initialization
+
+The ORM supports two initialization patterns:
+
+**Value-based initialization (`init()`):**
+- Returns a value type
+- Suitable for local usage within functions
+- Use `close()` for cleanup
+
+**Pointer-based initialization (`initPtr()`):**
+- Returns a heap-allocated pointer
+- Recommended for handler usage where pointers are needed
+- Use `deinitPtr()` for cleanup
+- Better for global ORM instances
 
 ### ORM Memory Management
 

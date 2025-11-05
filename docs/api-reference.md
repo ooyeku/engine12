@@ -577,11 +577,46 @@ Execute all response middleware, transforming the response.
 ### Initialization
 
 #### `init(db: Database, allocator: Allocator) ORM`
-Initialize ORM with a database connection.
+Initialize ORM with a database connection. Returns a value type.
 
 ```zig
 var db = try Database.open("app.db", allocator);
 var orm = ORM.init(db, allocator);
+```
+
+#### `initPtr(db: Database, allocator: Allocator) !*ORM`
+Initialize ORM and return a heap-allocated pointer. Recommended for handler usage where you need to pass pointers.
+
+```zig
+var db = try Database.open("app.db", allocator);
+var orm = try ORM.initPtr(db, allocator);
+defer orm.deinitPtr(allocator);
+```
+
+**When to use `initPtr()`:**
+- When you need to pass ORM instances to handlers
+- When using global ORM instances that need to be pointers
+- When you need explicit lifetime management
+
+**When to use `init()`:**
+- For local ORM usage within a function
+- When you don't need pointer semantics
+- For simpler, stack-allocated usage
+
+#### `deinitPtr(self: *ORM, allocator: Allocator) void`
+Deinitialize and free a heap-allocated ORM instance. Call this after `initPtr()` when you're done with the ORM.
+
+```zig
+var orm = try ORM.initPtr(db, allocator);
+defer orm.deinitPtr(allocator);
+```
+
+#### `close() void`
+Close the database connection. Use this with `init()`, use `deinitPtr()` with `initPtr()`.
+
+```zig
+var orm = ORM.init(db, allocator);
+defer orm.close();
 ```
 
 ### CRUD Operations
@@ -633,10 +668,25 @@ if (todo) |t| {
 ```
 
 #### `findAll(comptime T: type) !ArrayListUnmanaged(T)`
-Find all records.
+Find all records. Enhanced error handling provides detailed context when errors occur.
+
+**Error Handling:**
+- `error.ColumnMismatch`: When the number of database columns doesn't match the struct field count
+- `error.QueryFailed`: When the SQL query fails (e.g., table doesn't exist)
+- `error.InvalidData`: When data cannot be deserialized
+- `error.NullValueForNonOptional`: When a non-optional field receives a null value
+
+Error messages include:
+- Table name
+- SQL query that was executed
+- Expected vs actual column count
+- Field and column information
 
 ```zig
-var todos = try orm.findAll(Todo);
+var todos = orm.findAll(Todo) catch |err| {
+    std.debug.print("Failed to fetch todos: {}\n", .{err});
+    return Response.status(500).withJson("{\"error\":\"Failed to fetch todos\"}");
+};
 defer {
     for (todos.items) |todo| {
         allocator.free(todo.title);
@@ -645,11 +695,23 @@ defer {
 }
 ```
 
+**Validation:**
+The ORM automatically validates that:
+- Column count matches struct field count
+- Field types are compatible with column types
+- Null values are handled correctly for optional/non-optional fields
+
 #### `where(comptime T: type, condition: []const u8) !ArrayListUnmanaged(T)`
-Find records matching a condition.
+Find records matching a condition. Enhanced error handling provides detailed context when errors occur.
+
+**Error Handling:**
+Same as `findAll()` - includes detailed error messages with table name, SQL query, and column/field information.
 
 ```zig
-var completed = try orm.where(Todo, "completed = 1");
+var completed = orm.where(Todo, "completed = 1") catch |err| {
+    std.debug.print("Failed to query todos: {}\n", .{err});
+    return Response.status(500).withJson("{\"error\":\"Query failed\"}");
+};
 defer {
     for (completed.items) |todo| {
         allocator.free(todo.title);
@@ -657,6 +719,8 @@ defer {
     completed.deinit(allocator);
 }
 ```
+
+**Note**: The condition string is inserted directly into the SQL query. Be careful with user input to prevent SQL injection. Consider using parameterized queries or the Query Builder for dynamic conditions.
 
 #### `update(comptime T: type, instance: T) !void`
 Update a record. Optional fields that are `null` are skipped in UPDATE statements (not included in the SQL).

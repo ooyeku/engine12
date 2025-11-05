@@ -215,11 +215,11 @@ const Database = Engine12.orm.Database;
 const ORM = Engine12.orm.ORM;
 
 var global_db: ?Database = null;
-var global_orm: ?ORM = null;
+var global_orm: ?*ORM = null;
 
 pub fn init() !void {
     global_db = try Database.open("todos.db", std.heap.page_allocator);
-    global_orm = ORM.init(global_db.?, std.heap.page_allocator);
+    global_orm = try ORM.initPtr(global_db.?, std.heap.page_allocator);
 
     // Create table
     try global_db.?.execute(
@@ -233,10 +233,19 @@ pub fn init() !void {
 }
 
 pub fn getORM() !*ORM {
-    if (global_orm) |*orm| {
+    if (global_orm) |orm| {
         return orm;
     }
     return error.DatabaseNotInitialized;
+}
+
+pub fn deinit() void {
+    if (global_orm) |orm| {
+        orm.deinitPtr(std.heap.page_allocator);
+    }
+    if (global_db) |*db| {
+        db.close();
+    }
 }
 ```
 
@@ -275,8 +284,10 @@ fn handleGetTodos(req: *Request) Response {
         return Response.status(500).withJson("{\"error\":\"Database error\"}");
     };
 
-    var todos_list = orm.findAll(Todo) catch {
-        return Response.status(500).withJson("{\"error\":\"Query failed\"}");
+    var todos_list = orm.findAll(Todo) catch |err| {
+        // Enhanced error handling - error messages now include table name, SQL, and column info
+        std.debug.print("Failed to fetch todos: {}\n", .{err});
+        return Response.status(500).withJson("{\"error\":\"Failed to fetch todos\"}");
     };
     defer {
         for (todos_list.items) |todo| {
@@ -348,7 +359,7 @@ Update `main()`:
 ```zig
 pub fn main() !void {
     try database.init();
-    defer if (database.global_db) |*db| db.close();
+    defer database.deinit();
 
     var app = try Engine12.initDevelopment();
     defer app.deinit();

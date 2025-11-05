@@ -182,6 +182,78 @@ defer {
 }
 ```
 
+**Problem**: `findAll()` or `where()` fails with `error.ColumnMismatch`.
+
+**Solution**: 
+1. Check that the number of struct fields matches the number of database columns
+2. Ensure your `SELECT *` query returns the expected columns
+3. Verify table schema matches struct definition:
+   ```zig
+   // Struct has 3 fields
+   const User = struct {
+       id: i64,
+       name: []u8,
+       age: i32,
+   };
+   
+   // Table must have exactly 3 columns
+   // CREATE TABLE User (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)
+   ```
+4. Check error messages for detailed context - they include:
+   - Table name
+   - SQL query executed
+   - Expected vs actual column count
+
+**Problem**: `findAll()` fails silently or returns generic errors.
+
+**Solution**: 
+The ORM now provides detailed error messages. Check debug output for:
+- Table name
+- SQL query
+- Column count mismatch details
+- Field type information
+
+If you're catching errors generically, update your error handling:
+
+```zig
+var todos = orm.findAll(Todo) catch |err| {
+    std.debug.print("ORM error: {}\n", .{err});
+    // Error messages now include table name, SQL, and column info
+    return Response.status(500).withJson("{\"error\":\"Failed to fetch todos\"}");
+};
+```
+
+**Problem**: Need to pass ORM instance to handlers but `init()` returns a value.
+
+**Solution**: Use `initPtr()` for pointer-based initialization:
+
+```zig
+// In initialization code
+var orm = try ORM.initPtr(db, allocator);
+defer orm.deinitPtr(allocator);
+
+// Can now pass orm pointer to handlers
+try app.get("/todos", handleTodos, orm);
+```
+
+Or use a singleton pattern:
+
+```zig
+var global_orm: ?ORM = null;
+
+pub fn init() !void {
+    global_db = try Database.open("app.db", allocator);
+    global_orm = ORM.init(global_db.?, allocator);
+}
+
+pub fn getORM() !*ORM {
+    if (global_orm) |*orm| {
+        return orm;
+    }
+    return error.DatabaseNotInitialized;
+}
+```
+
 ## Migration Issues
 
 **Problem**: "Duplicate migration version" error.

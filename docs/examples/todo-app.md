@@ -84,14 +84,26 @@ fn initDatabase() !void {
     );
 
     // Initialize ORM
-    global_orm = ORM.init(global_db.?, allocator);
+    global_orm = try ORM.initPtr(global_db.?, allocator);
+}
+
+pub fn deinit() void {
+    if (global_orm) |orm| {
+        orm.deinitPtr(allocator);
+    }
+    if (global_db) |*db| {
+        db.close();
+    }
 }
 ```
 
 Key points:
 - Uses a mutex for thread-safe initialization
 - Creates the table schema if it doesn't exist
-- Initializes the ORM with the database connection
+- Initializes the ORM with `initPtr()` for pointer-based usage
+- Provides `deinit()` for proper cleanup
+
+**Note**: Using `initPtr()` is recommended when you need to pass ORM instances to handlers or maintain global ORM state. The ORM now provides enhanced error messages with detailed context (table name, SQL query, column count) when `findAll()` or `where()` operations fail.
 
 ## CRUD Operations
 
@@ -137,7 +149,10 @@ Memory management:
 
 ```zig
 fn getAllTodos(orm: *ORM) !std.ArrayListUnmanaged(Todo) {
-    return try orm.findAll(Todo);
+    return orm.findAll(Todo) catch |err| {
+        std.debug.print("ORM findAll() error: {}\n", .{err});
+        return err;
+    };
 }
 
 fn findTodoById(orm: *ORM, id: i64) !?Todo {
