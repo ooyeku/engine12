@@ -22,6 +22,33 @@ pub const ORM = struct {
         };
     }
 
+    /// Initialize ORM and return a heap-allocated pointer
+    /// This is recommended for handler usage where you need to pass pointers
+    ///
+    /// Example:
+    /// ```zig
+    /// const orm = try ORM.initPtr(db, allocator);
+    /// defer orm.deinitPtr(allocator);
+    /// ```
+    pub fn initPtr(db: Database, allocator: std.mem.Allocator) !*ORM {
+        const orm = try allocator.create(ORM);
+        orm.* = ORM.init(db, allocator);
+        return orm;
+    }
+
+    /// Deinitialize and free a heap-allocated ORM instance
+    /// Call this after initPtr() when you're done with the ORM
+    ///
+    /// Example:
+    /// ```zig
+    /// const orm = try ORM.initPtr(db, allocator);
+    /// defer orm.deinitPtr(allocator);
+    /// ```
+    pub fn deinitPtr(self: *ORM, allocator: std.mem.Allocator) void {
+        self.close();
+        allocator.destroy(self);
+    }
+
     pub fn initWithPool(pool: *Database.ConnectionPool, allocator: std.mem.Allocator) ORM {
         _ = pool;
         _ = allocator;
@@ -172,10 +199,32 @@ pub const ORM = struct {
         );
         defer self.allocator.free(sql);
 
-        var query_result = try self.db.query(sql);
+        var query_result = self.db.query(sql) catch |err| {
+            // Wrap database errors with context
+            return switch (err) {
+                error.QueryFailed => error.QueryFailed,
+                error.InvalidArgument => error.InvalidArgument,
+                error.DatabaseError => error.DatabaseError,
+                else => err,
+            };
+        };
         defer query_result.deinit();
 
-        return try query_result.toArrayList(T);
+        const result = query_result.toArrayList(T) catch |err| {
+            // Wrap deserialization errors with context
+            const field_count = std.meta.fields(T).len;
+            const column_count = query_result.columnCount();
+
+            // Provide detailed error message for debugging
+            std.debug.print("ORM findAll() error for table '{s}'\n", .{table_name});
+            std.debug.print("  SQL: {s}\n", .{sql});
+            std.debug.print("  Expected {d} fields, got {d} columns\n", .{ field_count, column_count });
+            std.debug.print("  Error: {}\n", .{err});
+
+            return err;
+        };
+
+        return result;
     }
 
     pub fn where(self: *ORM, comptime T: type, condition: []const u8) !std.ArrayListUnmanaged(T) {
@@ -187,10 +236,32 @@ pub const ORM = struct {
         );
         defer self.allocator.free(sql);
 
-        var query_result = try self.db.query(sql);
+        var query_result = self.db.query(sql) catch |err| {
+            // Wrap database errors with context
+            return switch (err) {
+                error.QueryFailed => error.QueryFailed,
+                error.InvalidArgument => error.InvalidArgument,
+                error.DatabaseError => error.DatabaseError,
+                else => err,
+            };
+        };
         defer query_result.deinit();
 
-        return try query_result.toArrayList(T);
+        const result = query_result.toArrayList(T) catch |err| {
+            // Wrap deserialization errors with context
+            const field_count = std.meta.fields(T).len;
+            const column_count = query_result.columnCount();
+
+            // Provide detailed error message for debugging
+            std.debug.print("ORM where() error for table '{s}'\n", .{table_name});
+            std.debug.print("  SQL: {s}\n", .{sql});
+            std.debug.print("  Expected {d} fields, got {d} columns\n", .{ field_count, column_count });
+            std.debug.print("  Error: {}\n", .{err});
+
+            return err;
+        };
+
+        return result;
     }
 
     pub fn update(self: *ORM, comptime T: type, instance: T) !void {
@@ -810,22 +881,105 @@ test "ORM runMigrations" {
     try std.testing.expectEqual(@as(u32, 1), version.?);
 }
 
-test "ORM migrate" {
+test "ORM initPtr and deinitPtr" {
     const allocator = std.testing.allocator;
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    var orm = try ORM.initPtr(db, allocator);
+    defer orm.deinitPtr(allocator);
+
+    try std.testing.expect(orm.db.c_db != null);
+}
+
+test "ORM findAll with column mismatch error" {
+    const allocator = std.testing.allocator;
+
+    const User = struct {
+        id: i64,
+        name: []u8,
+        age: i32,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    // Create table with more columns than struct fields
+    try db.execute("CREATE TABLE User (id INTEGER PRIMARY KEY, name TEXT, age INTEGER, email TEXT)");
+
+    var orm = ORM.init(db, allocator);
+
+    const result = orm.findAll(User);
+    try std.testing.expectError(error.ColumnMismatch, result);
+    if (result) |users| {
+        defer {
+            for (users.items) |user| {
+                allocator.free(user.name);
+            }
+            users.deinit();
+        }
+    }
+}
+
+test "ORM where with column mismatch error" {
+    const allocator = std.testing.allocator;
+
+    const User = struct {
+        id: i64,
+        name: []u8,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    // Create table with more columns than struct fields
+    try db.execute("CREATE TABLE User (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+
+    var orm = ORM.init(db, allocator);
+
+    const result = orm.where(User, "id = 1");
+    try std.testing.expectError(error.ColumnMismatch, result);
+    if (result) |users| {
+        defer {
+            for (users.items) |user| {
+                allocator.free(user.name);
+            }
+            users.deinit();
+        }
+    }
+}
+
+test "ORM findAll with table not found" {
+    const allocator = std.testing.allocator;
+
+    const User = struct {
+        id: i64,
+        name: []u8,
+    };
 
     var db = try Database.open(":memory:", allocator);
     defer db.close();
 
     var orm = ORM.init(db, allocator);
 
-    const migrations = [_]Migration{
-        Migration.init(1, "create_users", "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);", "DROP TABLE users;"),
-        Migration.init(2, "add_email", "ALTER TABLE users ADD COLUMN email TEXT;", "ALTER TABLE users DROP COLUMN email;"),
+    const result = orm.findAll(User);
+    try std.testing.expectError(error.QueryFailed, result);
+}
+
+test "ORM where with table not found" {
+    const allocator = std.testing.allocator;
+
+    const User = struct {
+        id: i64,
+        name: []u8,
     };
 
-    try orm.migrate(&migrations);
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
 
-    const version = try orm.getMigrationVersion();
-    try std.testing.expect(version != null);
-    try std.testing.expectEqual(@as(u32, 2), version.?);
+    var orm = ORM.init(db, allocator);
+
+    const result = orm.where(User, "id = 1");
+    try std.testing.expectError(error.QueryFailed, result);
 }

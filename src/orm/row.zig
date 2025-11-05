@@ -3,6 +3,15 @@ const c = @cImport({
     @cInclude("e12_orm.h");
 });
 
+// Error types for ORM operations
+pub const ORMError = error{
+    ColumnMismatch,
+    TypeMismatch,
+    InvalidData,
+    NullValueForNonOptional,
+    DeserializationFailed,
+};
+
 pub const Row = struct {
     c_row: *c.E12Row,
 
@@ -71,8 +80,32 @@ pub const QueryResult = struct {
         var list = std.ArrayListUnmanaged(T){};
         errdefer list.deinit(self.allocator);
 
+        // Validate column count matches struct field count
+        const field_count = std.meta.fields(T).len;
+        if (self.column_count != field_count) {
+            var column_names = std.ArrayListUnmanaged([]const u8){};
+            defer column_names.deinit(self.allocator);
+            
+            for (0..@as(usize, @intCast(self.column_count))) |i| {
+                if (self.columnName(@as(i32, @intCast(i)))) |name| {
+                    try column_names.append(self.allocator, name);
+                }
+            }
+            
+            var field_names = std.ArrayListUnmanaged([]const u8){};
+            defer field_names.deinit(self.allocator);
+            
+            inline for (std.meta.fields(T)) |field| {
+                try field_names.append(self.allocator, field.name);
+            }
+            
+            return error.ColumnMismatch;
+        }
+
         while (self.nextRow()) |row| {
-            const item = try self.rowToStruct(T, row);
+            const item = self.rowToStruct(T, row) catch |err| {
+                return err;
+            };
             try list.append(self.allocator, item);
         }
 
@@ -84,7 +117,9 @@ pub const QueryResult = struct {
 
         var col_idx: i32 = 0;
         inline for (std.meta.fields(T)) |field| {
-            if (col_idx >= self.column_count) break;
+            if (col_idx >= self.column_count) {
+                return error.ColumnMismatch;
+            }
 
             const field_type = @TypeOf(@field(instance, field.name));
 
@@ -98,7 +133,7 @@ pub const QueryResult = struct {
                         .int => 0,
                         .float => 0.0,
                         .bool => false,
-                        else => return error.InvalidData, // Can't handle null for this type
+                        else => return error.NullValueForNonOptional, // Can't handle null for this type
                     });
                 }
             } else {
@@ -163,6 +198,13 @@ pub const QueryResult = struct {
                             }
                         }
                     },
+                    .@"enum" => {
+                        // Enums are stored as integers
+                        const enum_int_type = @typeInfo(field_type).@"enum".tag_type;
+                        const enum_int_value = @as(enum_int_type, @intCast(row.getInt64(col_idx)));
+                        const enum_value = @as(field_type, @enumFromInt(enum_int_value));
+                        @field(instance, field.name) = enum_value;
+                    },
                     else => @compileError("ORM error: Unsupported field type '" ++ @typeName(field_type) ++ "' for field '" ++ field.name ++ "'. " ++
                         "Supported types: integers (i64, i32, u32, etc.), floats (f64, f32), bools, strings ([]const u8, []u8), " ++
                         "and enums. For complex types, consider storing as JSON text."),
@@ -170,6 +212,11 @@ pub const QueryResult = struct {
             }
 
             col_idx += 1;
+        }
+
+        // Check if we have more columns than fields
+        if (col_idx < self.column_count) {
+            return error.ColumnMismatch;
         }
 
         return instance;
