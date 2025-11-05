@@ -45,11 +45,21 @@ pub const ORM = struct {
                     try values.append(self.allocator, value_str);
                 }
             } else {
-                try fields.append(self.allocator, field.name);
-
                 const value = @field(instance, field.name);
-                const value_str = try self.valueToString(value);
-                try values.append(self.allocator, value_str);
+                const field_type = @TypeOf(value);
+
+                // Check if field is optional and null
+                const is_optional_null = switch (@typeInfo(field_type)) {
+                    .optional => value == null,
+                    else => false,
+                };
+
+                // Skip optional fields that are null (don't include in INSERT)
+                if (!is_optional_null) {
+                    try fields.append(self.allocator, field.name);
+                    const value_str = try self.valueToString(value);
+                    try values.append(self.allocator, value_str);
+                }
             }
         }
 
@@ -202,14 +212,25 @@ pub const ORM = struct {
             }
 
             const value = @field(instance, field.name);
-            const value_str = try self.valueToString(value);
-            defer self.allocator.free(value_str);
-            const update_str = try std.fmt.allocPrint(
-                self.allocator,
-                "{s} = {s}",
-                .{ field.name, value_str },
-            );
-            try updates.append(self.allocator, update_str);
+            const field_type = @TypeOf(value);
+
+            // Check if field is optional and null
+            const is_optional_null = switch (@typeInfo(field_type)) {
+                .optional => value == null,
+                else => false,
+            };
+
+            // Skip optional fields that are null (don't update them)
+            if (!is_optional_null) {
+                const value_str = try self.valueToString(value);
+                defer self.allocator.free(value_str);
+                const update_str = try std.fmt.allocPrint(
+                    self.allocator,
+                    "{s} = {s}",
+                    .{ field.name, value_str },
+                );
+                try updates.append(self.allocator, update_str);
+            }
         }
 
         const updates_str = try std.mem.join(self.allocator, ", ", updates.items);
@@ -300,8 +321,14 @@ pub const ORM = struct {
                     try escaped.append(self.allocator, '\'');
                     return escaped.toOwnedSlice(self.allocator);
                 } else {
-                    @compileError("Unsupported pointer type");
+                    @compileError("ORM error: Unsupported pointer type '" ++ @typeName(T) ++ "'. " ++
+                        "Only slice pointers ([]const u8, []u8) are supported. " ++
+                        "For other pointer types, dereference or convert to supported type first.");
                 }
+            },
+            .@"enum" => {
+                const enum_value = @intFromEnum(value);
+                return try std.fmt.allocPrint(self.allocator, "{d}", .{enum_value});
             },
             .optional => {
                 if (value) |inner_value| {
@@ -310,7 +337,10 @@ pub const ORM = struct {
                     return try self.allocator.dupe(u8, "NULL");
                 }
             },
-            else => @compileError("Unsupported type: " ++ @typeName(T)),
+            else => @compileError("ORM error: Unsupported type '" ++ @typeName(T) ++ "' in valueToString(). " ++
+                "Supported types: integers, floats, bools, strings ([]const u8), and enums. " ++
+                "For enums, use @intFromEnum() to convert if needed. " ++
+                "For complex types, consider serializing to JSON first."),
         };
     }
 };

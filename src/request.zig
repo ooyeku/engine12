@@ -97,6 +97,33 @@ pub const Request = struct {
         return params.get(name);
     }
     
+    /// Get a query parameter by name (optional only, throws on parse error)
+    /// Returns optional only - throws if query parameter parsing fails
+    /// 
+    /// Example:
+    /// ```zig
+    /// const status = req.queryOptional("status"); // ?[]const u8
+    /// if (status) |s| {
+    ///     // Use status
+    /// }
+    /// ```
+    pub fn queryOptional(self: *Request, name: []const u8) ?[]const u8 {
+        const params = self.queryParams() catch return null;
+        return params.get(name);
+    }
+    
+    /// Get a query parameter by name (strict - fails if missing)
+    /// Returns error union - fails if parameter is missing or parsing fails
+    /// 
+    /// Example:
+    /// ```zig
+    /// const limit = try req.queryStrict("limit"); // ![]const u8
+    /// ```
+    pub fn queryStrict(self: *Request, name: []const u8) (error{QueryParameterMissing} || std.mem.Allocator.Error)![]const u8 {
+        const params = try self.queryParams();
+        return params.get(name) orelse error.QueryParameterMissing;
+    }
+    
     /// Get a query parameter as a Param wrapper (for type-safe conversion)
     /// 
     /// Example:

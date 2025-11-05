@@ -40,7 +40,7 @@ fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?
     return struct {
         const handler = handler_fn;
         const pattern = route_pattern;
-        
+
         fn wrapper(ziggurat_request: *ziggurat.request.Request) ziggurat.response.Response {
             // Access middleware from global (set when route is registered)
             const mw_chain = global_middleware orelse {
@@ -50,21 +50,21 @@ fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?
                 const engine12_response = handler(&engine12_request);
                 return engine12_response.toZiggurat();
             };
-            
+
             // Access metrics collector from global
             const metrics_collector = global_metrics;
-            
+
             // Start timing
             const route_pattern_str = if (pattern) |p| p else ziggurat_request.path;
             var timing = metrics.RequestTiming.start(route_pattern_str);
-            
+
             // Create request with arena allocator
             // Using page_allocator as backing for performance
             var engine12_request = Request.fromZiggurat(ziggurat_request, allocator);
-            
+
             // Ensure cleanup happens even if handler panics
             defer engine12_request.deinit();
-            
+
             // Execute pre-request middleware chain
             if (mw_chain.executePreRequest(&engine12_request)) |abort_response| {
                 // Record error metrics
@@ -74,7 +74,7 @@ fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?
                 }
                 return abort_response.toZiggurat();
             }
-            
+
             // If route has parameters, extract them
             if (pattern) |pattern_str| {
                 if (std.mem.indexOf(u8, pattern_str, ":") != null) {
@@ -90,7 +90,7 @@ fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?
                         return final_response.toZiggurat();
                     };
                     defer route_pattern_parsed.deinit(allocator);
-                    
+
                     // Match against request path
                     if (route_pattern_parsed.match(engine12_request.arena.allocator(), ziggurat_request.path) catch null) |params| {
                         engine12_request.setRouteParams(params) catch |err| {
@@ -100,18 +100,18 @@ fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?
                     }
                 }
             }
-            
+
             // Call the Engine12 handler
             var engine12_response = handler(&engine12_request);
-            
+
             // Execute response middleware chain (pass request for cache headers)
             engine12_response = mw_chain.executeResponse(engine12_response, &engine12_request);
-            
+
             // Record timing and metrics
             if (metrics_collector) |mc| {
                 timing.finish(mc) catch {};
             }
-            
+
             // Convert Engine12 response to ziggurat response
             // Note: Response data must be copied to persistent allocator before arena is freed
             return engine12_response.toZiggurat();
@@ -120,7 +120,7 @@ fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?
 }
 
 pub const Engine12 = struct {
-    const MAX_ROUTES = 32;
+    const MAX_ROUTES = 5000;
     const MAX_WORKERS = 16;
     const MAX_HEALTH_CHECKS = 8;
     const MAX_STATIC_ROUTES = 4;
@@ -154,10 +154,10 @@ pub const Engine12 = struct {
 
     // Middleware Chain
     middleware: middleware_chain.MiddlewareChain,
-    
+
     // Error Handler
     error_handler_registry: error_handler.ErrorHandlerRegistry,
-    
+
     // Metrics Collector
     metrics_collector: metrics.MetricsCollector,
 
@@ -241,7 +241,7 @@ pub const Engine12 = struct {
         // Set global middleware before registering so wrapper can access it
         global_middleware = &self.middleware;
         global_metrics = &self.metrics_collector;
-        
+
         const wrapped_handler = wrapHandler(handler_fn, path_pattern);
 
         // Register immediately - wrapped handler is comptime-known
@@ -408,7 +408,7 @@ pub const Engine12 = struct {
     }
 
     /// Create a route group with a prefix and optional shared middleware
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// var api = app.group("/api");
@@ -423,28 +423,28 @@ pub const Engine12 = struct {
                 try engine.get(path, handler);
             }
         }.wrap;
-        
+
         const post_wrapper = struct {
             fn wrap(ptr: *anyopaque, comptime path: []const u8, handler: anytype) !void {
                 const engine = @as(*Engine12, @ptrCast(ptr));
                 try engine.post(path, handler);
             }
         }.wrap;
-        
+
         const put_wrapper = struct {
             fn wrap(ptr: *anyopaque, comptime path: []const u8, handler: anytype) !void {
                 const engine = @as(*Engine12, @ptrCast(ptr));
                 try engine.put(path, handler);
             }
         }.wrap;
-        
+
         const delete_wrapper = struct {
             fn wrap(ptr: *anyopaque, comptime path: []const u8, handler: anytype) !void {
                 const engine = @as(*Engine12, @ptrCast(ptr));
                 try engine.delete(path, handler);
             }
         }.wrap;
-        
+
         return route_group.RouteGroup{
             .engine_ptr = @as(*anyopaque, @ptrCast(self)),
             .prefix = prefix,
@@ -455,9 +455,9 @@ pub const Engine12 = struct {
             .register_delete = delete_wrapper,
         };
     }
-    
+
     /// Register a custom error handler
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// app.useErrorHandler(customErrorHandler);
@@ -465,23 +465,23 @@ pub const Engine12 = struct {
     pub fn useErrorHandler(self: *Engine12, handler: error_handler.ErrorHandler) void {
         self.error_handler_registry.register(handler);
     }
-    
+
     /// Set a global rate limiter for all routes
     pub fn setRateLimiter(self: *Engine12, limiter: *rate_limit.RateLimiter) void {
         _ = self;
         global_rate_limiter = limiter;
     }
-    
+
     /// Set a global response cache for all routes
     pub fn setCache(self: *Engine12, response_cache: *cache.ResponseCache) void {
         _ = self;
         global_cache = response_cache;
     }
-    
+
     /// Add a pre-request middleware to the chain
     /// Middleware are executed in the order they are added
     /// Middleware can short-circuit by returning .abort
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// app.usePreRequest(authMiddleware);
@@ -490,10 +490,10 @@ pub const Engine12 = struct {
     pub fn usePreRequest(self: *Engine12, middleware: middleware_chain.PreRequestMiddlewareFn) !void {
         try self.middleware.addPreRequest(middleware);
     }
-    
+
     /// Add a response middleware to the chain
     /// Middleware are executed in the order they are added
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// app.useResponse(corsMiddleware);
@@ -502,7 +502,7 @@ pub const Engine12 = struct {
     pub fn useResponse(self: *Engine12, middleware: middleware_chain.ResponseMiddlewareFn) !void {
         try self.middleware.addResponse(middleware);
     }
-    
+
     /// Register static file serving from a directory
     pub fn serveStatic(self: *Engine12, mount_path: []const u8, directory: []const u8) !void {
         if (self.static_routes_count >= MAX_STATIC_ROUTES) {
@@ -532,14 +532,14 @@ pub const Engine12 = struct {
                 .readTimeout(5000)
                 .writeTimeout(5000)
                 .build();
-            
+
             // Register default routes (but skip "/" if we're mounting static files at root or custom handler registered)
             if (!std.mem.eql(u8, mount_path, "/") and !self.custom_root_handler) {
                 try server.get("/", wrapHandler(handlers.handleDefaultRoot, "/"));
             }
             try server.get("/health", wrapHandler(handlers.handleHealthEndpoint, "/health"));
             try server.get("/metrics", wrapHandler(handlers.handleMetricsEndpoint, "/metrics"));
-            
+
             self.built_server = server;
             self.http_server = @ptrCast(&server);
         }
@@ -548,11 +548,11 @@ pub const Engine12 = struct {
         const static_index = static_file_registry_count;
         static_file_registry[static_index] = file_server;
         static_file_registry_count += 1;
-        
+
         if (self.built_server) |*server| {
             // Store the mount path for this registry entry
             static_mount_paths[static_index] = mount_path;
-            
+
             // For root mount, register "/" and also register common frontend paths
             if (std.mem.eql(u8, mount_path, "/")) {
                 // Override the default root handler if it was already registered
@@ -573,10 +573,10 @@ pub const Engine12 = struct {
                         return Response.text("Static file server not found").toZiggurat();
                     }
                 }.handler;
-                
+
                 // Register root handler - this will override any previous "/" handler
                 try server.get("/", root_wrapper);
-                
+
                 const css_wrapper = struct {
                     fn handler(request: *ziggurat.request.Request) ziggurat.response.Response {
                         _ = request;
@@ -592,7 +592,7 @@ pub const Engine12 = struct {
                         return Response.text("Static file server not found").toZiggurat();
                     }
                 }.handler;
-                
+
                 const js_wrapper = struct {
                     fn handler(request: *ziggurat.request.Request) ziggurat.response.Response {
                         _ = request;
@@ -608,7 +608,7 @@ pub const Engine12 = struct {
                         return Response.text("Static file server not found").toZiggurat();
                     }
                 }.handler;
-                
+
                 try server.get("/css/styles.css", css_wrapper);
                 try server.get("/js/app.js", js_wrapper);
             } else {
@@ -618,7 +618,7 @@ pub const Engine12 = struct {
                     fn handler(request: *ziggurat.request.Request) ziggurat.response.Response {
                         // Get the full request path (e.g., "/css/styles.css")
                         const request_path = request.path;
-                        
+
                         // Find FileServer by matching mount path prefix in registry
                         var i: usize = 0;
                         while (i < static_file_registry_count) {
@@ -635,57 +635,22 @@ pub const Engine12 = struct {
                         return Response.text("Static file server not found").toZiggurat();
                     }
                 }.handler;
-                
-                // Register wildcard route for the mount path (e.g., "/css/*")
-                // We'll use a pattern that matches any path starting with mount_path
-                // Note: ziggurat might not support wildcards, so we register the base path
-                // and handle subpaths in the handler by checking request.path
+
+                // Register the base mount path handler
+                // The wrapper handler checks request.path dynamically to handle all subpaths
+                // This avoids segfault from passing runtime-allocated strings to ziggurat
                 try server.get(mount_path, wrapper);
-                
-                // Also register common subpaths explicitly
-                // For /css mount, register /css/styles.css
+
+                // Register common subpaths explicitly for better matching
+                // These are comptime strings so they're safe to pass to ziggurat
                 if (std.mem.eql(u8, mount_path, "/css")) {
-                    const css_file_wrapper = struct {
-                        fn handler(request: *ziggurat.request.Request) ziggurat.response.Response {
-                            _ = request;
-                            var i: usize = 0;
-                            while (i < static_file_registry_count) {
-                                if (static_file_registry[i]) |*fs| {
-                                    if (std.mem.eql(u8, static_mount_paths[i], "/css")) {
-                                        return fs.serveFile("/css/styles.css").toZiggurat();
-                                    }
-                                }
-                                i += 1;
-                            }
-                            return Response.text("CSS file not found").toZiggurat();
-                        }
-                    }.handler;
-                    try server.get("/css/styles.css", css_file_wrapper);
-                }
-                
-                // For /js mount, register /js/app.js
-                if (std.mem.eql(u8, mount_path, "/js")) {
-                    const js_file_wrapper = struct {
-                        fn handler(request: *ziggurat.request.Request) ziggurat.response.Response {
-                            _ = request;
-                            var i: usize = 0;
-                            while (i < static_file_registry_count) {
-                                if (static_file_registry[i]) |*fs| {
-                                    if (std.mem.eql(u8, static_mount_paths[i], "/js")) {
-                                        return fs.serveFile("/js/app.js").toZiggurat();
-                                    }
-                                }
-                                i += 1;
-                            }
-                            return Response.text("JS file not found").toZiggurat();
-                        }
-                    }.handler;
-                    try server.get("/js/app.js", js_file_wrapper);
+                    try server.get("/css/styles.css", wrapper);
+                } else if (std.mem.eql(u8, mount_path, "/js")) {
+                    try server.get("/js/app.js", wrapper);
                 }
             }
         }
     }
-
 
     /// Register a background task that runs once
     pub fn runTask(self: *Engine12, name: []const u8, task: types.BackgroundTask) !void {
@@ -787,7 +752,7 @@ pub const Engine12 = struct {
                     };
                 }
             };
-            
+
             var thread = try std.Thread.spawn(.{}, ServerThread.run, .{ServerThread{ .server_ptr = server }});
             thread.detach();
             return;
@@ -1070,10 +1035,10 @@ fn createStaticFileWrapperForPath(comptime mount_path: []const u8, comptime rout
     return struct {
         const mount = mount_path;
         const route = route_path;
-        
+
         fn wrapper(request: *ziggurat.request.Request) ziggurat.response.Response {
             _ = request;
-            
+
             // Find the FileServer in the registry by matching mount_path
             // This is runtime, but the wrapper function itself is comptime
             var i: usize = 0;

@@ -117,33 +117,55 @@ pub const QueryResult = struct {
                             const text = row.getText(col_idx) orelse return error.InvalidData;
                             @field(instance, field.name) = try self.allocator.dupe(u8, text);
                         } else {
-                            @compileError("Unsupported pointer type for field: " ++ field.name);
+                            @compileError("ORM error: Unsupported pointer type for field '" ++ field.name ++ "' of type '" ++ @typeName(field_type) ++ "'. " ++
+                                "Only slice pointers ([]const u8, []u8) are supported. " ++
+                                "For other pointer types, use []const u8 or []u8 instead.");
                         }
                     },
                     .optional => |opt_info| {
                         const inner_type = opt_info.child;
-                        switch (@typeInfo(inner_type)) {
-                            .int => {
-                                @field(instance, field.name) = @as(inner_type, @intCast(row.getInt64(col_idx)));
-                            },
-                            .float => {
-                                @field(instance, field.name) = @as(inner_type, @floatCast(row.getDouble(col_idx)));
-                            },
-                            .bool => {
-                                @field(instance, field.name) = row.getInt64(col_idx) != 0;
-                            },
-                            .pointer => |ptr_info| {
-                                if (ptr_info.size == .slice and ptr_info.child == u8) {
-                                    const text = row.getText(col_idx) orelse return error.InvalidData;
-                                    @field(instance, field.name) = try self.allocator.dupe(u8, text);
-                                } else {
-                                    @compileError("Unsupported optional pointer type");
-                                }
-                            },
-                            else => @compileError("Unsupported optional type"),
+                        
+                        // Handle null optional values
+                        if (row.isNull(col_idx)) {
+                            @field(instance, field.name) = null;
+                        } else {
+                            switch (@typeInfo(inner_type)) {
+                                .int => {
+                                    @field(instance, field.name) = @as(inner_type, @intCast(row.getInt64(col_idx)));
+                                },
+                                .float => {
+                                    @field(instance, field.name) = @as(inner_type, @floatCast(row.getDouble(col_idx)));
+                                },
+                                .bool => {
+                                    @field(instance, field.name) = row.getInt64(col_idx) != 0;
+                                },
+                                .pointer => |ptr_info| {
+                                    if (ptr_info.size == .slice and ptr_info.child == u8) {
+                                        const text = row.getText(col_idx) orelse return error.InvalidData;
+                                        @field(instance, field.name) = try self.allocator.dupe(u8, text);
+                                    } else {
+                                        @compileError("ORM error: Unsupported optional pointer type for field '" ++ field.name ++ "'. " ++
+                                            "Optional pointer types are not supported. " ++
+                                            "Use optional slice (?[]const u8) or optional struct field instead.");
+                                    }
+                                },
+                                .@"enum" => {
+                                    // Enums are stored as integers
+                                    // Get the underlying integer type of the enum
+                                    const enum_int_type = @typeInfo(inner_type).@"enum".tag_type;
+                                    const enum_int_value = @as(enum_int_type, @intCast(row.getInt64(col_idx)));
+                                    const enum_value = @as(inner_type, @enumFromInt(enum_int_value));
+                                    @field(instance, field.name) = enum_value;
+                                },
+                                else => @compileError("ORM error: Unsupported optional type for field '" ++ field.name ++ "'. " ++
+                                    "Only basic types (int, float, bool, string, enum) can be optional. " ++
+                                    "Got: " ++ @typeName(field_type)),
+                            }
                         }
                     },
-                    else => @compileError("Unsupported field type: " ++ @typeName(field_type)),
+                    else => @compileError("ORM error: Unsupported field type '" ++ @typeName(field_type) ++ "' for field '" ++ field.name ++ "'. " ++
+                        "Supported types: integers (i64, i32, u32, etc.), floats (f64, f32), bools, strings ([]const u8, []u8), " ++
+                        "and enums. For complex types, consider storing as JSON text."),
                 }
             }
 

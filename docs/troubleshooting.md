@@ -85,6 +85,43 @@ Or use a signal handler for graceful shutdown.
    const todo_id = req.param("todo_id"); // Wrong
    ```
 
+### Query Parameter Errors
+
+**Problem**: Query parameter methods return unexpected results.
+
+**Solution**: Use the appropriate method for your use case:
+
+1. **Optional parameters** - Use `queryOptional()` when the parameter may not be present:
+   ```zig
+   const limit = req.queryOptional("limit");
+   if (limit) |l| {
+       // Parameter exists
+       const limit_u32 = try std.fmt.parseInt(u32, l, 10);
+   } else {
+       // Parameter not provided, use default
+       const limit_u32 = 10;
+   }
+   ```
+
+2. **Required parameters** - Use `queryStrict()` when the parameter must be present:
+   ```zig
+   const filter = req.queryStrict("filter") catch {
+       return Response.badRequest().withJson("{\"error\":\"Missing filter parameter\"}");
+   };
+   ```
+
+3. **Legacy method** - Use `query()` for backward compatibility (returns error if missing):
+   ```zig
+   const limit = req.query("limit") catch |err| {
+       // Handle error
+       return Response.badRequest();
+   };
+   ```
+
+**Common errors:**
+- `error.QueryParameterMissing` - Parameter not found when using `queryStrict()`
+- Solution: Check parameter name spelling, or use `queryOptional()` if parameter is optional
+
 ### Database Connection Errors
 
 **Problem**: "Database not initialized" error.
@@ -307,7 +344,7 @@ while (result.nextRow()) |row| {
 ### Common Error Messages
 
 **"Too many routes"**
-- Solution: Reduce number of routes or increase `MAX_ROUTES` constant
+- Solution: Reduce number of routes or increase `MAX_ROUTES` constant (default limit is 5000 routes)
 
 **"Server already built"**
 - Solution: Register all routes before calling `app.start()`
@@ -317,6 +354,25 @@ while (result.nextRow()) |row| {
 
 **"Query failed"**
 - Solution: Check SQL syntax and database state
+
+**"QueryParameterMissing"**
+- Solution: Query parameter is required but not provided. Use `queryOptional()` if parameter is optional, or ensure client sends the parameter.
+
+**ORM Error Messages**
+
+The ORM provides improved error messages with context:
+- **Field name errors**: Errors include the exact field name that caused the issue
+- **Type mismatch errors**: Shows expected vs actual types
+- **Missing field errors**: Lists available fields and suggests correct field names
+- **Actionable suggestions**: Errors provide hints on how to fix the issue
+
+**Template Engine Error Messages**
+
+The template engine provides improved error messages:
+- **Field access errors**: Includes context type and field name
+- **Type information**: Shows what type was expected vs what was found
+- **Available fields**: Lists fields available in the context struct
+- **Suggestions**: Provides hints for common mistakes (e.g., checking struct definition, using correct field names)
 
 ## Getting Help
 

@@ -300,10 +300,35 @@ pub const Parser = struct {
         };
     }
     
-    /// Parse variable path (e.g., ".user.name" -> ["user", "name"])
+    /// Parse variable path (e.g., ".user.name" -> ["user", "name"], "../parent.field" -> ["..", "parent", "field"])
     fn parseVariablePath(comptime path_str: []const u8) ![]const []const u8 {
         if (path_str.len == 0) {
             return error.InvalidVariableSyntax;
+        }
+        
+        // Check for parent navigation syntax (../)
+        if (std.mem.startsWith(u8, path_str, "../")) {
+            // Handle parent navigation
+            const remaining = path_str[3..]; // Skip "../"
+            if (remaining.len == 0) {
+                // Just "../" - return parent marker
+                return &[_][]const u8{".."};
+            }
+            
+            // Must start with . after ../
+            if (remaining[0] != '.') {
+                return error.InvalidVariableSyntax;
+            }
+            
+            // Parse the rest as normal path
+            const rest_path = try parseVariablePath(remaining);
+            
+            // Prepend parent marker
+            var parts: []const []const u8 = &[_][]const u8{".."};
+            for (rest_path) |part| {
+                parts = parts ++ &[_][]const u8{part};
+            }
+            return parts;
         }
         
         // Must start with .

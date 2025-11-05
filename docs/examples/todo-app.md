@@ -35,15 +35,26 @@ todo/
 ### Model Definition
 
 ```zig
+const TodoStatus = enum {
+    pending,
+    in_progress,
+    completed,
+};
+
 const Todo = struct {
     id: i64,
     title: []u8,
-    description: []u8,
+    description: ?[]u8 = null, // Optional field - null values are skipped
     completed: bool,
+    status: TodoStatus = .pending, // enum field supported by ORM
     created_at: i64,
     updated_at: i64,
 };
 ```
+
+**Note**: The ORM supports:
+- **Enum types**: Automatically converted to integers when saving to the database
+- **Optional fields**: Optional fields that are `null` are automatically skipped in INSERT/UPDATE statements (not included in the SQL)
 
 ### Database Initialization
 
@@ -250,11 +261,11 @@ fn handleIndex(request: *Request) Response {
 fn handleGetTodos(request: *Request) Response {
     _ = request;
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
     };
 
     var todos = getAllTodos(orm) catch {
-        return Response.json("{\"error\":\"Failed to fetch todos\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Failed to fetch todos\"}");
     };
     defer {
         for (todos.items) |todo| {
@@ -265,7 +276,7 @@ fn handleGetTodos(request: *Request) Response {
     }
 
     const json = formatTodoListJson(todos, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todos\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Failed to format todos\"}");
     };
     defer allocator.free(json);
 
@@ -286,7 +297,7 @@ Memory management:
 fn handleCreateTodo(request: *Request) Response {
     const body = request.body();
     const parsed = parseTodoFromJson(body, allocator) catch {
-        return Response.json("{\"error\":\"Invalid JSON\"}").withStatus(400);
+        return Response.status(400).withJson("{\"error\":\"Invalid JSON\"}");
     };
     defer {
         allocator.free(parsed.title);
@@ -294,11 +305,11 @@ fn handleCreateTodo(request: *Request) Response {
     }
 
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
     };
 
     const todo = createTodo(orm, parsed.title, parsed.description) catch {
-        return Response.json("{\"error\":\"Failed to create todo\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Failed to create todo\"}");
     };
     defer {
         allocator.free(todo.title);
@@ -306,7 +317,7 @@ fn handleCreateTodo(request: *Request) Response {
     }
 
     const json = formatTodoJson(todo, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Failed to format todo\"}");
     };
     defer allocator.free(json);
 
@@ -319,12 +330,12 @@ fn handleCreateTodo(request: *Request) Response {
 ```zig
 fn handleUpdateTodo(request: *Request) Response {
     const id = request.param("id").asI64() catch {
-        return Response.json("{\"error\":\"Invalid ID\"}").withStatus(400);
+        return Response.status(400).withJson("{\"error\":\"Invalid ID\"}");
     };
 
     const body = request.body();
     const parsed = parseTodoFromJson(body, allocator) catch {
-        return Response.json("{\"error\":\"Invalid JSON\"}").withStatus(400);
+        return Response.status(400).withJson("{\"error\":\"Invalid JSON\"}");
     };
     defer {
         allocator.free(parsed.title);
@@ -332,7 +343,7 @@ fn handleUpdateTodo(request: *Request) Response {
     }
 
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
     };
 
     const updates = struct {
@@ -342,7 +353,7 @@ fn handleUpdateTodo(request: *Request) Response {
     };
 
     const todo = updateTodo(orm, id, updates) catch {
-        return Response.json("{\"error\":\"Failed to update todo\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Failed to update todo\"}");
     };
 
     if (todo) |t| {
@@ -351,12 +362,12 @@ fn handleUpdateTodo(request: *Request) Response {
             allocator.free(t.description);
         }
         const json = formatTodoJson(t, allocator) catch {
-            return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
+            return Response.status(500).withJson("{\"error\":\"Failed to format todo\"}");
         };
         defer allocator.free(json);
         return Response.json(json);
     } else {
-        return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
+        return Response.status(404).withJson("{\"error\":\"Todo not found\"}");
     }
 }
 ```
@@ -366,21 +377,21 @@ fn handleUpdateTodo(request: *Request) Response {
 ```zig
 fn handleDeleteTodo(request: *Request) Response {
     const id = request.param("id").asI64() catch {
-        return Response.json("{\"error\":\"Invalid ID\"}").withStatus(400);
+        return Response.status(400).withJson("{\"error\":\"Invalid ID\"}");
     };
 
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
     };
 
     const deleted = deleteTodo(orm, id) catch {
-        return Response.json("{\"error\":\"Failed to delete todo\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Failed to delete todo\"}");
     };
 
     if (deleted) {
         return Response.json("{\"success\":true}");
     } else {
-        return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
+        return Response.status(404).withJson("{\"error\":\"Todo not found\"}");
     }
 }
 ```
@@ -391,15 +402,15 @@ fn handleDeleteTodo(request: *Request) Response {
 fn handleGetStats(request: *Request) Response {
     _ = request;
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
     };
 
     const stats = getStats(orm) catch {
-        return Response.json("{\"error\":\"Failed to fetch stats\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Failed to fetch stats\"}");
     };
 
     const json = formatStatsJson(stats, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format stats\"}").withStatus(500);
+        return Response.status(500).withJson("{\"error\":\"Failed to format stats\"}");
     };
     defer allocator.free(json);
 

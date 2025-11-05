@@ -7,29 +7,29 @@ const persistent_allocator = std.heap.page_allocator;
 
 /// Cookie options for setting cookies
 pub const CookieOptions = struct {
-    maxAge: ?u64 = null,      // Cookie expiration in seconds
+    maxAge: ?u64 = null, // Cookie expiration in seconds
     domain: ?[]const u8 = null,
     path: ?[]const u8 = null,
-    secure: bool = false,     // Only send over HTTPS
-    httpOnly: bool = false,   // Not accessible via JavaScript
+    secure: bool = false, // Only send over HTTPS
+    httpOnly: bool = false, // Not accessible via JavaScript
 };
 
 /// Engine12 Response wrapper around ziggurat.response.Response
 /// Provides a clean API with fluent builders and memory-safe response handling
-/// 
+///
 /// Response bodies are automatically copied to persistent memory to ensure
 /// they remain valid after the request completes.
 pub const Response = struct {
     /// Internal ziggurat response (not exposed)
     inner: ziggurat.response.Response,
-    
+
     /// Optional stored body for responses that need persistent memory
     /// This is used when body data comes from request arena and needs to be copied
     _persistent_body: ?[]const u8 = null,
 
     /// Create a JSON response
     /// The body string will be copied to persistent memory automatically
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.json("{\"status\":\"ok\"}");
@@ -43,7 +43,7 @@ pub const Response = struct {
                 ._persistent_body = null,
             };
         };
-        
+
         return Response{
             .inner = ziggurat.response.Response.json(persistent_body),
             ._persistent_body = persistent_body,
@@ -52,7 +52,7 @@ pub const Response = struct {
 
     /// Create a text response
     /// The body string will be copied to persistent memory automatically
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.text("Hello, World!");
@@ -64,7 +64,7 @@ pub const Response = struct {
                 ._persistent_body = null,
             };
         };
-        
+
         return Response{
             .inner = ziggurat.response.Response.text(persistent_body),
             ._persistent_body = persistent_body,
@@ -73,7 +73,7 @@ pub const Response = struct {
 
     /// Create an HTML response
     /// The body string will be copied to persistent memory automatically
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.html("<html><body>Hello</body></html>");
@@ -85,15 +85,15 @@ pub const Response = struct {
                 ._persistent_body = null,
             };
         };
-        
+
         return Response{
             .inner = ziggurat.response.Response.html(persistent_body),
             ._persistent_body = persistent_body,
         };
     }
-    
+
     /// Create a 200 OK response with JSON body
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.ok().json(data);
@@ -105,9 +105,9 @@ pub const Response = struct {
         };
         return resp.withStatus(200);
     }
-    
+
     /// Create a 201 Created response
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.created().json(.{ .id = new_id });
@@ -119,9 +119,9 @@ pub const Response = struct {
         };
         return resp.withStatus(201);
     }
-    
+
     /// Create a 204 No Content response
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.noContent();
@@ -133,9 +133,9 @@ pub const Response = struct {
         };
         return resp.withStatus(204);
     }
-    
+
     /// Create a 400 Bad Request response
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.badRequest().json(.{ .error = "Invalid input" });
@@ -147,9 +147,9 @@ pub const Response = struct {
         };
         return resp.withStatus(400);
     }
-    
+
     /// Create a 401 Unauthorized response
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.unauthorized().json(.{ .error = "Authentication required" });
@@ -161,9 +161,9 @@ pub const Response = struct {
         };
         return resp.withStatus(401);
     }
-    
+
     /// Create a 403 Forbidden response
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.forbidden().json(.{ .error = "Access denied" });
@@ -175,9 +175,9 @@ pub const Response = struct {
         };
         return resp.withStatus(403);
     }
-    
+
     /// Create a 404 Not Found response
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.notFound().json(.{ .error = "Resource not found" });
@@ -189,9 +189,9 @@ pub const Response = struct {
         };
         return resp.withStatus(404);
     }
-    
+
     /// Create a 500 Internal Server Error response
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.internalError().json(.{ .error = "Something went wrong" });
@@ -206,7 +206,7 @@ pub const Response = struct {
 
     /// Set cache-control headers to prevent caching
     /// Sets no-cache, no-store, must-revalidate, Pragma: no-cache, and Expires: 0
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.json(data).noCache();
@@ -218,8 +218,31 @@ pub const Response = struct {
             .withHeader("Expires", "0");
     }
 
+    /// Set JSON body for this response
+    /// The body string will be copied to persistent memory automatically
+    /// Can be chained after builder methods like ok(), created(), etc.
+    ///
+    /// Example:
+    /// ```zig
+    /// return Response.created().withJson("{\"id\":123}");
+    /// return Response.ok().withJson(data);
+    /// ```
+    pub fn withJson(self: Response, body: []const u8) Response {
+        const persistent_body = persistent_allocator.dupe(u8, body) catch {
+            return Response{
+                .inner = ziggurat.response.Response.json(body),
+                ._persistent_body = self._persistent_body,
+            };
+        };
+
+        return Response{
+            .inner = ziggurat.response.Response.json(persistent_body),
+            ._persistent_body = persistent_body,
+        };
+    }
+
     /// Create an error JSON response with status 500
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.errorJson("Internal server error", allocator);
@@ -230,7 +253,7 @@ pub const Response = struct {
     }
 
     /// Create an error JSON response with custom status code
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.errorJsonWithStatus("Not found", 404, allocator);
@@ -241,7 +264,7 @@ pub const Response = struct {
     }
 
     /// Create a success JSON response with status 200
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// const data = try Json.serialize(MyStruct, my_data, allocator);
@@ -252,9 +275,9 @@ pub const Response = struct {
         _ = allocator;
         return Response.json(data);
     }
-    
+
     /// Create a redirect response
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.redirect("/login");
@@ -268,7 +291,7 @@ pub const Response = struct {
             };
             return resp.withStatus(302);
         };
-        
+
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = persistent_location,
@@ -278,7 +301,7 @@ pub const Response = struct {
     }
 
     /// Create a response with a specific status code
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.status(418); // I'm a teapot
@@ -293,7 +316,7 @@ pub const Response = struct {
 
     /// Set the Content-Type header
     /// Returns a new Response with the header set
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.text("data").withContentType("application/json");
@@ -307,7 +330,7 @@ pub const Response = struct {
 
     /// Set the status code
     /// Returns a new Response with the status set
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.text("error").withStatus(400);
@@ -319,25 +342,32 @@ pub const Response = struct {
         _ = status_code;
         return self;
     }
-    
+
     /// Add a custom header
     /// The header value will be copied to persistent memory
-    /// 
+    /// Note: For Content-Type, use withContentType() instead for proper handling
+    ///
     /// Example:
     /// ```zig
     /// return Response.json(data).withHeader("X-Custom-Header", "value");
     /// ```
     pub fn withHeader(self: Response, name: []const u8, value: []const u8) Response {
-        // For now, ziggurat may not support custom headers directly
+        // Special handling for Content-Type - delegate to withContentType()
+        if (std.mem.eql(u8, name, "Content-Type")) {
+            return self.withContentType(value);
+        }
+
+        // For other headers, ziggurat may not support custom headers directly
         // This is a placeholder for future implementation
-        _ = name;
-        _ = value;
+        // TODO: Implement custom header support in ziggurat or store headers separately
+        // Both name and value are used above (name in condition, value in if branch),
+        // so we don't need to discard them here
         return self;
     }
-    
+
     /// Set a cookie
     /// The cookie value will be copied to persistent memory
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.ok().withCookie("session_id", "abc123")
@@ -350,7 +380,7 @@ pub const Response = struct {
             persistent_allocator.free(persistent_name);
             return self;
         };
-        
+
         // Format Set-Cookie header
         var cookie_header = std.ArrayListUnmanaged(u8){};
         cookie_header.writer(persistent_allocator).print("{s}={s}", .{ persistent_name, persistent_value }) catch {
@@ -358,38 +388,38 @@ pub const Response = struct {
             persistent_allocator.free(persistent_value);
             return self;
         };
-        
+
         if (options.maxAge) |age| {
             cookie_header.writer(persistent_allocator).print("; Max-Age={d}", .{age}) catch {};
         }
-        
+
         if (options.domain) |domain| {
             cookie_header.writer(persistent_allocator).print("; Domain={s}", .{domain}) catch {};
         }
-        
+
         if (options.path) |path| {
             cookie_header.writer(persistent_allocator).print("; Path={s}", .{path}) catch {};
         }
-        
+
         if (options.secure) {
             cookie_header.writer(persistent_allocator).print("; Secure", .{}) catch {};
         }
-        
+
         if (options.httpOnly) {
             cookie_header.writer(persistent_allocator).print("; HttpOnly", .{}) catch {};
         }
-        
+
         const cookie_str = cookie_header.toOwnedSlice(persistent_allocator) catch return self;
-        
+
         // For now, just return self since ziggurat may not support Set-Cookie header directly
         // In the future, this would set the Set-Cookie header
         _ = cookie_str;
         return self;
     }
-    
+
     /// Create a file download response
     /// Sets appropriate headers for file download
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.download("report.pdf", pdf_data);
@@ -401,22 +431,22 @@ pub const Response = struct {
                 ._persistent_body = null,
             };
         };
-        
+
         var resp = Response{
             .inner = ziggurat.response.Response.text(persistent_data),
             ._persistent_body = persistent_data,
         };
-        
+
         // Set Content-Disposition header for download
         // For now, ziggurat may not support custom headers directly
         _ = filename;
-        
+
         return resp.withContentType("application/octet-stream");
     }
-    
+
     /// Create a streaming response (placeholder)
     /// For actual streaming, this would need ziggurat support
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// return Response.stream("text/plain", stream_data);
@@ -428,12 +458,12 @@ pub const Response = struct {
                 ._persistent_body = null,
             };
         };
-        
+
         var resp = Response{
             .inner = ziggurat.response.Response.text(persistent_data),
             ._persistent_body = persistent_data,
         };
-        
+
         return resp.withContentType(content_type);
     }
 
@@ -540,16 +570,16 @@ test "Response memory safety - body from arena" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const arena_allocator = gpa.allocator();
-    
+
     // Allocate body in temporary arena
     const temp_body = try arena_allocator.dupe(u8, "{\"test\":\"data\"}");
-    
+
     // Create response - should copy to persistent memory
     const resp = Response.json(temp_body);
-    
+
     // Free the arena
     arena_allocator.free(temp_body);
-    
+
     // Response should still be valid (body was copied)
     _ = resp;
 }
@@ -557,10 +587,10 @@ test "Response memory safety - body from arena" {
 test "Response empty string bodies" {
     const resp1 = Response.json("");
     _ = resp1;
-    
+
     const resp2 = Response.text("");
     _ = resp2;
-    
+
     const resp3 = Response.html("");
     _ = resp3;
 }
@@ -592,7 +622,7 @@ test "Response withCookie with all options" {
 test "Response redirect with custom location" {
     const resp1 = Response.redirect("/login");
     _ = resp1;
-    
+
     const resp2 = Response.redirect("/dashboard");
     _ = resp2;
 }
@@ -600,25 +630,25 @@ test "Response redirect with custom location" {
 test "Response all status code helpers" {
     const ok = Response.ok();
     _ = ok;
-    
+
     const created = Response.created();
     _ = created;
-    
+
     const noContent = Response.noContent();
     _ = noContent;
-    
+
     const badRequest = Response.badRequest();
     _ = badRequest;
-    
+
     const unauthorized = Response.unauthorized();
     _ = unauthorized;
-    
+
     const forbidden = Response.forbidden();
     _ = forbidden;
-    
+
     const notFound = Response.notFound();
     _ = notFound;
-    
+
     const internalError = Response.internalError();
     _ = internalError;
 }
@@ -647,4 +677,3 @@ test "Response toZiggurat converts back" {
     const ziggurat_resp = resp.toZiggurat();
     _ = ziggurat_resp;
 }
-

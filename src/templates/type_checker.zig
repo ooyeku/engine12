@@ -98,7 +98,10 @@ pub const TypeChecker = struct {
                     }
                     
                     if (!field_found) {
-                        @compileError("Context type '" ++ @typeName(context_type) ++ "' has no field '" ++ field_name ++ "'");
+                        // Build available fields list for better error message
+                        // Note: Could list available fields here, but compile-time string building is complex
+                        @compileError("Template error: Context type '" ++ @typeName(context_type) ++ "' has no field '" ++ field_name ++ "'. " ++
+                            "Available fields in " ++ @typeName(context_type) ++ ": check struct definition.");
                     }
                     
                     // Check if field is optional
@@ -124,14 +127,16 @@ pub const TypeChecker = struct {
                     switch (next_type_info) {
                         .array, .pointer => {
                             if (i < path.len - 1) {
-                                @compileError("Cannot access field '" ++ path[i + 1] ++ "' on array/slice type");
+                                @compileError("Template error: Cannot access field '" ++ path[i + 1] ++ "' on array/slice type '" ++ @typeName(current_type) ++ "'. " ++
+                                    "Arrays and slices cannot be accessed like structs. Use iteration ({% for %}) to access array elements.");
                             }
                         },
                         else => {},
                     }
                 },
                 else => {
-                    @compileError("Context type must be a struct");
+                    @compileError("Template error: Context type '" ++ @typeName(context_type) ++ "' must be a struct. " ++
+                        "Templates require a struct context with named fields. Got: " ++ @typeName(context_type));
                 },
             }
         }

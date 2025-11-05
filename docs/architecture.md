@@ -109,6 +109,8 @@ The ORM uses Zig's comptime features for type safety:
 - `model.inferTableName(T)`: Infers table name from struct name
 - Field introspection via `std.meta.fields(T)`
 - Compile-time SQL generation
+- **Enum support**: Enum types are automatically converted to their integer values when saving
+- **Optional field handling**: Null optional fields are automatically skipped in INSERT/UPDATE statements, allowing partial updates
 
 ### Row Mapping
 
@@ -117,6 +119,15 @@ The `QueryResult` (`src/orm/row.zig`) handles:
 - Reading SQLite result sets
 - Mapping rows to Zig structs
 - Type-safe column access
+- **Optional field deserialization**: Correctly handles null values for optional fields
+- **Optional enum deserialization**: Supports optional enum fields with proper type conversion
+
+### Error Messages
+
+The ORM provides improved error messages:
+- Field names and type information included in errors
+- Actionable suggestions for common mistakes
+- Clear indication of missing fields or type mismatches
 
 ## Template System
 
@@ -135,7 +146,8 @@ Templates are parsed into an Abstract Syntax Tree (`src/templates/ast.zig`):
 
 - Text nodes: Raw HTML/text
 - Variable nodes: `{{ .field }}` expressions
-- Control structures: Loops, conditionals (if supported)
+- Control structures: Loops (`{% for %}...{% endfor %}`), conditionals (`{% if %}...{% endif %}`)
+- Nested variable access: `{{ .nested.field }}` and parent context navigation (`{{ ../parent.field }}`)
 
 ### Type Safety
 
@@ -144,6 +156,17 @@ The type checker (`src/templates/type_checker.zig`) ensures:
 - Context struct contains all referenced fields
 - Field types match template usage
 - Compile-time errors for invalid templates
+- **Improved error messages**: Includes context type information, field names, and actionable suggestions
+
+### Template Features
+
+The template engine supports:
+
+- **Array/slice iteration**: `{% for .items |item| %}...{% endfor %}` with loop variables
+- **Loop variables**: `.item` (or custom name), `.index`, `.first`, `.last`
+- **Parent context navigation**: `{{ ../parent.field }}` to access parent context from within loops
+- **Improved conditional rendering**: Enhanced truthy/falsy evaluation with explicit string handling
+- **Runtime collection support**: Supports slices, arrays, and `ArrayListUnmanaged` collections
 
 ## Error Handling
 

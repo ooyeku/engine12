@@ -126,7 +126,7 @@ const Engine12 = @import("Engine12");
 const Request = Engine12.Request;
 const Response = Engine12.Response;
 
-var todos = std.ArrayList([]const u8).init(std.heap.page_allocator);
+var todos = std.ArrayListUnmanaged([]const u8){};
 
 fn handleRoot(req: *Request) Response {
     _ = req;
@@ -135,17 +135,17 @@ fn handleRoot(req: *Request) Response {
 
 fn handleGetTodos(req: *Request) Response {
     _ = req;
-    var json = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer json.deinit();
+    var json = std.ArrayListUnmanaged(u8){};
+    defer json.deinit(std.heap.page_allocator);
 
-    json.writer().print("[", .{}) catch return Response.status(500);
+    json.writer(std.heap.page_allocator).print("[", .{}) catch return Response.status(500);
     for (todos.items, 0..) |todo, i| {
         if (i > 0) {
-            json.writer().print(",", .{}) catch return Response.status(500);
+            json.writer(std.heap.page_allocator).print(",", .{}) catch return Response.status(500);
         }
-        json.writer().print("\"{s}\"", .{todo}) catch return Response.status(500);
+        json.writer(std.heap.page_allocator).print("\"{s}\"", .{todo}) catch return Response.status(500);
     }
-    json.writer().print("]", .{}) catch return Response.status(500);
+    json.writer(std.heap.page_allocator).print("]", .{}) catch return Response.status(500);
 
     return Response.json(json.items);
 }
@@ -155,10 +155,10 @@ fn handleCreateTodo(req: *Request) Response {
     // Simple parsing - in production, use req.jsonBody()
     if (std.mem.indexOf(u8, body, "title")) |_| {
         const title = "Sample Todo"; // Simplified
-        todos.append(title) catch return Response.status(500);
-        return Response.created().json("{\"id\": 1}");
+        todos.append(std.heap.page_allocator, title) catch return Response.status(500);
+        return Response.created().withJson("{\"id\": 1}");
     }
-    return Response.badRequest().json("{\"error\":\"Invalid request\"}");
+    return Response.badRequest().withJson("{\"error\":\"Invalid request\"}");
 }
 
 fn handleGetTodo(req: *Request) Response {
@@ -245,13 +245,26 @@ pub fn getORM() !*ORM {
 Add to `src/main.zig`:
 
 ```zig
+const TodoStatus = enum {
+    pending,
+    in_progress,
+    completed,
+};
+
 const Todo = struct {
     id: i64,
     title: []u8,
+    description: ?[]u8 = null, // Optional field
     completed: bool,
+    status: TodoStatus = .pending, // Enum field
     created_at: i64,
+    updated_at: i64,
 };
 ```
+
+**Note**: The ORM supports:
+- **Enum types**: Automatically converted to integers when saving
+- **Optional fields**: Null values are skipped in INSERT/UPDATE operations
 
 ### 4.3 Update Handlers
 
@@ -259,11 +272,11 @@ const Todo = struct {
 fn handleGetTodos(req: *Request) Response {
     _ = req;
     const orm = database.getORM() catch {
-        return Response.status(500).json("{\"error\":\"Database error\"}");
+        return Response.status(500).withJson("{\"error\":\"Database error\"}");
     };
 
     var todos_list = orm.findAll(Todo) catch {
-        return Response.status(500).json("{\"error\":\"Query failed\"}");
+        return Response.status(500).withJson("{\"error\":\"Query failed\"}");
     };
     defer {
         for (todos_list.items) |todo| {
@@ -273,17 +286,17 @@ fn handleGetTodos(req: *Request) Response {
     }
 
     // Build JSON response
-    var json = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer json.deinit();
-    json.writer().print("[", .{}) catch return Response.status(500);
+    var json = std.ArrayListUnmanaged(u8){};
+    defer json.deinit(std.heap.page_allocator);
+    json.writer(std.heap.page_allocator).print("[", .{}) catch return Response.status(500);
     for (todos_list.items, 0..) |todo, i| {
-        if (i > 0) json.writer().print(",", .{}) catch return Response.status(500);
-        json.writer().print(
+        if (i > 0) json.writer(std.heap.page_allocator).print(",", .{}) catch return Response.status(500);
+        json.writer(std.heap.page_allocator).print(
             "{{\"id\":{d},\"title\":\"{s}\",\"completed\":{}}},\"created_at\":{d}}}",
             .{ todo.id, todo.title, todo.completed, todo.created_at }
         ) catch return Response.status(500);
     }
-    json.writer().print("]", .{}) catch return Response.status(500);
+    json.writer(std.heap.page_allocator).print("]", .{}) catch return Response.status(500);
 
     return Response.json(json.items);
 }
@@ -294,16 +307,16 @@ fn handleCreateTodo(req: *Request) Response {
     };
 
     const input = req.jsonBody(TodoInput) catch {
-        return Response.badRequest().json("{\"error\":\"Invalid JSON\"}");
+        return Response.badRequest().withJson("{\"error\":\"Invalid JSON\"}");
     };
 
     const orm = database.getORM() catch {
-        return Response.status(500).json("{\"error\":\"Database error\"}");
+        return Response.status(500).withJson("{\"error\":\"Database error\"}");
     };
 
     const now = std.time.milliTimestamp();
     const title_copy = std.heap.page_allocator.dupe(u8, input.title) catch {
-        return Response.status(500).json("{\"error\":\"Memory error\"}");
+        return Response.status(500).withJson("{\"error\":\"Memory error\"}");
     };
 
     const todo = Todo{
@@ -315,16 +328,16 @@ fn handleCreateTodo(req: *Request) Response {
 
     orm.create(Todo, todo) catch {
         std.heap.page_allocator.free(title_copy);
-        return Response.status(500).json("{\"error\":\"Create failed\"}");
+        return Response.status(500).withJson("{\"error\":\"Create failed\"}");
     };
 
     const id = orm.db.lastInsertRowId() catch 0;
     var json_buf: [64]u8 = undefined;
     const json = std.fmt.bufPrint(&json_buf, "{{\"id\":{d}}}", .{id}) catch {
-        return Response.status(500).json("{\"error\":\"Format error\"}");
+        return Response.status(500).withJson("{\"error\":\"Format error\"}");
     };
 
-    return Response.created().json(json);
+    return Response.created().withJson(json);
 }
 ```
 
@@ -361,9 +374,13 @@ Create `src/templates/index.zt.html`:
 <body>
     <h1>{{ .title }}</h1>
     <ul>
-        {{# .todos }}
-        <li>{{ .title }}</li>
-        {{/}}
+        {% for .todos |todo| %}
+        <li>
+            {{ .todo.title }}
+            {% if .todo.completed %}✓{% endif %}
+            <small>(Index: {{ .index }})</small>
+        </li>
+        {% endfor %}
     </ul>
 </body>
 </html>
@@ -381,12 +398,20 @@ fn handleIndex(req: *Request) Response {
 
     const Context = struct {
         title: []const u8,
-        todos: []Todo,
+        todos: []const Todo,
+        page_info: struct {
+            author: []const u8,
+            version: []const u8,
+        },
     };
 
     const context = Context{
         .title = "My Todos",
         .todos = &[_]Todo{}, // Load from database
+        .page_info = .{
+            .author = "Engine12",
+            .version = "1.0.0",
+        },
     };
 
     const html = IndexTemplate.render(Context, context, std.heap.page_allocator) catch {
@@ -396,6 +421,24 @@ fn handleIndex(req: *Request) Response {
 
     return Response.html(html);
 }
+```
+
+**Template example with iteration and parent context:**
+
+```html
+<h1>{{ .title }}</h1>
+<p>By {{ .page_info.author }} v{{ .page_info.version }}</p>
+<ul>
+{% for .todos |todo| %}
+    <li>
+        {{ .todo.title }}
+        {% if .first %}<span>(First)</span>{% endif %}
+        {% if .last %}<span>(Last)</span>{% endif %}
+        <small>Index: {{ .index }}</small>
+        <p>Page author: {{ ../page_info.author }}</p>
+    </li>
+{% endfor %}
+</ul>
 ```
 
 ## Step 6: Middleware

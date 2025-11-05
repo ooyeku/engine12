@@ -85,7 +85,7 @@ Register a POST endpoint.
 fn handleCreate(req: *Request) Response {
     const todo = try req.jsonBody(Todo);
     // ... create logic
-    return Response.created().json(json_data);
+    return Response.created().withJson(json_data);
 }
 
 try app.post("/todos", handleCreate);
@@ -177,12 +177,14 @@ try app.useResponse(corsMiddleware);
 ### Static File Serving
 
 #### `serveStatic(mount_path: []const u8, directory: []const u8) !void`
-Register static file serving from a directory.
+Register static file serving from a directory. Supports nested paths for non-root mounts.
 
 ```zig
 try app.serveStatic("/", "frontend/public");
-try app.serveStatic("/css", "frontend/css");
+try app.serveStatic("/css", "frontend/css"); // Handles nested paths like /css/styles/main.css
 ```
+
+**Note**: The route limit is 5000 routes.
 
 ### Configuration
 
@@ -207,7 +209,7 @@ Register a custom error handler.
 
 ```zig
 fn customErrorHandler(err: anyerror) Response {
-    return Response.status(500).json("{\"error\":\"Internal error\"}");
+    return Response.status(500).withJson("{\"error\":\"Internal error\"}");
 }
 
 app.useErrorHandler(customErrorHandler);
@@ -314,10 +316,28 @@ const limit = req.param("limit").asU32Default(10);
 ### Query Parameters
 
 #### `query(name: []const u8) !?[]const u8`
-Get a query parameter by name.
+Get a query parameter by name. Returns null if not found, or error if parsing fails.
 
 ```zig
 const limit = try req.query("limit");
+const limit_u32 = if (limit) |l| try std.fmt.parseInt(u32, l, 10) else 10;
+```
+
+#### `queryOptional(name: []const u8) ?[]const u8`
+Get a query parameter by name (optional only, throws on parse error). Returns optional only - throws if query parameter parsing fails.
+
+```zig
+const status = req.queryOptional("status"); // ?[]const u8
+if (status) |s| {
+    // Use status
+}
+```
+
+#### `queryStrict(name: []const u8) ![]const u8`
+Get a query parameter by name (strict - fails if missing). Returns error union - fails if parameter is missing or parsing fails.
+
+```zig
+const limit = try req.queryStrict("limit"); // ![]const u8
 ```
 
 #### `queryParam(name: []const u8) !Param`
@@ -401,14 +421,14 @@ return Response.html("<html><body>Hello</body></html>");
 Create a 200 OK response.
 
 ```zig
-return Response.ok().json(data);
+return Response.ok().withJson(data);
 ```
 
 #### `created() Response`
 Create a 201 Created response.
 
 ```zig
-return Response.created().json(.{ .id = new_id });
+return Response.created().withJson("{\"id\":123}");
 ```
 
 #### `noContent() Response`
@@ -422,7 +442,7 @@ return Response.noContent();
 Create a 400 Bad Request response.
 
 ```zig
-return Response.badRequest().json(.{ .error = "Invalid input" });
+return Response.badRequest().withJson("{\"error\":\"Invalid input\"}");
 ```
 
 #### `unauthorized() Response`
@@ -446,6 +466,13 @@ Create a 404 Not Found response.
 return Response.notFound();
 ```
 
+#### `internalError() Response`
+Create a 500 Internal Server Error response.
+
+```zig
+return Response.internalError().withJson("{\"error\":\"Something went wrong\"}");
+```
+
 #### `status(status_code: u16) Response`
 Create a response with a specific status code.
 
@@ -462,8 +489,16 @@ Set the status code.
 return Response.text("error").withStatus(400);
 ```
 
+#### `withJson(body: []const u8) Response`
+Set JSON body for this response. Can be chained after builder methods like `ok()`, `created()`, etc.
+
+```zig
+return Response.created().withJson("{\"id\":123}");
+return Response.ok().withJson(data);
+```
+
 #### `withHeader(name: []const u8, value: []const u8) Response`
-Add a custom header.
+Add a custom header. For Content-Type headers, use `withContentType()` instead.
 
 ```zig
 return Response.json(data).withHeader("X-Custom-Header", "value");
@@ -552,19 +587,39 @@ var orm = ORM.init(db, allocator);
 ### CRUD Operations
 
 #### `create(comptime T: type, instance: T) !void`
-Create a new record.
+Create a new record. Supports structs with enum types and optional fields.
+
+**Enum Support**: Enums are automatically converted to their integer values when saving to the database.
+
+**Optional Fields**: Optional fields that are `null` are automatically skipped in INSERT statements (not included in the SQL).
 
 ```zig
+const TodoStatus = enum { pending, in_progress, completed };
+
+const Todo = struct {
+    id: i64,
+    title: []const u8,
+    completed: bool,
+    status: TodoStatus = .pending, // enum field supported
+    description: ?[]const u8 = null, // optional field - null values are skipped
+    created_at: i64,
+    updated_at: i64,
+};
+
 const todo = Todo{
     .id = 0,
     .title = try allocator.dupe(u8, "Learn Zig"),
     .completed = false,
+    .status = .pending, // enum automatically converted to integer
+    .description = null, // This field will be skipped in INSERT
     .created_at = std.time.milliTimestamp(),
     .updated_at = std.time.milliTimestamp(),
 };
 
 try orm.create(Todo, todo);
 ```
+
+**Note**: Optional enum fields are also supported. Null optional fields are skipped in INSERT/UPDATE operations.
 
 #### `find(comptime T: type, id: i64) !?T`
 Find a record by ID.
@@ -604,19 +659,22 @@ defer {
 ```
 
 #### `update(comptime T: type, instance: T) !void`
-Update a record.
+Update a record. Optional fields that are `null` are skipped in UPDATE statements (not included in the SQL).
 
 ```zig
 const todo = Todo{
     .id = 1,
     .title = try allocator.dupe(u8, "Updated title"),
     .completed = true,
+    .description = null, // This field will be skipped in UPDATE
     .created_at = 0,
     .updated_at = std.time.milliTimestamp(),
 };
 
 try orm.update(Todo, todo);
 ```
+
+**Note**: Only non-null optional fields are included in the UPDATE statement. This allows partial updates where you only set the fields you want to change.
 
 #### `delete(comptime T: type, id: i64) !void`
 Delete a record by ID.
@@ -1026,13 +1084,65 @@ const TemplateType = Template.compileFile("templates/index.zt.html");
 #### `render(comptime Context: type, ctx: Context, allocator: Allocator) ![]const u8`
 Render a compiled template with context.
 
+**Example with iteration:**
 ```zig
-const context = struct {
+const Context = struct {
     title: []const u8,
-}{ .title = "My Page" };
+    todos: []const Todo,
+};
 
-const html = try TemplateType.render(@TypeOf(context), context, allocator);
+const template_content = @embedFile("templates/index.zt.html");
+const IndexTemplate = templates.Template.compile(template_content);
+
+const context = Context{
+    .title = "My Todos",
+    .todos = &[_]Todo{
+        Todo{ .id = 1, .title = "Learn Zig", .completed = false },
+        Todo{ .id = 2, .title = "Build app", .completed = true },
+    },
+};
+
+const html = try IndexTemplate.render(Context, context, allocator);
 defer allocator.free(html);
+```
+
+**Template file (`templates/index.zt.html`):**
+```html
+<h1>{{ .title }}</h1>
+<ul>
+{% for .todos |todo| %}
+    <li class="{% if .todo.completed %}completed{% endif %}">
+        {{ .todo.title }}
+        {% if .first %}<span>(First item)</span>{% endif %}
+        {% if .last %}<span>(Last item)</span>{% endif %}
+        <small>Index: {{ .index }}</small>
+    </li>
+{% endfor %}
+</ul>
+```
+
+**Example with parent context:**
+```zig
+const Context = struct {
+    page_title: []const u8,
+    users: []const User,
+};
+
+const context = Context{
+    .page_title = "User List",
+    .users = &[_]User{...},
+};
+```
+
+**Template:**
+```html
+<h1>{{ .page_title }}</h1>
+{% for .users |user| %}
+    <div>
+        <h2>{{ .user.name }}</h2>
+        <p>Page: {{ ../page_title }}</p>
+    </div>
+{% endfor %}
 ```
 
 ### Template Syntax
@@ -1040,8 +1150,12 @@ defer allocator.free(html);
 - `{{ .field }}` - Output field value (HTML escaped)
 - `{{! .field }}` - Output field value (raw, not escaped)
 - `{{ .nested.field }}` - Access nested fields
-- `{{# .items }}...{{/}}` - Iterate over array (if supported)
-- `{{? .condition }}...{{/}}` - Conditional rendering (if supported)
+- `{% for .items |item| %}...{% endfor %}` - Iterate over arrays/slices
+  - Available loop variables: `.item`, `.index`, `.first`, `.last`
+  - Access parent context: `{{ ../parent.field }}`
+- `{% if .condition %}...{% else %}...{% endif %}` - Conditional rendering
+  - Supports truthy/falsy evaluation
+  - Handles empty strings, null, false, 0 as falsy
 
 ## File Server
 
@@ -1146,7 +1260,7 @@ try app.schedulePeriodicTask("sync", syncTask, 60000); // Every minute
 
 ```zig
 fn customErrorHandler(err: anyerror) Response {
-    return Response.status(500).json("{\"error\":\"Internal error\"}");
+    return Response.status(500).withJson("{\"error\":\"Internal error\"}");
 }
 
 app.useErrorHandler(customErrorHandler);
