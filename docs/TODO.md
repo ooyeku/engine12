@@ -4,7 +4,7 @@
 
 | Feature | Status | Priority | Notes |
 |---------|--------|----------|-------|
-| HTTP Routing | Working | - | GET, POST, PUT, DELETE, PATCH |
+| HTTP Routing | Working | - | GET, POST, PUT, DELETE (PATCH in C API only) |
 | Middleware System | Working | - | Pre-request & response middleware |
 | Request/Response API | Working | - | Full HTTP handling |
 | Rate Limiting | Working | - | Per-route configuration |
@@ -45,12 +45,12 @@
 
 | Feature | Status | Priority | Notes |
 |---------|--------|----------|-------|
-| README.md | Missing | Critical | Quick start |
-| API Documentation | Missing | Critical | Function reference |
-| Architecture Guide | Missing | High | Design overview |
-| Tutorial | Missing | High | First app guide |
-| Troubleshooting | Missing | Medium | Common issues |
-| API Examples | Partial | Medium | Todo app exists |
+| README.md | Working | - | Quick start guide with installation |
+| API Documentation | Working | - | Complete function reference (api-reference.md) |
+| Architecture Guide | Working | - | Design overview (architecture.md) |
+| Tutorial | Working | - | First app guide (tutorial.md) |
+| Troubleshooting | Working | - | Common issues (troubleshooting.md) |
+| API Examples | Working | - | Complete todo app example (examples/todo-app.md) |
 
 ## Developer Experience
 
@@ -71,7 +71,7 @@
 | Deployment Guide | Missing | High | Production setup |
 | Environment Config | Missing | High | Multi-env setup |
 | Process Management | Missing | Medium | Systemd/supervisor |
-| Graceful Shutdown | Partial | Medium | Clean shutdown |
+| Graceful Shutdown | Working | - | Clean shutdown implemented |
 | Health Endpoints | Working | - | /health endpoint |
 
 ## Observability & Monitoring
@@ -91,7 +91,7 @@
 |---------|--------|----------|-------|
 | File Uploads | Missing | Medium | Multipart forms |
 | Pagination | Missing | Medium | Helper utilities |
-| CORS Support | Partial | Medium | Cross-origin requests |
+| CORS Support | Partial | Medium | Basic middleware exists, needs header implementation |
 | Compression | Missing | Low | gzip/brotli |
 | Caching | Partial | Medium | Public API needed |
 | C API | Working | - | Language bindings |
@@ -99,6 +99,7 @@
 ---
 
 ## Legend
+
 - Working - Implemented and tested
 - Partial - Partially implemented
 - Missing - Not yet implemented

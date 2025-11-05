@@ -1,7 +1,6 @@
 // Root module - exports all public API
 pub const types = @import("types.zig");
 pub const engine12 = @import("engine12.zig");
-pub const core = @import("core.zig");
 pub const fileserver = @import("fileserver.zig");
 pub const request = @import("request.zig");
 pub const response = @import("response.zig");
@@ -23,7 +22,6 @@ pub const utils = @import("utils.zig");
 
 // Re-export main types for convenience
 pub const Engine12 = engine12.Engine12;
-pub const Engine12Core = core.Engine12Core;
 pub const FileServer = fileserver.FileServer;
 pub const Request = request.Request;
 pub const Response = response.Response;

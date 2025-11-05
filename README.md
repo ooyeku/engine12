@@ -24,26 +24,45 @@ pub fn main() !void {
 
 ## Installation
 
-Add Engine12 to your `build.zig.zon`:
+### Step 1: Fetch the package
+
+Run `zig fetch` to add Engine12 to your `build.zig.zon`:
+
+```bash
+zig fetch --save "git+https://github.com/ooyeku/Engine12.git"
+```
+
+This will automatically add the dependency with the correct hash to your `build.zig.zon` file.
+
+Alternatively, you can manually add it to your `build.zig.zon`:
 
 ```zig
 .dependencies = .{
     .Engine12 = .{
-        .url = "git+https://github.com/yourusername/Engine12.git",
-        .hash = "...",
+        .url = "git+https://github.com/ooyeku/Engine12.git",
+        .hash = "...", // Run `zig fetch` to get the hash
     },
 },
 ```
 
-Then add it to your `build.zig`:
+### Step 2: Add to your build.zig
+
+Add the dependency and module to your `build.zig`:
 
 ```zig
-const Engine12 = b.dependency("Engine12", .{
+const Engine12_dep = b.dependency("Engine12", .{
     .target = target,
     .optimize = optimize,
 });
 
-exe.addModule("Engine12", Engine12.module("Engine12"));
+exe.addModule("Engine12", Engine12_dep.module("Engine12"));
+```
+
+If you're using the ORM or C API, you'll also need to link libc:
+
+```zig
+// Link libc (required for ORM and C API functionality)
+exe.linkLibC();
 ```
 
 ## Features
@@ -73,6 +92,7 @@ See [TODO.md](TODO.md) for a complete feature list and roadmap.
 ## Example
 
 See the [todo app example](todo/src/app.zig) for a complete working application demonstrating:
+
 - Database setup and migrations
 - CRUD operations with the ORM
 - Template rendering
@@ -85,9 +105,8 @@ See the [todo app example](todo/src/app.zig) for a complete working application 
 
 ## License
 
-[Add your license here]
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
 Contributions welcome! Please see our contributing guidelines.
-
