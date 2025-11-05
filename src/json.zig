@@ -76,7 +76,7 @@ pub const Json = struct {
         const type_info = @typeInfo(T);
 
         switch (type_info) {
-            .Struct => {
+            .@"struct" => {
                 try list.writer(allocator).print("{{", .{});
 
                 inline for (std.meta.fields(T), 0..) |field, i| {
@@ -94,7 +94,7 @@ pub const Json = struct {
 
                 try list.writer(allocator).print("}}", .{});
             },
-            .Array => {
+            .array => {
                 try list.writer(allocator).print("[", .{});
                 for (value, 0..) |item, i| {
                     if (i > 0) {
@@ -104,7 +104,7 @@ pub const Json = struct {
                 }
                 try list.writer(allocator).print("]", .{});
             },
-            .Pointer => |ptr_info| {
+            .pointer => |ptr_info| {
                 if (ptr_info.size == .slice) {
                     try serializeFieldValue(ptr_info.child, value, list, allocator);
                 } else {
@@ -121,27 +121,27 @@ pub const Json = struct {
         const type_info = @typeInfo(T);
 
         switch (type_info) {
-            .IntSigned, .IntUnsigned => {
+            .int => {
                 try list.writer(allocator).print("{}", .{value});
             },
-            .Float => {
+            .float => {
                 try list.writer(allocator).print("{d}", .{value});
             },
-            .Bool => {
+            .bool => {
                 if (value) {
                     try list.writer(allocator).print("true", .{});
                 } else {
                     try list.writer(allocator).print("false", .{});
                 }
             },
-            .Optional => |opt_info| {
+            .optional => |opt_info| {
                 if (value) |v| {
                     try serializeFieldValue(opt_info.child, v, list, allocator);
                 } else {
                     try list.writer(allocator).print("null", .{});
                 }
             },
-            .Pointer => |ptr_info| {
+            .pointer => |ptr_info| {
                 if (ptr_info.size == .slice) {
                     if (ptr_info.child == u8) {
                         // String - escape properly
@@ -161,7 +161,7 @@ pub const Json = struct {
                     @compileError("Unsupported pointer type for JSON serialization");
                 }
             },
-            .Struct => {
+            .@"struct" => {
                 try serializeValue(T, value, list, allocator);
             },
             else => {
@@ -271,16 +271,16 @@ pub const Json = struct {
             const type_info = @typeInfo(T);
 
             switch (type_info) {
-                .IntSigned, .IntUnsigned => {
+                .int => {
                     return try self.parseInt(T);
                 },
-                .Float => {
+                .float => {
                     return try self.parseFloat(T);
                 },
-                .Bool => {
+                .bool => {
                     return try self.parseBool();
                 },
-                .Optional => |opt_info| {
+                .optional => |opt_info| {
                     self.skipWhitespace();
                     if (self.pos < self.input.len and std.mem.startsWith(u8, self.input[self.pos..], "null")) {
                         self.pos += 4;
@@ -290,7 +290,7 @@ pub const Json = struct {
                         return value;
                     }
                 },
-                .Pointer => |ptr_info| {
+                .pointer => |ptr_info| {
                     if (ptr_info.size == .slice) {
                         if (ptr_info.child == u8) {
                             // String
@@ -302,7 +302,7 @@ pub const Json = struct {
                         @compileError("Unsupported pointer type for JSON deserialization: " ++ @typeName(T));
                     }
                 },
-                .Struct => {
+                .@"struct" => {
                     return try self.parseStruct(T);
                 },
                 else => {
@@ -557,7 +557,7 @@ test "Json.serialize with optional" {
     const test_value1 = TestStruct{ .id = 1, .description = "test" };
     const json1 = try Json.serialize(TestStruct, test_value1, allocator);
     defer allocator.free(json1);
-    defer allocator.free(test_value1.description.?);
+    // Note: test_value1.description is a string literal, not allocated, so no need to free
 
     const test_value2 = TestStruct{ .id = 2, .description = null };
     const json2 = try Json.serialize(TestStruct, test_value2, allocator);
