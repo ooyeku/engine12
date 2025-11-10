@@ -4,6 +4,8 @@ let todos = [];
 let currentFilter = 'all';
 let currentSort = 'created_desc';
 let searchQuery = '';
+let currentPage = 'dashboard';
+let completedSearchQuery = '';
 
 // API Functions
 async function fetchTodos() {
@@ -109,6 +111,58 @@ async function fetchStats() {
     }
 }
 
+// Page Management Functions
+function switchPage(pageName) {
+    currentPage = pageName;
+    
+    // Update URL hash
+    window.location.hash = pageName;
+    
+    // Update tab buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        if (btn.dataset.page === pageName) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+    
+    // Update page containers
+    document.querySelectorAll('.page-container').forEach(container => {
+        if (container.dataset.page === pageName) {
+            container.classList.add('active');
+        } else {
+            container.classList.remove('active');
+        }
+    });
+    
+    // Refresh content based on page
+    switch (pageName) {
+        case 'dashboard':
+            renderDashboard();
+            break;
+        case 'active':
+            renderTodos();
+            break;
+        case 'completed':
+            renderCompletedTodos();
+            break;
+        case 'analytics':
+            renderAnalytics();
+            break;
+    }
+}
+
+function initializePageFromHash() {
+    const hash = window.location.hash.substring(1);
+    const validPages = ['dashboard', 'active', 'completed', 'analytics'];
+    if (hash && validPages.includes(hash)) {
+        switchPage(hash);
+    } else {
+        switchPage('dashboard');
+    }
+}
+
 // DOM Functions
 function renderTodos() {
     const todoList = document.getElementById('todo-list');
@@ -197,9 +251,10 @@ function applySearch(todos) {
     );
 }
 
-function applySort(todos) {
+function applySort(todos, sortValue = null) {
+    const sort = sortValue || currentSort;
     return [...todos].sort((a, b) => {
-        switch (currentSort) {
+        switch (sort) {
             case 'created_desc':
                 return (b.created_at || 0) - (a.created_at || 0);
             case 'created_asc':
@@ -226,6 +281,320 @@ function applySort(todos) {
                 return 0;
         }
     });
+}
+
+// Dashboard Rendering
+function renderDashboard() {
+    updateStats();
+    renderRecentActivity();
+}
+
+function renderRecentActivity() {
+    const recentList = document.getElementById('recent-todos-list');
+    const recentTodos = [...todos]
+        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+        .slice(0, 5);
+    
+    if (recentTodos.length === 0) {
+        recentList.innerHTML = '<div class="empty-state"><p>No tasks yet. Add your first task above!</p></div>';
+        return;
+    }
+    
+    recentList.innerHTML = recentTodos.map(todo => {
+        const isOverdue = todo.due_date && new Date(parseInt(todo.due_date)) < new Date() && !todo.completed;
+        const priorityClass = `priority-${todo.priority || 'medium'}`;
+        const tags = todo.tags ? todo.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
+        
+        return `
+            <div class="todo-item ${todo.completed ? 'completed' : ''} ${priorityClass} ${isOverdue ? 'overdue' : ''}" data-id="${todo.id}">
+                <div class="todo-header">
+                    <input 
+                        type="checkbox" 
+                        class="todo-checkbox" 
+                        ${todo.completed ? 'checked' : ''}
+                        onchange="toggleTodo(${todo.id})"
+                    >
+                    <div class="todo-title-wrapper">
+                        <div class="todo-title">${escapeHtml(todo.title)}</div>
+                        ${todo.priority && todo.priority !== 'medium' ? `
+                            <span class="priority-badge priority-${todo.priority}">${todo.priority}</span>
+                        ` : ''}
+                    </div>
+                </div>
+                ${todo.description ? `<div class="todo-description">${escapeHtml(todo.description)}</div>` : ''}
+                ${tags.length > 0 ? `
+                    <div class="todo-tags">
+                        ${tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+                    </div>
+                ` : ''}
+                <div class="todo-meta">
+                    <div class="todo-dates">
+                        ${todo.due_date ? `
+                            <span class="due-date ${isOverdue ? 'overdue' : ''}">
+                                Due: ${formatDate(parseInt(todo.due_date))}
+                            </span>
+                        ` : ''}
+                        <span>Created: ${formatDate(todo.created_at)}</span>
+                    </div>
+                    <div class="todo-actions">
+                        <button onclick="editTodo(${todo.id})">Edit</button>
+                        <button class="btn-delete" onclick="confirmDelete(${todo.id})">Delete</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Completed Todos Rendering
+function renderCompletedTodos() {
+    const completedList = document.getElementById('completed-todo-list');
+    let completedTodos = todos.filter(t => t.completed);
+    
+    // Apply search
+    if (completedSearchQuery.trim()) {
+        const query = completedSearchQuery.toLowerCase();
+        completedTodos = completedTodos.filter(todo => 
+            todo.title.toLowerCase().includes(query) ||
+            (todo.description && todo.description.toLowerCase().includes(query)) ||
+            (todo.tags && todo.tags.toLowerCase().includes(query))
+        );
+    }
+    
+    // Apply sort
+    const sortSelect = document.getElementById('sort-select-completed');
+    if (sortSelect) {
+        const sortValue = sortSelect.value;
+        completedTodos = applySort(completedTodos, sortValue);
+    }
+    
+    if (completedTodos.length === 0) {
+        completedList.innerHTML = '<div class="empty-state"><p>No completed tasks yet.</p></div>';
+        return;
+    }
+    
+    completedList.innerHTML = completedTodos.map(todo => {
+        const priorityClass = `priority-${todo.priority || 'medium'}`;
+        const tags = todo.tags ? todo.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
+        
+        return `
+            <div class="todo-item completed ${priorityClass}" data-id="${todo.id}">
+                <div class="todo-header">
+                    <input 
+                        type="checkbox" 
+                        class="todo-checkbox" 
+                        checked
+                        onchange="toggleTodo(${todo.id})"
+                    >
+                    <div class="todo-title-wrapper">
+                        <div class="todo-title">${escapeHtml(todo.title)}</div>
+                        ${todo.priority && todo.priority !== 'medium' ? `
+                            <span class="priority-badge priority-${todo.priority}">${todo.priority}</span>
+                        ` : ''}
+                    </div>
+                </div>
+                ${todo.description ? `<div class="todo-description">${escapeHtml(todo.description)}</div>` : ''}
+                ${tags.length > 0 ? `
+                    <div class="todo-tags">
+                        ${tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+                    </div>
+                ` : ''}
+                <div class="todo-meta">
+                    <div class="todo-dates">
+                        <span>Completed: ${formatDate(todo.updated_at || todo.created_at)}</span>
+                    </div>
+                    <div class="todo-actions">
+                        <button class="btn-delete" onclick="confirmDelete(${todo.id})">Delete</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Analytics Rendering
+function renderAnalytics() {
+    updateAnalyticsStats();
+    renderPriorityChart();
+    renderStatusChart();
+    renderTagsChart();
+    renderTrendsChart();
+}
+
+function updateAnalyticsStats() {
+    const total = todos.length;
+    const completed = todos.filter(t => t.completed).length;
+    const pending = total - completed;
+    const progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+    const now = new Date();
+    const overdue = todos.filter(t => 
+        t.due_date && new Date(parseInt(t.due_date)) < now && !t.completed
+    ).length;
+
+    document.getElementById('analytics-stat-total').textContent = total;
+    document.getElementById('analytics-stat-pending').textContent = pending;
+    document.getElementById('analytics-stat-completed').textContent = completed;
+    document.getElementById('analytics-stat-progress').textContent = progress + '%';
+    document.getElementById('analytics-stat-overdue').textContent = overdue;
+}
+
+function renderPriorityChart() {
+    const priorityChart = document.getElementById('priority-chart');
+    const high = todos.filter(t => t.priority === 'high' && !t.completed).length;
+    const medium = todos.filter(t => t.priority === 'medium' && !t.completed).length;
+    const low = todos.filter(t => t.priority === 'low' && !t.completed).length;
+    const total = high + medium + low;
+    
+    if (total === 0) {
+        priorityChart.innerHTML = '<p style="color: var(--text-secondary); text-align: center;">No active tasks</p>';
+        return;
+    }
+    
+    priorityChart.innerHTML = `
+        <div class="chart-bar">
+            <span class="chart-label">High</span>
+            <div class="chart-bar-container">
+                <div class="chart-bar-fill priority-high" style="width: ${(high / total) * 100}%">
+                    <span class="chart-bar-value">${high}</span>
+                </div>
+            </div>
+        </div>
+        <div class="chart-bar">
+            <span class="chart-label">Medium</span>
+            <div class="chart-bar-container">
+                <div class="chart-bar-fill priority-medium" style="width: ${(medium / total) * 100}%">
+                    <span class="chart-bar-value">${medium}</span>
+                </div>
+            </div>
+        </div>
+        <div class="chart-bar">
+            <span class="chart-label">Low</span>
+            <div class="chart-bar-container">
+                <div class="chart-bar-fill priority-low" style="width: ${(low / total) * 100}%">
+                    <span class="chart-bar-value">${low}</span>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderStatusChart() {
+    const statusChart = document.getElementById('status-chart');
+    const completed = todos.filter(t => t.completed).length;
+    const pending = todos.filter(t => !t.completed).length;
+    const total = todos.length;
+    
+    if (total === 0) {
+        statusChart.innerHTML = '<p style="color: var(--text-secondary); text-align: center;">No tasks yet</p>';
+        return;
+    }
+    
+    statusChart.innerHTML = `
+        <div class="chart-bar">
+            <span class="chart-label">Completed</span>
+            <div class="chart-bar-container">
+                <div class="chart-bar-fill" style="width: ${(completed / total) * 100}%; background: linear-gradient(90deg, var(--success), #6ee7b7);">
+                    <span class="chart-bar-value">${completed}</span>
+                </div>
+            </div>
+        </div>
+        <div class="chart-bar">
+            <span class="chart-label">Pending</span>
+            <div class="chart-bar-container">
+                <div class="chart-bar-fill" style="width: ${(pending / total) * 100}%">
+                    <span class="chart-bar-value">${pending}</span>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderTagsChart() {
+    const tagsChart = document.getElementById('tags-chart');
+    const tagCounts = {};
+    
+    todos.forEach(todo => {
+        if (todo.tags) {
+            const tags = todo.tags.split(',').map(t => t.trim()).filter(Boolean);
+            tags.forEach(tag => {
+                tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+            });
+        }
+    });
+    
+    const sortedTags = Object.entries(tagCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+    
+    if (sortedTags.length === 0) {
+        tagsChart.innerHTML = '<p style="color: var(--text-secondary); text-align: center;">No tags used</p>';
+        return;
+    }
+    
+    const maxCount = sortedTags[0][1];
+    tagsChart.innerHTML = sortedTags.map(([tag, count]) => `
+        <div class="chart-bar">
+            <span class="chart-label">${escapeHtml(tag)}</span>
+            <div class="chart-bar-container">
+                <div class="chart-bar-fill" style="width: ${(count / maxCount) * 100}%">
+                    <span class="chart-bar-value">${count}</span>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderTrendsChart() {
+    const trendsChart = document.getElementById('trends-chart');
+    const completedToday = todos.filter(t => {
+        if (!t.completed || !t.updated_at) return false;
+        const today = new Date();
+        const todoDate = new Date(t.updated_at);
+        return todoDate.toDateString() === today.toDateString();
+    }).length;
+    
+    const completedThisWeek = todos.filter(t => {
+        if (!t.completed || !t.updated_at) return false;
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        return new Date(t.updated_at) >= weekAgo;
+    }).length;
+    
+    const completedThisMonth = todos.filter(t => {
+        if (!t.completed || !t.updated_at) return false;
+        const monthAgo = new Date();
+        monthAgo.setMonth(monthAgo.getMonth() - 1);
+        return new Date(t.updated_at) >= monthAgo;
+    }).length;
+    
+    const maxCount = Math.max(completedToday, completedThisWeek, completedThisMonth, 1);
+    
+    trendsChart.innerHTML = `
+        <div class="chart-bar">
+            <span class="chart-label">Today</span>
+            <div class="chart-bar-container">
+                <div class="chart-bar-fill" style="width: ${(completedToday / maxCount) * 100}%">
+                    <span class="chart-bar-value">${completedToday}</span>
+                </div>
+            </div>
+        </div>
+        <div class="chart-bar">
+            <span class="chart-label">This Week</span>
+            <div class="chart-bar-container">
+                <div class="chart-bar-fill" style="width: ${(completedThisWeek / maxCount) * 100}%">
+                    <span class="chart-bar-value">${completedThisWeek}</span>
+                </div>
+            </div>
+        </div>
+        <div class="chart-bar">
+            <span class="chart-label">This Month</span>
+            <div class="chart-bar-container">
+                <div class="chart-bar-fill" style="width: ${(completedThisMonth / maxCount) * 100}%">
+                    <span class="chart-bar-value">${completedThisMonth}</span>
+                </div>
+            </div>
+        </div>
+    `;
 }
 
 function updateStats() {
@@ -325,7 +694,43 @@ function formatDate(timestamp) {
 
 // Event Listeners
 document.addEventListener('DOMContentLoaded', () => {
-    // Add todo button
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            switchPage(btn.dataset.page);
+        });
+    });
+
+    // Hash change listener for back/forward navigation
+    window.addEventListener('hashchange', initializePageFromHash);
+
+    // Quick add todo (Dashboard)
+    const quickAddBtn = document.getElementById('quick-add-btn');
+    const quickTitleInput = document.getElementById('quick-todo-title');
+    if (quickAddBtn && quickTitleInput) {
+        quickAddBtn.addEventListener('click', async () => {
+            const title = quickTitleInput.value.trim();
+            if (!title) {
+                showError('Title is required');
+                return;
+            }
+            
+            try {
+                await createTodo(title, '', 'medium', null, []);
+                quickTitleInput.value = '';
+            } catch (error) {
+                // Error already shown
+            }
+        });
+
+        quickTitleInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                quickAddBtn.click();
+            }
+        });
+    }
+
+    // Add todo button (Active page)
     document.getElementById('add-todo-btn').addEventListener('click', async () => {
         const titleInput = document.getElementById('todo-title');
         const descInput = document.getElementById('todo-description');
@@ -356,7 +761,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Search
+    // Search (Active page)
     const searchInput = document.getElementById('search-input');
     const clearSearch = document.getElementById('clear-search');
     searchInput.addEventListener('input', (e) => {
@@ -371,14 +776,71 @@ document.addEventListener('DOMContentLoaded', () => {
         renderTodos();
     });
 
-    // Sort
+    // Search (Completed page)
+    const searchInputCompleted = document.getElementById('search-input-completed');
+    const clearSearchCompleted = document.getElementById('clear-search-completed');
+    if (searchInputCompleted && clearSearchCompleted) {
+        searchInputCompleted.addEventListener('input', (e) => {
+            completedSearchQuery = e.target.value;
+            clearSearchCompleted.style.display = completedSearchQuery ? 'block' : 'none';
+            renderCompletedTodos();
+        });
+        clearSearchCompleted.addEventListener('click', () => {
+            searchInputCompleted.value = '';
+            completedSearchQuery = '';
+            clearSearchCompleted.style.display = 'none';
+            renderCompletedTodos();
+        });
+    }
+
+    // Sort (Active page)
     document.getElementById('sort-select').addEventListener('change', (e) => {
         currentSort = e.target.value;
         renderTodos();
     });
 
+    // Sort (Completed page)
+    const sortSelectCompleted = document.getElementById('sort-select-completed');
+    if (sortSelectCompleted) {
+        sortSelectCompleted.addEventListener('change', () => {
+            renderCompletedTodos();
+        });
+    }
+
     // Export
     document.getElementById('export-btn').addEventListener('click', exportTodos);
+
+    // Bulk actions (Completed page)
+    const deleteAllBtn = document.getElementById('delete-all-completed');
+    const restoreAllBtn = document.getElementById('restore-all-completed');
+    if (deleteAllBtn) {
+        deleteAllBtn.addEventListener('click', async () => {
+            const completedTodos = todos.filter(t => t.completed);
+            if (completedTodos.length === 0) {
+                showError('No completed tasks to delete');
+                return;
+            }
+            if (confirm(`Delete all ${completedTodos.length} completed tasks?`)) {
+                for (const todo of completedTodos) {
+                    await deleteTodo(todo.id);
+                }
+            }
+        });
+    }
+    if (restoreAllBtn) {
+        restoreAllBtn.addEventListener('click', async () => {
+            const completedTodos = todos.filter(t => t.completed);
+            if (completedTodos.length === 0) {
+                showError('No completed tasks to restore');
+                return;
+            }
+            if (confirm(`Restore all ${completedTodos.length} completed tasks?`)) {
+                for (const todo of completedTodos) {
+                    await updateTodo(todo.id, { completed: false });
+                }
+            }
+        });
+    }
 
     // Enter key support
     document.getElementById('todo-title').addEventListener('keypress', (e) => {
@@ -402,10 +864,30 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.ctrlKey || e.metaKey) {
             if (e.key === 'k') {
                 e.preventDefault();
-                searchInput.focus();
+                if (currentPage === 'active') {
+                    searchInput.focus();
+                } else if (currentPage === 'completed' && searchInputCompleted) {
+                    searchInputCompleted.focus();
+                }
             } else if (e.key === 'n') {
                 e.preventDefault();
-                document.getElementById('todo-title').focus();
+                if (currentPage === 'dashboard' && quickTitleInput) {
+                    quickTitleInput.focus();
+                } else if (currentPage === 'active') {
+                    document.getElementById('todo-title').focus();
+                }
+            } else if (e.key === '1') {
+                e.preventDefault();
+                switchPage('dashboard');
+            } else if (e.key === '2') {
+                e.preventDefault();
+                switchPage('active');
+            } else if (e.key === '3') {
+                e.preventDefault();
+                switchPage('completed');
+            } else if (e.key === '4') {
+                e.preventDefault();
+                switchPage('analytics');
             }
         }
     });
@@ -413,6 +895,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial load
     fetchTodos();
     fetchStats();
+    initializePageFromHash();
 
     // Refresh stats periodically
     setInterval(fetchStats, 30000);

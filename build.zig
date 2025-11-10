@@ -226,4 +226,29 @@ pub fn build(b: *std.Build) void {
     const run_todo_tests = b.addRunArtifact(todo_test_exe);
     todo_test_step.dependOn(&run_todo_tests.step);
 
+    // CLI executable
+    const cli_exe = b.addExecutable(.{
+        .name = "e12",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Install CLI executable
+    b.installArtifact(cli_exe);
+
+    // CLI install step
+    const cli_install_step = b.step("cli-install", "Install e12 CLI tool");
+    const cli_install_artifact = b.addInstallArtifact(cli_exe, .{});
+    cli_install_step.dependOn(&cli_install_artifact.step);
+    
+    // Add reminder message after installation
+    const cli_reminder_cmd = b.addSystemCommand(&.{ "sh", "-c" });
+    cli_reminder_cmd.addArgs(&.{
+        "printf '\\n\\033[1;32m✓ e12 CLI installed successfully!\\033[0m\\n\\nTo use the e12 command, add it to your PATH:\\n  For zsh: source ~/.zshrc\\n  For bash: source ~/.bashrc\\n\\nOr restart your terminal.\\n\\nYou can also run it directly: ./zig-out/bin/e12\\n\\n'",
+    });
+    cli_install_step.dependOn(&cli_reminder_cmd.step);
+
 }

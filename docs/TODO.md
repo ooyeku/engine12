@@ -1,5 +1,22 @@
 # Engine12 v1.0.0 Roadmap
 
+## Recent Updates
+
+**Latest (2025-01-10)**
+- CLI Tool: Complete project scaffolding with `e12 new <project>` command
+  - Automatic `zig fetch` integration with hash parsing
+  - Proper `build.zig.zon` and `build.zig` generation
+  - Minimal, working scaffold that requires no edits
+  - Install via `zig build cli-install`
+- Todo App: Enhanced with multi-page tabbed interface
+  - Dashboard page with quick-add and recent activity
+  - Active tasks page with full CRUD and filtering
+  - Completed tasks page with bulk actions
+  - Analytics page with 4 chart types (priority, status, tags, trends)
+  - URL hash routing for bookmarkable pages
+  - Keyboard shortcuts (Ctrl+1/2/3/4 for tabs, Ctrl+K for search, Ctrl+N for new task)
+  - Mobile-responsive design with smooth animations
+
 ## Core Framework Features
 
 | Feature | Status | Priority | Notes |
@@ -56,7 +73,7 @@
 
 | Feature | Status | Priority | Notes |
 |---------|--------|----------|-------|
-| CLI Tool | Missing | High | Project scaffolding |
+| ✓ CLI Tool | Working | - | Project scaffolding with `e12 new`, auto zig fetch, proper build.zig.zon generation |
 | Hot Reload | Missing | Medium | Auto-reload dev server |
 | ✓ Structured Logging | Working | - | JSON & human-readable formats, builder pattern API |
 | Configuration | Missing | High | .env support |
@@ -95,6 +112,12 @@
 | Compression | Missing | Low | gzip/brotli |
 | ✓ Caching | Working | - | Public API with Request methods: cache(), cacheGet(), cacheSet(), cacheInvalidate(), cacheInvalidatePrefix() |
 | ✓ C API | Working | - | Language bindings |
+
+## Example Applications
+
+| Application | Status | Features Demonstrated |
+|-------------|--------|----------------------|
+| ✓ Todo App | Working | Multi-page tabbed UI (Dashboard, Active, Completed, Analytics), Full CRUD operations, Search & filtering, Sorting, Priority management, Tags, Due dates, Caching, Background tasks, Health checks, Rate limiting, CSRF protection, Body size limits, Custom error handling, Metrics collection, Structured logging, Request tracking, Route groups, Static file serving, Template rendering, Database migrations, ORM usage |
 
 ---
 

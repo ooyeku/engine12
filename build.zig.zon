@@ -13,6 +13,10 @@
             .url = "git+https://github.com/ooyeku/ziggurat.git#v1.0.0",
             .hash = "ziggurat-1.0.0-RWNIDINgAwCyedonF1uGGaA1iXuooPuDEBDQIrinVNmU",
         },
+        .Engine12 = .{
+            .url = "git+https://github.com/ooyeku/Engine12.git#db64b1ccd76d58959f96948c07d9e28bf60fe21e",
+            .hash = "Engine12-0.2.1-H7f_S1-cywHmygDv-5bwfsPWEEOBgVYuojRhezFP3fWB",
+        },
     },
     .paths = .{
         "build.zig",
