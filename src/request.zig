@@ -194,8 +194,9 @@ pub const Request = struct {
         // Clear existing params
         self.route_params.deinit();
         
-        // Reinitialize with the request's arena allocator
-        self.route_params = std.StringHashMap([]const u8).init(self.arena.allocator());
+        // Reinitialize with page allocator (internal storage only)
+        // Keys and values are duplicated into the arena below
+        self.route_params = std.StringHashMap([]const u8).init(std.heap.page_allocator);
         
         // Duplicate all keys and values into the request's arena
         var it = params.iterator();
@@ -210,9 +211,12 @@ pub const Request = struct {
     /// The arena is initialized with the provided backing allocator
     /// Caller must ensure cleanup happens (typically done automatically by wrapHandler)
     pub fn fromZiggurat(ziggurat_request: *ziggurat.request.Request, backing_allocator: std.mem.Allocator) Request {
-        var arena = std.heap.ArenaAllocator.init(backing_allocator);
-        const context = std.StringHashMap([]const u8).init(arena.allocator());
-        const route_params = std.StringHashMap([]const u8).init(arena.allocator());
+        const arena = std.heap.ArenaAllocator.init(backing_allocator);
+        
+        // Use page allocator for hash map internal storage to avoid arena growth issues
+        // Keys and values are still duplicated into the arena in set() and setRouteParams()
+        const context = std.StringHashMap([]const u8).init(std.heap.page_allocator);
+        const route_params = std.StringHashMap([]const u8).init(std.heap.page_allocator);
         
         return Request{
             .inner = ziggurat_request,

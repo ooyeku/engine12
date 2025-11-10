@@ -36,3 +36,9 @@ pub const BackgroundTask = types.BackgroundTask;
 pub const HealthCheckFn = types.HealthCheckFn;
 pub const PreRequestMiddleware = types.PreRequestMiddleware;
 pub const ResponseTransformMiddleware = types.ResponseTransformMiddleware;
+
+// Re-export logging types
+pub const Logger = dev_tools.Logger;
+pub const LogLevel = dev_tools.LogLevel;
+pub const LogEntry = dev_tools.LogEntry;
+pub const OutputFormat = dev_tools.OutputFormat;

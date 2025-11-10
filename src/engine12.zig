@@ -13,8 +13,22 @@ const error_handler = @import("error_handler.zig");
 const metrics = @import("metrics.zig");
 const rate_limit = @import("rate_limit.zig");
 const cache = @import("cache.zig");
+const dev_tools = @import("dev_tools.zig");
 
 const allocator = std.heap.page_allocator;
+
+/// Generate a unique request ID
+/// Uses a stack buffer to avoid allocation failures
+fn generateRequestId(alloc: std.mem.Allocator) ![]const u8 {
+    const timestamp = std.time.milliTimestamp();
+    const random = @as(u64, @intCast(std.time.nanoTimestamp())) % 1000000;
+    var buffer: [64]u8 = undefined;
+    const id_str = std.fmt.bufPrint(&buffer, "req_{d}_{d}", .{ timestamp, random }) catch {
+        // Fallback if bufPrint somehow fails (shouldn't happen)
+        return alloc.dupe(u8, "req_unknown");
+    };
+    return alloc.dupe(u8, id_str);
+}
 
 /// Global middleware pointer (thread-local for thread safety)
 /// This is set when routes are registered and accessed at runtime
@@ -60,7 +74,12 @@ fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?
 
             // Create request with arena allocator
             // Using page_allocator as backing for performance
+            // The arena is warmed up inside fromZiggurat to prevent panics
             var engine12_request = Request.fromZiggurat(ziggurat_request, allocator);
+
+            // Generate request ID using page allocator, then duplicate into arena
+            const request_id = generateRequestId(allocator) catch "unknown";
+            engine12_request.set("request_id", request_id) catch {};
 
             // Ensure cleanup happens even if handler panics
             defer engine12_request.deinit();
@@ -161,6 +180,9 @@ pub const Engine12 = struct {
     // Metrics Collector
     metrics_collector: metrics.MetricsCollector,
 
+    // Logger
+    logger: dev_tools.Logger,
+
     // Lifecycle
     supervisor: ?*anyopaque = null,
     http_server: ?*anyopaque = null,
@@ -172,6 +194,7 @@ pub const Engine12 = struct {
             .middleware = middleware_chain.MiddlewareChain{},
             .error_handler_registry = error_handler.ErrorHandlerRegistry.init(allocator),
             .metrics_collector = metrics.MetricsCollector.init(allocator),
+            .logger = dev_tools.Logger.fromEnvironment(allocator, profile.environment),
         };
     }
 

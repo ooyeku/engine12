@@ -9,6 +9,8 @@ const cache = E12.cache;
 const templates = E12.templates;
 const Database = E12.orm.Database;
 const ORM = E12.orm.ORM;
+const Logger = E12.Logger;
+const LogLevel = E12.LogLevel;
 
 const allocator = std.heap.page_allocator;
 
@@ -31,6 +33,14 @@ const Todo = struct {
 var global_db: ?Database = null;
 var global_orm: ?ORM = null;
 var db_mutex: std.Thread.Mutex = .{};
+var global_logger: ?*Logger = null;
+var logger_mutex: std.Thread.Mutex = .{};
+
+fn getLogger() ?*Logger {
+    logger_mutex.lock();
+    defer logger_mutex.unlock();
+    return global_logger;
+}
 
 fn getORM() !*ORM {
     db_mutex.lock();
@@ -993,10 +1003,13 @@ fn handleGetStats(request: *Request) Response {
 // ============================================================================
 
 fn loggingMiddleware(req: *Request) middleware_chain.MiddlewareResult {
-    const method = req.method();
-    const path = req.path();
-    const timestamp = std.time.milliTimestamp();
-    std.debug.print("[{d}] {s} {s}\n", .{ timestamp, method, path });
+    if (getLogger()) |logger| {
+        const entry = logger.fromRequest(req, .info, "Request received") catch {
+            // If logging fails, just proceed
+            return .proceed;
+        };
+        entry.log();
+    }
     return .proceed;
 }
 
@@ -1012,12 +1025,25 @@ const DAY_IN_MS: i64 = 24 * 60 * 60 * 1000;
 const SEVEN_DAYS_MS: i64 = 7 * DAY_IN_MS;
 
 fn cleanupOldCompletedTodos() void {
-    const orm = getORM() catch return;
+    const logger = getLogger();
+    const orm = getORM() catch {
+        if (logger) |l| {
+            const entry = l.logError("Failed to get ORM for cleanup task") catch return;
+            entry.log();
+        }
+        return;
+    };
     const now = std.time.milliTimestamp();
 
     var cleaned: u32 = 0;
 
-    var all_todos = getAllTodos(orm) catch return;
+    var all_todos = getAllTodos(orm) catch {
+        if (logger) |l| {
+            const entry = l.logError("Failed to get todos for cleanup") catch return;
+            entry.log();
+        }
+        return;
+    };
     defer {
         for (all_todos.items) |todo| {
             allocator.free(todo.title);
@@ -1036,17 +1062,34 @@ fn cleanupOldCompletedTodos() void {
     }
 
     if (cleaned > 0) {
-        std.debug.print("[Task] Cleaned up {d} old completed todos\n", .{cleaned});
+        if (logger) |l| {
+            const entry = l.info("Cleaned up old completed todos") catch return;
+            _ = entry.fieldInt("count", cleaned) catch return;
+            entry.log();
+        }
     }
 }
 
 fn checkOverdueTodos() void {
-    const orm = getORM() catch return;
+    const logger = getLogger();
+    const orm = getORM() catch {
+        if (logger) |l| {
+            const entry = l.logError("Failed to get ORM for overdue check") catch return;
+            entry.log();
+        }
+        return;
+    };
     const now = std.time.milliTimestamp();
 
     var overdue_count: u32 = 0;
 
-    var all_todos = getAllTodos(orm) catch return;
+    var all_todos = getAllTodos(orm) catch {
+        if (logger) |l| {
+            const entry = l.logError("Failed to get todos for overdue check") catch return;
+            entry.log();
+        }
+        return;
+    };
     defer {
         for (all_todos.items) |todo| {
             allocator.free(todo.title);
@@ -1062,14 +1105,24 @@ fn checkOverdueTodos() void {
             if (todo.due_date) |due_date| {
                 if (due_date < now) {
                     overdue_count += 1;
-                    std.debug.print("[Task] Overdue todo: {s} (due: {d}, now: {d})\n", .{ todo.title, due_date, now });
+                    if (logger) |l| {
+                        const entry = l.warn("Overdue todo found") catch return;
+                        _ = entry.field("title", todo.title) catch return;
+                        _ = entry.fieldInt("due_date", due_date) catch return;
+                        _ = entry.fieldInt("now", now) catch return;
+                        entry.log();
+                    }
                 }
             }
         }
     }
 
     if (overdue_count > 0) {
-        std.debug.print("[Task] Found {d} overdue todos\n", .{overdue_count});
+        if (logger) |l| {
+            const entry = l.info("Found overdue todos") catch return;
+            _ = entry.fieldInt("count", overdue_count) catch return;
+            entry.log();
+        }
     }
 }
 
@@ -1079,14 +1132,37 @@ fn generateStatistics() void {
 }
 
 fn validateStoreHealth() void {
-    const orm = getORM() catch return;
-    const stats = getStats(orm) catch return;
+    const logger = getLogger();
+    const orm = getORM() catch {
+        if (logger) |l| {
+            const entry = l.logError("Failed to get ORM for health validation") catch return;
+            entry.log();
+        }
+        return;
+    };
+    const stats = getStats(orm) catch {
+        if (logger) |l| {
+            const entry = l.logError("Failed to get stats for health validation") catch return;
+            entry.log();
+        }
+        return;
+    };
 
     // Database doesn't have capacity limits, but we can warn if there are many todos
     if (stats.total > 10000) {
-        std.debug.print("[Task] WARNING: Todo count at {d} - very high!\n", .{stats.total});
+        if (logger) |l| {
+            const entry = l.warn("Todo count very high") catch return;
+            _ = entry.fieldInt("count", stats.total) catch return;
+            _ = entry.fieldInt("threshold", 10000) catch return;
+            entry.log();
+        }
     } else if (stats.total > 5000) {
-        std.debug.print("[Task] WARNING: Todo count at {d} - getting high\n", .{stats.total});
+        if (logger) |l| {
+            const entry = l.warn("Todo count getting high") catch return;
+            _ = entry.fieldInt("count", stats.total) catch return;
+            _ = entry.fieldInt("threshold", 5000) catch return;
+            entry.log();
+        }
     }
 }
 
@@ -1119,6 +1195,11 @@ pub fn createApp() !E12.Engine12 {
     try initDatabase();
 
     var app = try E12.Engine12.initProduction();
+
+    // Store logger globally for background tasks
+    logger_mutex.lock();
+    global_logger = &app.logger;
+    logger_mutex.unlock();
 
     // Middleware
     try app.usePreRequest(&loggingMiddleware);
@@ -1174,7 +1255,10 @@ pub fn run() !void {
     try app.start();
     app.printStatus();
 
-    std.debug.print("Press Ctrl+C to stop\n", .{});
+    if (getLogger()) |logger| {
+        const entry = logger.info("Server started - Press Ctrl+C to stop") catch return;
+        entry.log();
+    }
 
     while (true) {
         std.Thread.sleep(1000 * std.time.ns_per_ms);
