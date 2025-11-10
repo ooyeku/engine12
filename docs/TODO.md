@@ -93,7 +93,7 @@
 | Pagination | Missing | Medium | Helper utilities |
 | CORS Support | Partial | Medium | Basic middleware exists, needs header implementation |
 | Compression | Missing | Low | gzip/brotli |
-| Caching | Partial | Medium | Public API needed |
+| ✓ Caching | Working | - | Public API with Request methods: cache(), cacheGet(), cacheSet(), cacheInvalidate(), cacheInvalidatePrefix() |
 | ✓ C API | Working | - | Language bindings |
 
 ---

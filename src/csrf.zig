@@ -44,9 +44,8 @@ pub const CSRFProtection = struct {
         const token_str = try std.fmt.bufPrint(&buffer, "{s}-{d}", .{ self.config.secret_key, timestamp });
         
         // Hash the token for security (simplified - use proper crypto in production)
-        var hasher = std.hash.CityHash64.init(0);
-        hasher.update(token_str);
-        const hash = hasher.final();
+        // CityHash64 in Zig 0.15.x is used as a function, not a struct
+        const hash = std.hash.CityHash64.hash(token_str);
         
         var token_buffer: [32]u8 = undefined;
         const token = try std.fmt.bufPrint(&token_buffer, "{x}", .{hash});

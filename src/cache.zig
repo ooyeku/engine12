@@ -27,9 +27,8 @@ pub const CacheEntry = struct {
         const now = std.time.milliTimestamp();
         
         // Generate ETag from body hash
-        var hasher = std.hash.CityHash64.init(0);
-        hasher.update(body);
-        const hash = hasher.final();
+        // CityHash64 in Zig 0.15.x is used as a function, not a struct
+        const hash = std.hash.CityHash64.hash(body);
         
         var etag_buffer: [32]u8 = undefined;
         const etag_str = try std.fmt.bufPrint(&etag_buffer, "\"{x}\"", .{hash});
@@ -161,9 +160,8 @@ pub const ResponseCache = struct {
 
 /// Generate ETag from response body
 pub fn generateETag(body: []const u8, allocator: std.mem.Allocator) ![]const u8 {
-    var hasher = std.hash.CityHash64.init(0);
-    hasher.update(body);
-    const hash = hasher.final();
+    // CityHash64 in Zig 0.15.x is used as a function, not a struct
+    const hash = std.hash.CityHash64.hash(body);
     
     var etag_buffer: [32]u8 = undefined;
     const etag_str = try std.fmt.bufPrint(&etag_buffer, "\"{x}\"", .{hash});

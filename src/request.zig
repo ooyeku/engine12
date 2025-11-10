@@ -227,6 +227,71 @@ pub const Request = struct {
         };
     }
     
+    /// Get the cache instance if available
+    /// Returns null if cache is not configured
+    /// 
+    /// Example:
+    /// ```zig
+    /// if (req.cache()) |cache| {
+    ///     if (cache.get("my_key")) |entry| {
+    ///         return Response.text(entry.body);
+    ///     }
+    /// }
+    /// ```
+    pub fn cache(self: *Request) ?*@import("cache.zig").ResponseCache {
+        _ = self;
+        return @import("engine12.zig").global_cache;
+    }
+    
+    /// Get a value from the cache
+    /// Returns null if not found or expired
+    /// 
+    /// Example:
+    /// ```zig
+    /// if (try req.cacheGet("user:123")) |entry| {
+    ///     return Response.text(entry.body).withContentType(entry.content_type);
+    /// }
+    /// ```
+    pub fn cacheGet(self: *Request, key: []const u8) !?*@import("cache.zig").CacheEntry {
+        const cache_instance = self.cache() orelse return null;
+        return cache_instance.get(key);
+    }
+    
+    /// Store a value in the cache
+    /// Uses default TTL if ttl_ms is null
+    /// 
+    /// Example:
+    /// ```zig
+    /// const body = "{\"data\":\"value\"}";
+    /// try req.cacheSet("my_key", body, 60000, "application/json");
+    /// ```
+    pub fn cacheSet(self: *Request, key: []const u8, cache_body: []const u8, ttl_ms: ?u64, content_type: []const u8) !void {
+        const cache_instance = self.cache() orelse return;
+        try cache_instance.set(key, cache_body, ttl_ms, content_type);
+    }
+    
+    /// Invalidate a cache entry
+    /// 
+    /// Example:
+    /// ```zig
+    /// req.cacheInvalidate("user:123");
+    /// ```
+    pub fn cacheInvalidate(self: *Request, key: []const u8) void {
+        const cache_instance = self.cache() orelse return;
+        cache_instance.invalidate(key);
+    }
+    
+    /// Invalidate all cache entries matching a prefix
+    /// 
+    /// Example:
+    /// ```zig
+    /// req.cacheInvalidatePrefix("user:"); // Invalidates all user:* entries
+    /// ```
+    pub fn cacheInvalidatePrefix(self: *Request, prefix: []const u8) void {
+        const cache_instance = self.cache() orelse return;
+        cache_instance.invalidatePrefix(prefix);
+    }
+    
     /// Clean up the request arena and all associated allocations
     /// This should be called automatically when the request completes
     pub fn deinit(self: *Request) void {
@@ -736,6 +801,70 @@ test "Request context multiple values" {
     
     const missing = req.get("nonexistent");
     try std.testing.expect(missing == null);
+}
+
+test "Request cache access methods" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    // Create a cache and set it globally
+    var response_cache = @import("cache.zig").ResponseCache.init(std.testing.allocator, 60000);
+    defer response_cache.deinit();
+    
+    @import("engine12.zig").global_cache = &response_cache;
+    defer @import("engine12.zig").global_cache = null;
+    
+    // Test cache access
+    const cache_instance = req.cache();
+    try std.testing.expect(cache_instance != null);
+    
+    // Test cacheSet
+    try req.cacheSet("test_key", "test_value", null, "text/plain");
+    
+    // Test cacheGet
+    const entry = try req.cacheGet("test_key");
+    try std.testing.expect(entry != null);
+    if (entry) |e| {
+        try std.testing.expectEqualStrings(e.body, "test_value");
+        try std.testing.expectEqualStrings(e.content_type, "text/plain");
+    }
+    
+    // Test cacheInvalidate
+    req.cacheInvalidate("test_key");
+    const entry_after_invalidate = try req.cacheGet("test_key");
+    try std.testing.expect(entry_after_invalidate == null);
+}
+
+test "Request cache methods return null when cache not configured" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    // Ensure no cache is set
+    @import("engine12.zig").global_cache = null;
+    
+    // Test cache access returns null
+    const cache_instance = req.cache();
+    try std.testing.expect(cache_instance == null);
+    
+    // Test cacheGet returns null
+    const entry = try req.cacheGet("test_key");
+    try std.testing.expect(entry == null);
+    
+    // Test cacheSet does nothing (no error)
+    try req.cacheSet("test_key", "test_value", null, "text/plain");
+    
+    // Test cacheInvalidate does nothing (no error)
+    req.cacheInvalidate("test_key");
 }
 
 test "Request context overwrite value" {

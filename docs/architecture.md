@@ -83,6 +83,51 @@ Middleware uses thread-local global pointers for:
 
 These are set when routes are registered and accessed at runtime.
 
+## Caching Architecture
+
+### Response Cache
+
+The `ResponseCache` (`src/cache.zig`) provides:
+- In-memory response caching with TTL-based expiration
+- ETag generation for cache validation
+- Prefix-based cache invalidation
+- Automatic expiration cleanup
+
+### Cache Access Pattern
+
+Cache is accessed via global pointer (`global_cache`) similar to rate limiting:
+- Set globally via `app.setCache(&cache)`
+- Accessed from Request objects via `req.cache()`, `req.cacheGet()`, etc.
+- Thread-safe access through global pointer
+
+### Cache Entry Structure
+
+Each cache entry (`CacheEntry`) stores:
+- Response body (duplicated into cache allocator)
+- ETag (generated from body hash)
+- Content type
+- TTL and expiration timestamp
+- Last modified timestamp
+
+### Cache Operations
+
+- **Get**: Returns cached entry if not expired, null otherwise
+- **Set**: Stores response with optional custom TTL
+- **Invalidate**: Removes specific entry
+- **InvalidatePrefix**: Removes all entries matching prefix
+- **Cleanup**: Removes expired entries
+
+### Request Integration
+
+Request objects provide convenience methods:
+- `req.cache()` - Get cache instance
+- `req.cacheGet(key)` - Get cached entry
+- `req.cacheSet(key, body, ttl, content_type)` - Store entry
+- `req.cacheInvalidate(key)` - Invalidate entry
+- `req.cacheInvalidatePrefix(prefix)` - Invalidate by prefix
+
+This allows handlers to easily implement caching without direct cache access.
+
 ## ORM Architecture
 
 ### Database Layer

@@ -18,7 +18,8 @@ const dev_tools = @import("dev_tools.zig");
 const allocator = std.heap.page_allocator;
 
 /// Generate a unique request ID
-/// Uses a stack buffer to avoid allocation failures
+/// Uses a stack buffer to format, then allocates directly into the provided allocator
+/// This avoids double allocation and memory leaks
 fn generateRequestId(alloc: std.mem.Allocator) ![]const u8 {
     const timestamp = std.time.milliTimestamp();
     const random = @as(u64, @intCast(std.time.nanoTimestamp())) % 1000000;
@@ -77,8 +78,9 @@ fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?
             // The arena is warmed up inside fromZiggurat to prevent panics
             var engine12_request = Request.fromZiggurat(ziggurat_request, allocator);
 
-            // Generate request ID using page allocator, then duplicate into arena
-            const request_id = generateRequestId(allocator) catch "unknown";
+            // Generate request ID directly into the request's arena allocator
+            // This avoids double allocation and memory leaks
+            const request_id = generateRequestId(engine12_request.arena.allocator()) catch "unknown";
             engine12_request.set("request_id", request_id) catch {};
 
             // Ensure cleanup happens even if handler panics
@@ -499,6 +501,13 @@ pub const Engine12 = struct {
     pub fn setCache(self: *Engine12, response_cache: *cache.ResponseCache) void {
         _ = self;
         global_cache = response_cache;
+    }
+
+    /// Get the global response cache instance
+    /// Returns null if cache is not configured
+    pub fn getCache(self: *Engine12) ?*cache.ResponseCache {
+        _ = self;
+        return global_cache;
     }
 
     /// Add a pre-request middleware to the chain

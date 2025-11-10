@@ -42,3 +42,7 @@ pub const Logger = dev_tools.Logger;
 pub const LogLevel = dev_tools.LogLevel;
 pub const LogEntry = dev_tools.LogEntry;
 pub const OutputFormat = dev_tools.OutputFormat;
+
+// Re-export cache types
+pub const ResponseCache = cache.ResponseCache;
+pub const CacheEntry = cache.CacheEntry;

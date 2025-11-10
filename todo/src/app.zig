@@ -11,6 +11,9 @@ const Database = E12.orm.Database;
 const ORM = E12.orm.ORM;
 const Logger = E12.Logger;
 const LogLevel = E12.LogLevel;
+const ResponseCache = E12.ResponseCache;
+const error_handler = E12.error_handler;
+const ErrorResponse = error_handler.ErrorResponse;
 
 const allocator = std.heap.page_allocator;
 
@@ -35,6 +38,8 @@ var global_orm: ?ORM = null;
 var db_mutex: std.Thread.Mutex = .{};
 var global_logger: ?*Logger = null;
 var logger_mutex: std.Thread.Mutex = .{};
+var global_cache: ?*ResponseCache = null;
+var cache_mutex: std.Thread.Mutex = .{};
 
 fn getLogger() ?*Logger {
     logger_mutex.lock();
@@ -65,53 +70,89 @@ fn initDatabase() !void {
     const db_path = "todo.db";
     global_db = try Database.open(db_path, allocator);
 
-    // Create table if it doesn't exist
-    try global_db.?.execute(
-        \\CREATE TABLE IF NOT EXISTS Todo (
-        \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
-        \\  title TEXT NOT NULL,
-        \\  description TEXT NOT NULL,
-        \\  completed INTEGER NOT NULL DEFAULT 0,
-        \\  priority TEXT NOT NULL DEFAULT 'medium',
-        \\  due_date INTEGER,
-        \\  tags TEXT NOT NULL DEFAULT '',
-        \\  created_at INTEGER NOT NULL,
-        \\  updated_at INTEGER NOT NULL
-        \\)
-    );
+    // Initialize ORM first (needed for migrations)
+    global_orm = ORM.init(global_db.?, allocator);
 
-    // Migrate existing tables to add new columns if they don't exist
-    // Check if priority column exists
-    var result = global_db.?.query("PRAGMA table_info(Todo)") catch null;
-    if (result) |*table_info| {
-        defer table_info.deinit();
-        var has_priority = false;
-        var has_due_date = false;
-        var has_tags = false;
+    // Define migrations
+    // Note: Using inline Migration struct since it's not exported from E12.orm
+    // The struct matches the Migration type from src/orm/migration.zig
+    const MigrationType = struct {
+        version: u32,
+        name: []const u8,
+        up: []const u8,
+        down: []const u8,
+        
+        pub fn init(version: u32, name: []const u8, up: []const u8, down: []const u8) @This() {
+            return @This(){
+                .version = version,
+                .name = name,
+                .up = up,
+                .down = down,
+            };
+        }
+    };
+    
+    const migrations = [_]MigrationType{
+        MigrationType.init(1, "create_todos",
+            \\CREATE TABLE IF NOT EXISTS Todo (
+            \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\  title TEXT NOT NULL,
+            \\  description TEXT NOT NULL,
+            \\  completed INTEGER NOT NULL DEFAULT 0,
+            \\  created_at INTEGER NOT NULL,
+            \\  updated_at INTEGER NOT NULL
+            \\)
+        ,
+            "DROP TABLE IF EXISTS Todo"),
+        
+        MigrationType.init(2, "add_priority",
+            "ALTER TABLE Todo ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'",
+            "ALTER TABLE Todo DROP COLUMN priority"),
+        
+        MigrationType.init(3, "add_due_date",
+            "ALTER TABLE Todo ADD COLUMN due_date INTEGER",
+            "-- Cannot automatically reverse ALTER TABLE ADD COLUMN"),
+        
+        MigrationType.init(4, "add_tags",
+            "ALTER TABLE Todo ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE Todo DROP COLUMN tags"),
+    };
 
-        while (table_info.nextRow()) |row| {
-            // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
-            // Column name is at index 1
-            if (row.getText(1)) |col_name| {
-                if (std.mem.eql(u8, col_name, "priority")) has_priority = true;
-                if (std.mem.eql(u8, col_name, "due_date")) has_due_date = true;
-                if (std.mem.eql(u8, col_name, "tags")) has_tags = true;
-            }
+    // Run migrations manually since Migration type is not exported
+    // This executes the same logic as the migration system
+    // Create migrations table if it doesn't exist
+    global_db.?.execute(
+        \\CREATE TABLE IF NOT EXISTS schema_migrations (
+        \\  version INTEGER PRIMARY KEY,
+        \\  name TEXT NOT NULL,
+        \\  applied_at INTEGER NOT NULL
+        \\);
+    ) catch {};
+    
+    // Execute each migration if not already applied
+    for (migrations) |migration| {
+        // Check if migration is already applied
+        const check_sql = std.fmt.allocPrint(allocator, "SELECT COUNT(*) FROM schema_migrations WHERE version = {d}", .{migration.version}) catch continue;
+        defer allocator.free(check_sql);
+        var check_result = global_db.?.query(check_sql) catch continue;
+        defer check_result.deinit();
+        
+        var already_applied = false;
+        if (check_result.nextRow()) |row| {
+            already_applied = row.getInt64(0) > 0;
         }
-
-        if (!has_priority) {
-            global_db.?.execute("ALTER TABLE Todo ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'") catch {};
-        }
-        if (!has_due_date) {
-            global_db.?.execute("ALTER TABLE Todo ADD COLUMN due_date INTEGER") catch {};
-        }
-        if (!has_tags) {
-            global_db.?.execute("ALTER TABLE Todo ADD COLUMN tags TEXT NOT NULL DEFAULT ''") catch {};
+        
+        if (!already_applied) {
+            // Execute migration
+            global_db.?.execute(migration.up) catch continue;
+            
+            // Record migration
+            const timestamp = std.time.timestamp();
+            const record_sql = std.fmt.allocPrint(allocator, "INSERT INTO schema_migrations (version, name, applied_at) VALUES ({d}, '{s}', {d})", .{ migration.version, migration.name, timestamp }) catch continue;
+            defer allocator.free(record_sql);
+            global_db.?.execute(record_sql) catch continue;
         }
     }
-
-    // Initialize ORM
-    global_orm = ORM.init(global_db.?, allocator);
 }
 
 const TodoStats = struct {
@@ -551,7 +592,14 @@ fn handleIndex(request: *Request) Response {
 // ============================================================================
 
 fn handleGetTodos(request: *Request) Response {
-    _ = request;
+    // Check cache first
+    const cache_key = "todos:all";
+    if (request.cacheGet(cache_key) catch null) |entry| {
+        return Response.text(entry.body)
+            .withContentType(entry.content_type)
+            .withHeader("X-Cache", "HIT");
+    }
+
     const orm = getORM() catch {
         return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
     };
@@ -573,10 +621,12 @@ fn handleGetTodos(request: *Request) Response {
         return Response.json("{\"error\":\"Failed to format todos\"}").withStatus(500);
     };
     defer allocator.free(json);
+    
+    // Cache the result for 30 seconds
+    request.cacheSet(cache_key, json, 30000, "application/json") catch {};
+    
     return Response.json(json)
-        .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-        .withHeader("Pragma", "no-cache")
-        .withHeader("Expires", "0");
+        .withHeader("X-Cache", "MISS");
 }
 
 fn handleGetTodo(request: *Request) Response {
@@ -739,6 +789,11 @@ fn handleCreateTodo(request: *Request) Response {
         return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
     };
     defer allocator.free(json);
+    
+    // Invalidate cache when todos change
+    request.cacheInvalidate("todos:all");
+    request.cacheInvalidate("todos:stats");
+    
     return Response.json(json);
 }
 
@@ -881,6 +936,17 @@ fn handleUpdateTodo(request: *Request) Response {
         return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
     };
     defer allocator.free(json);
+    
+    // Invalidate cache when todos change
+    request.cacheInvalidate("todos:all");
+    request.cacheInvalidate("todos:stats");
+    // Also invalidate specific todo cache if we had one
+    const todo_cache_key = std.fmt.allocPrint(request.arena.allocator(), "todo:{d}", .{id}) catch {
+        // If allocation fails, just skip individual cache invalidation
+        return Response.json(json);
+    };
+    request.cacheInvalidate(todo_cache_key);
+    
     return Response.json(json);
 }
 
@@ -898,6 +964,15 @@ fn handleDeleteTodo(request: *Request) Response {
     };
 
     if (deleted) {
+        // Invalidate cache when todos change
+        request.cacheInvalidate("todos:all");
+        request.cacheInvalidate("todos:stats");
+        const todo_cache_key = std.fmt.allocPrint(request.arena.allocator(), "todo:{d}", .{id}) catch {
+            // If allocation fails, just skip individual cache invalidation
+            return Response.json("{\"success\":true}");
+        };
+        request.cacheInvalidate(todo_cache_key);
+        
         return Response.json("{\"success\":true}");
     } else {
         return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
@@ -905,6 +980,22 @@ fn handleDeleteTodo(request: *Request) Response {
 }
 
 fn handleSearchTodos(request: *Request) Response {
+    // NOTE: QueryBuilder Limitation
+    // The Engine12 QueryBuilder doesn't currently support OR conditions in WHERE clauses.
+    // For this search functionality that needs to search across multiple columns (title, description, tags)
+    // with OR conditions, we use raw SQL instead.
+    //
+    // Example of QueryBuilder usage for simpler queries (without OR):
+    // ```zig
+    // var query = QueryBuilder.init(orm.db, "Todo");
+    // query.where("completed", "=", "0");
+    // query.orderBy("created_at", "DESC");
+    // query.limit(10);
+    // const result = query.execute();
+    // ```
+    //
+    // For OR conditions or complex queries, raw SQL is the current approach.
+    
     const query_param = request.query("q") catch {
         return Response.json("{\"error\":\"Missing query parameter\"}").withStatus(400);
     };
@@ -978,8 +1069,34 @@ fn handleSearchTodos(request: *Request) Response {
         .withHeader("Expires", "0");
 }
 
-fn handleGetStats(request: *Request) Response {
+fn handleMetrics(request: *Request) Response {
     _ = request;
+    // Access global metrics collector
+    const metrics_collector = E12.engine12.global_metrics;
+    
+    if (metrics_collector) |mc| {
+        const prometheus_output = mc.getPrometheusMetrics() catch {
+            return Response.json("{\"error\":\"Failed to generate metrics\"}").withStatus(500);
+        };
+        defer std.heap.page_allocator.free(prometheus_output);
+        
+        var resp = Response.text(prometheus_output);
+        resp = resp.withContentType("text/plain; version=0.0.4");
+        return resp;
+    }
+    
+    // Fallback if metrics collector not available
+    return Response.json("{\"metrics\":{\"uptime_ms\":0,\"requests_total\":0}}");
+}
+
+fn handleGetStats(request: *Request) Response {
+    // Check cache first (shorter TTL for dynamic data)
+    const cache_key = "todos:stats";
+    if (request.cacheGet(cache_key) catch null) |entry| {
+        return Response.text(entry.body)
+            .withContentType(entry.content_type)
+            .withHeader("X-Cache", "HIT");
+    }
     const orm = getORM() catch {
         return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
     };
@@ -992,15 +1109,126 @@ fn handleGetStats(request: *Request) Response {
         return Response.json("{\"error\":\"Failed to format stats\"}").withStatus(500);
     };
     defer allocator.free(json);
+    
+    // Cache stats for 10 seconds (shorter TTL since stats change frequently)
+    request.cacheSet(cache_key, json, 10000, "application/json") catch {};
+    
     return Response.json(json)
-        .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-        .withHeader("Pragma", "no-cache")
-        .withHeader("Expires", "0");
+        .withHeader("X-Cache", "MISS");
 }
 
 // ============================================================================
 // MIDDLEWARE
 // ============================================================================
+
+fn customErrorHandler(req: *Request, err: ErrorResponse, alloc: std.mem.Allocator) Response {
+    // Log error using structured logger
+    if (getLogger()) |logger| {
+        const log_level: LogLevel = switch (err.error_type) {
+            .validation_error, .bad_request => .warn,
+            .authentication_error, .authorization_error => .warn,
+            .not_found => .info,
+            .rate_limit_exceeded => .warn,
+            .request_too_large => .warn,
+            .timeout => .warn,
+            .internal_error, .unknown => LogLevel.err,
+        };
+        
+        const entry_opt = logger.log(log_level, err.message) catch null;
+        if (entry_opt) |entry| {
+            _ = entry.field("error_code", err.code) catch {};
+            _ = entry.field("error_type", @tagName(err.error_type)) catch {};
+            if (err.details) |details| {
+                _ = entry.field("details", details) catch {};
+            }
+            // Include request ID if available
+            if (req.get("request_id")) |request_id| {
+                _ = entry.field("request_id", request_id) catch {};
+            }
+            entry.log();
+        }
+    }
+    
+    // Create JSON error response
+    const json = err.toJson(alloc) catch {
+        return Response.json("{\"error\":\"Failed to serialize error\"}").withStatus(500);
+    };
+    defer alloc.free(json);
+    
+    // Determine status code
+    const status_code: u16 = switch (err.error_type) {
+        .validation_error, .bad_request => 400,
+        .authentication_error => 401,
+        .authorization_error => 403,
+        .not_found => 404,
+        .rate_limit_exceeded => 429,
+        .request_too_large => 413,
+        .timeout => 408,
+        .internal_error, .unknown => 500,
+    };
+    
+    var resp = Response.json(json).withStatus(status_code);
+    
+    // Add request ID to response headers if available
+    if (req.get("request_id")) |request_id| {
+        resp = resp.withHeader("X-Request-ID", request_id);
+    }
+    
+    return resp;
+}
+
+fn bodySizeLimitMiddleware(req: *Request) middleware_chain.MiddlewareResult {
+    const MAX_BODY_SIZE: usize = 10 * 1024; // 10KB
+    
+    const body = req.body();
+    if (body.len > MAX_BODY_SIZE) {
+        // Set context flag
+        req.set("body_size_exceeded", "true") catch {};
+        
+        // Abort request
+        return .abort;
+    }
+    
+    return .proceed;
+}
+
+fn csrfMiddleware(req: *Request) middleware_chain.MiddlewareResult {
+    const method = req.method();
+    
+    // Skip CSRF check for safe methods
+    if (std.mem.eql(u8, method, "GET") or 
+        std.mem.eql(u8, method, "HEAD") or 
+        std.mem.eql(u8, method, "OPTIONS")) {
+        return .proceed;
+    }
+    
+    // For POST/PUT/DELETE, check for CSRF token
+    // Simplified implementation - in production, validate token against session
+    const csrf_token = req.header("X-CSRF-Token");
+    
+    if (csrf_token == null or csrf_token.?.len == 0) {
+        // Missing CSRF token - abort request
+        return .abort;
+    }
+    
+    // In a full implementation, we would validate the token here
+    // For this example, we just check that it exists and is not empty
+    // A real implementation would compare against a session-stored token
+    
+    return .proceed;
+}
+
+fn requestTrackingMiddleware(req: *Request) middleware_chain.MiddlewareResult {
+    // Store request start time in context
+    const start_time = std.time.milliTimestamp();
+    const start_time_str = std.fmt.allocPrint(req.arena.allocator(), "{d}", .{start_time}) catch {
+        // If allocation fails, just proceed without tracking
+        return .proceed;
+    };
+    req.set("request_start_time", start_time_str) catch {};
+    
+    return .proceed;
+}
 
 fn loggingMiddleware(req: *Request) middleware_chain.MiddlewareResult {
     if (getLogger()) |logger| {
@@ -1008,6 +1236,17 @@ fn loggingMiddleware(req: *Request) middleware_chain.MiddlewareResult {
             // If logging fails, just proceed
             return .proceed;
         };
+        
+        // Add request timing if available
+        if (req.get("request_start_time")) |start_time_str| {
+            _ = entry.field("start_time", start_time_str) catch {};
+        }
+        
+        // Add request ID if available
+        if (req.get("request_id")) |request_id| {
+            _ = entry.field("request_id", request_id) catch {};
+        }
+        
         entry.log();
     }
     return .proceed;
@@ -1201,9 +1440,25 @@ pub fn createApp() !E12.Engine12 {
     global_logger = &app.logger;
     logger_mutex.unlock();
 
+    // Initialize cache with 60 second default TTL
+    var response_cache = ResponseCache.init(allocator, 60000);
+    app.setCache(&response_cache);
+    
+    // Store cache globally for potential background task usage
+    cache_mutex.lock();
+    global_cache = &response_cache;
+    cache_mutex.unlock();
+
     // Middleware
+    // Order matters: body size limit -> CSRF -> request tracking -> logging
+    try app.usePreRequest(&bodySizeLimitMiddleware);
+    try app.usePreRequest(&csrfMiddleware);
+    try app.usePreRequest(&requestTrackingMiddleware);
     try app.usePreRequest(&loggingMiddleware);
     try app.useResponse(&corsMiddleware);
+
+    // Custom error handler
+    app.useErrorHandler(customErrorHandler);
 
     // Rate limiting for API endpoints
     var api_rate_limiter = rate_limit.RateLimiter.init(allocator, rate_limit.RateLimitConfig{
@@ -1221,12 +1476,17 @@ pub fn createApp() !E12.Engine12 {
     // Root route - serve templated index page (register BEFORE static files)
     try app.get("/", handleIndex);
 
+    // Metrics endpoint
+    try app.get("/metrics", handleMetrics);
+
     // Static file serving - register AFTER root route so it doesn't override it
     // Serve static files except for index.html which we'll handle with template
     try app.serveStatic("/css", "todo/frontend/css");
     try app.serveStatic("/js", "todo/frontend/js");
 
     // API routes
+    // Note: Route groups require comptime evaluation, so we register routes directly
+    // Route groups are demonstrated in the codebase but require comptime usage
     try app.get("/api/todos", handleGetTodos);
     try app.get("/api/todos/search", handleSearchTodos);
     try app.get("/api/todos/stats", handleGetStats);

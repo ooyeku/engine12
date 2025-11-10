@@ -16,6 +16,7 @@ Complete reference for Engine12's public APIs.
 - [File Server](#file-server)
 - [Rate Limiting](#rate-limiting)
 - [CSRF Protection](#csrf-protection)
+- [Caching](#caching)
 - [Metrics & Health Checks](#metrics--health-checks)
 - [Background Tasks](#background-tasks)
 - [Error Handling](#error-handling)
@@ -200,8 +201,17 @@ app.setRateLimiter(&limiter);
 Set a global response cache for all routes.
 
 ```zig
-var cache = ResponseCache.init(allocator);
+var cache = ResponseCache.init(allocator, 60000); // 60 second default TTL
 app.setCache(&cache);
+```
+
+#### `getCache() ?*ResponseCache`
+Get the global response cache instance. Returns null if cache is not configured.
+
+```zig
+if (app.getCache()) |cache| {
+    cache.cleanup(); // Clean up expired entries
+}
 ```
 
 #### `useErrorHandler(handler: ErrorHandler) void`
@@ -378,6 +388,50 @@ Get a value from the request context.
 
 ```zig
 const user_id = req.get("user_id");
+```
+
+### Cache Access
+
+#### `cache() ?*ResponseCache`
+Get the cache instance if available. Returns null if cache is not configured.
+
+```zig
+if (req.cache()) |cache| {
+    if (cache.get("my_key")) |entry| {
+        return Response.text(entry.body);
+    }
+}
+```
+
+#### `cacheGet(key: []const u8) !?*CacheEntry`
+Get a cached entry by key. Returns null if not found or expired.
+
+```zig
+if (try req.cacheGet("user:123")) |entry| {
+    return Response.text(entry.body).withContentType(entry.content_type);
+}
+```
+
+#### `cacheSet(key: []const u8, body: []const u8, ttl_ms: ?u64, content_type: []const u8) !void`
+Store a value in the cache. Uses default TTL if `ttl_ms` is null.
+
+```zig
+const body = "{\"data\":\"value\"}";
+try req.cacheSet("my_key", body, 60000, "application/json");
+```
+
+#### `cacheInvalidate(key: []const u8) void`
+Invalidate a specific cache entry.
+
+```zig
+req.cacheInvalidate("user:123");
+```
+
+#### `cacheInvalidatePrefix(prefix: []const u8) void`
+Invalidate all cache entries matching a prefix.
+
+```zig
+req.cacheInvalidatePrefix("user:"); // Invalidates all user:* entries
 ```
 
 ### Allocator
@@ -1261,6 +1315,114 @@ When rate limit is exceeded, middleware returns a 429 status response.
 ## CSRF Protection
 
 CSRF protection is handled via middleware. See middleware documentation for details.
+
+## Caching
+
+Engine12 provides a built-in response cache for storing and retrieving cached responses. The cache supports TTL-based expiration, ETag generation, and prefix-based invalidation.
+
+### Initialization
+
+#### `ResponseCache.init(allocator: Allocator, default_ttl_ms: u64) ResponseCache`
+Initialize a response cache with a default TTL in milliseconds.
+
+```zig
+var cache = ResponseCache.init(allocator, 60000); // 60 second default TTL
+defer cache.deinit();
+app.setCache(&cache);
+```
+
+### Cache Entry
+
+#### `CacheEntry`
+A cache entry contains:
+- `body: []const u8` - Cached response body
+- `etag: []const u8` - ETag value for cache validation
+- `content_type: []const u8` - Content type of the cached response
+- `ttl_ms: u64` - Time-to-live in milliseconds
+- `expires_at: i64` - Expiration timestamp
+- `last_modified: i64` - Last modified timestamp
+
+### Cache Operations
+
+#### `get(key: []const u8) ?*CacheEntry`
+Get a cached entry by key. Returns null if not found or expired.
+
+```zig
+if (cache.get("user:123")) |entry| {
+    // Use cached entry
+    std.debug.print("Cached: {s}\n", .{entry.body});
+}
+```
+
+#### `set(key: []const u8, body: []const u8, ttl_ms: ?u64, content_type: []const u8) !void`
+Store a response in the cache. Uses default TTL if `ttl_ms` is null.
+
+```zig
+try cache.set("user:123", json_data, 60000, "application/json");
+```
+
+#### `invalidate(key: []const u8) void`
+Invalidate a specific cache entry.
+
+```zig
+cache.invalidate("user:123");
+```
+
+#### `invalidatePrefix(prefix: []const u8) void`
+Invalidate all cache entries matching a prefix.
+
+```zig
+cache.invalidatePrefix("user:"); // Invalidates all user:* entries
+```
+
+#### `cleanup() void`
+Remove all expired entries from the cache.
+
+```zig
+cache.cleanup();
+```
+
+### Request Cache Methods
+
+Cache operations are also available directly from Request objects:
+
+```zig
+fn handleGetUser(req: *Request) Response {
+    // Check cache first
+    if (try req.cacheGet("user:123")) |entry| {
+        return Response.text(entry.body)
+            .withContentType(entry.content_type);
+    }
+    
+    // Generate response
+    const user_data = generateUserData();
+    
+    // Cache it
+    try req.cacheSet("user:123", user_data, 60000, "application/json");
+    
+    return Response.json(user_data);
+}
+
+fn handleUpdateUser(req: *Request) Response {
+    // ... update logic ...
+    
+    // Invalidate cached user data
+    req.cacheInvalidate("user:123");
+    
+    return Response.json("{\"updated\":true}");
+}
+```
+
+### Cache Configuration
+
+The cache is configured globally via `setCache()`:
+
+```zig
+var cache = ResponseCache.init(allocator, 60000); // 60 second default TTL
+app.setCache(&cache);
+```
+
+Once configured, all Request objects can access the cache via `req.cache()`, `req.cacheGet()`, `req.cacheSet()`, etc.
 
 ## Metrics & Health Checks
 
