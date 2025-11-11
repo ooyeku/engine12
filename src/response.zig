@@ -3,6 +3,21 @@ const ziggurat = @import("ziggurat");
 
 /// Persistent allocator for response bodies
 /// ziggurat stores references to response data, so we must use persistent memory
+/// 
+/// IMPORTANT: Memory Lifetime
+/// --------------------------
+/// Response bodies are allocated using page_allocator (persistent_allocator) and are
+/// NEVER freed. This is intentional because:
+/// 1. ziggurat stores references to response data that must remain valid after the request completes
+/// 2. Response bodies are typically small (JSON, text, HTML) and the memory overhead is acceptable
+/// 3. Freeing response bodies would require tracking all responses, which adds complexity
+/// 
+/// For large responses (>1MB), consider:
+/// - Streaming responses (if ziggurat supports it)
+/// - Using a custom allocator with explicit cleanup
+/// - Implementing response pooling for frequently-used responses
+/// 
+/// Memory allocated here persists for the lifetime of the application.
 const persistent_allocator = std.heap.page_allocator;
 
 /// Cookie options for setting cookies
@@ -17,8 +32,10 @@ pub const CookieOptions = struct {
 /// Engine12 Response wrapper around ziggurat.response.Response
 /// Provides a clean API with fluent builders and memory-safe response handling
 ///
-/// Response bodies are automatically copied to persistent memory to ensure
-/// they remain valid after the request completes.
+/// Memory Lifetime:
+/// Response bodies are automatically copied to persistent memory (page_allocator) to ensure
+/// they remain valid after the request completes. This memory is NEVER freed during the
+/// application lifetime. For details, see the persistent_allocator documentation above.
 pub const Response = struct {
     /// Internal ziggurat response (not exposed)
     inner: ziggurat.response.Response,
@@ -52,6 +69,7 @@ pub const Response = struct {
 
     /// Create a text response
     /// The body string will be copied to persistent memory automatically
+    /// Memory allocated here persists for the lifetime of the application (never freed)
     ///
     /// Example:
     /// ```zig
@@ -73,6 +91,7 @@ pub const Response = struct {
 
     /// Create an HTML response
     /// The body string will be copied to persistent memory automatically
+    /// Memory allocated here persists for the lifetime of the application (never freed)
     ///
     /// Example:
     /// ```zig

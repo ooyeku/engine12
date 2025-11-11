@@ -86,6 +86,7 @@ pub const Request = struct {
     
     /// Get a query parameter by name
     /// Returns null if not found
+    /// Validates query parameter length to prevent DoS attacks
     /// 
     /// Example:
     /// ```zig
@@ -93,8 +94,20 @@ pub const Request = struct {
     /// const limit_u32 = if (limit) |l| try std.fmt.parseInt(u32, l, 10) else 10;
     /// ```
     pub fn query(self: *Request, name: []const u8) !?[]const u8 {
+        // Validate parameter name length
+        if (name.len > 256) {
+            return error.InvalidArgument;
+        }
         const params = try self.queryParams();
-        return params.get(name);
+        const value = params.get(name);
+        // Validate parameter value length to prevent DoS
+        if (value) |v| {
+            if (v.len > 4096) {
+                std.debug.print("[Request Warning] Query parameter '{s}' value exceeds maximum length (4096 bytes)\n", .{name});
+                return null;
+            }
+        }
+        return value;
     }
     
     /// Get a query parameter by name (optional only, throws on parse error)
@@ -137,6 +150,7 @@ pub const Request = struct {
     
     /// Parse request body as JSON
     /// Returns an error if parsing fails
+    /// Validates body length to prevent DoS attacks (max 10MB by default)
     /// 
     /// Example:
     /// ```zig
@@ -144,11 +158,18 @@ pub const Request = struct {
     /// const todo = try req.jsonBody(Todo);
     /// ```
     pub fn jsonBody(self: *Request, comptime T: type) !T {
+        // Validate body length to prevent DoS (10MB max)
+        const MAX_BODY_SIZE = 10 * 1024 * 1024;
+        if (self.body().len > MAX_BODY_SIZE) {
+            std.debug.print("[Request Error] JSON body exceeds maximum size ({d} bytes)\n", .{MAX_BODY_SIZE});
+            return error.InvalidArgument;
+        }
         return parsers.BodyParser.json(T, self.body(), self.arena.allocator());
     }
     
     /// Parse request body as URL-encoded form data
     /// Returns a hashmap of key-value pairs
+    /// Validates body length to prevent DoS attacks (max 1MB by default)
     /// 
     /// Example:
     /// ```zig
@@ -156,11 +177,18 @@ pub const Request = struct {
     /// const title = form.get("title");
     /// ```
     pub fn formBody(self: *Request) !std.StringHashMap([]const u8) {
+        // Validate body length to prevent DoS (1MB max for form data)
+        const MAX_FORM_SIZE = 1024 * 1024;
+        if (self.body().len > MAX_FORM_SIZE) {
+            std.debug.print("[Request Error] Form body exceeds maximum size ({d} bytes)\n", .{MAX_FORM_SIZE});
+            return error.InvalidArgument;
+        }
         return parsers.BodyParser.formData(self.arena.allocator(), self.body());
     }
     
     /// Get a route parameter by name
     /// Returns a Param wrapper that provides type-safe conversion methods
+    /// Validates parameter value length to prevent DoS attacks
     /// 
     /// Example:
     /// ```zig
@@ -169,6 +197,11 @@ pub const Request = struct {
     /// ```
     pub fn param(self: *const Request, name: []const u8) router.Param {
         const value = self.route_params.get(name) orelse "";
+        // Validate parameter value length to prevent DoS
+        if (value.len > 1024) {
+            std.debug.print("[Request Warning] Route parameter '{s}' value exceeds maximum length (1024 bytes)\n", .{name});
+            return router.Param{ .value = "" };
+        }
         return router.Param{ .value = value };
     }
     
@@ -210,6 +243,7 @@ pub const Request = struct {
     /// Create a Request wrapper from a ziggurat request with a new arena allocator
     /// The arena is initialized with the provided backing allocator
     /// Caller must ensure cleanup happens (typically done automatically by wrapHandler)
+    /// Automatically generates a unique request ID for correlation tracking
     pub fn fromZiggurat(ziggurat_request: *ziggurat.request.Request, backing_allocator: std.mem.Allocator) Request {
         const arena = std.heap.ArenaAllocator.init(backing_allocator);
         
@@ -218,13 +252,41 @@ pub const Request = struct {
         const context = std.StringHashMap([]const u8).init(std.heap.page_allocator);
         const route_params = std.StringHashMap([]const u8).init(std.heap.page_allocator);
         
-        return Request{
+        var request = Request{
             .inner = ziggurat_request,
             .arena = arena,
             .context = context,
             .route_params = route_params,
             ._query_params = null,
         };
+        
+        // Generate unique request ID for correlation tracking
+        const request_id = request.generateRequestId() catch "";
+        if (request_id.len > 0) {
+            request.set("request_id", request_id) catch {};
+        }
+        
+        return request;
+    }
+    
+    /// Generate a unique request ID for correlation tracking
+    /// Format: timestamp-random (e.g., "1234567890-abc123")
+    fn generateRequestId(self: *Request) ![]const u8 {
+        const timestamp = std.time.milliTimestamp();
+        var rng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
+        const random = rng.random().int(u32);
+        
+        var buffer: [64]u8 = undefined;
+        const id_str = try std.fmt.bufPrint(&buffer, "{d}-{x}", .{ timestamp, random });
+        
+        // Allocate in request arena
+        return try self.arena.allocator().dupe(u8, id_str);
+    }
+    
+    /// Get the request ID for correlation tracking
+    /// Returns null if request ID was not set
+    pub fn requestId(self: *const Request) ?[]const u8 {
+        return self.get("request_id");
     }
     
     /// Get the cache instance if available

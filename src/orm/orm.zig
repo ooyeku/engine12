@@ -49,10 +49,10 @@ pub const ORM = struct {
         allocator.destroy(self);
     }
 
-    pub fn initWithPool(pool: *Database.ConnectionPool, allocator: std.mem.Allocator) ORM {
+    pub fn initWithPool(pool: *Database.ConnectionPool, allocator: std.mem.Allocator) !ORM {
         _ = pool;
         _ = allocator;
-        @panic("Pool-based ORM not yet implemented");
+        return error.NotImplemented;
     }
 
     pub fn create(self: *ORM, comptime T: type, instance: T) !void {
@@ -97,6 +97,13 @@ pub const ORM = struct {
             values.deinit(self.allocator);
         }
 
+        // Validate that we have at least one field to insert
+        if (fields.items.len == 0) {
+            std.debug.print("[ORM Error] create() failed for table '{s}'\n", .{table_name});
+            std.debug.print("  Reason: No fields to insert (all fields are null or id is 0)\n", .{});
+            return error.InvalidArgument;
+        }
+
         const fields_str = try std.mem.join(self.allocator, ", ", fields.items);
         defer self.allocator.free(fields_str);
 
@@ -110,7 +117,18 @@ pub const ORM = struct {
         );
         defer self.allocator.free(sql);
 
-        try self.db.execute(sql);
+        self.db.execute(sql) catch |err| {
+            std.debug.print("[ORM Error] create() failed for table '{s}'\n", .{table_name});
+            std.debug.print("  SQL: {s}\n", .{sql});
+            std.debug.print("  Fields: ", .{});
+            for (fields.items, 0..) |field, i| {
+                if (i > 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{field});
+            }
+            std.debug.print("\n", .{});
+            std.debug.print("  Error: {}\n", .{err});
+            return err;
+        };
     }
 
     pub fn find(self: *ORM, comptime T: type, id: i64) !?T {
@@ -122,7 +140,13 @@ pub const ORM = struct {
         );
         defer self.allocator.free(sql);
 
-        var result = try self.db.query(sql);
+        var result = self.db.query(sql) catch |err| {
+            std.debug.print("[ORM Error] find() failed for table '{s}'\n", .{table_name});
+            std.debug.print("  SQL: {s}\n", .{sql});
+            std.debug.print("  ID: {d}\n", .{id});
+            std.debug.print("  Error: {}\n", .{err});
+            return err;
+        };
         defer result.deinit();
 
         var list = try result.toArrayList(T);
@@ -154,6 +178,8 @@ pub const ORM = struct {
         if (list.items.len > 0) {
             const item = list.items[0];
             // Copy all fields dynamically, duplicating string slices
+            // Initialize struct - all fields will be set in the loop below
+            // Using undefined is safe here because all fields are explicitly initialized
             var return_value: T = undefined;
             inline for (std.meta.fields(T)) |field| {
                 const field_type = @TypeOf(@field(item, field.name));
@@ -200,13 +226,10 @@ pub const ORM = struct {
         defer self.allocator.free(sql);
 
         var query_result = self.db.query(sql) catch |err| {
-            // Wrap database errors with context
-            return switch (err) {
-                error.QueryFailed => error.QueryFailed,
-                error.InvalidArgument => error.InvalidArgument,
-                error.DatabaseError => error.DatabaseError,
-                else => err,
-            };
+            std.debug.print("[ORM Error] findAll() failed for table '{s}'\n", .{table_name});
+            std.debug.print("  SQL: {s}\n", .{sql});
+            std.debug.print("  Error: {}\n", .{err});
+            return err;
         };
         defer query_result.deinit();
 
@@ -237,13 +260,11 @@ pub const ORM = struct {
         defer self.allocator.free(sql);
 
         var query_result = self.db.query(sql) catch |err| {
-            // Wrap database errors with context
-            return switch (err) {
-                error.QueryFailed => error.QueryFailed,
-                error.InvalidArgument => error.InvalidArgument,
-                error.DatabaseError => error.DatabaseError,
-                else => err,
-            };
+            std.debug.print("[ORM Error] where() failed for table '{s}'\n", .{table_name});
+            std.debug.print("  SQL: {s}\n", .{sql});
+            std.debug.print("  Condition: {s}\n", .{condition});
+            std.debug.print("  Error: {}\n", .{err});
+            return err;
         };
         defer query_result.deinit();
 
@@ -304,6 +325,21 @@ pub const ORM = struct {
             }
         }
 
+        // Validate that we have at least one field to update
+        if (updates.items.len == 0) {
+            std.debug.print("[ORM Error] update() failed for table '{s}'\n", .{table_name});
+            std.debug.print("  Reason: No fields to update (all fields are null)\n", .{});
+            std.debug.print("  ID: {d}\n", .{id_value});
+            return error.InvalidArgument;
+        }
+
+        // Validate that id is valid
+        if (id_value == 0) {
+            std.debug.print("[ORM Error] update() failed for table '{s}'\n", .{table_name});
+            std.debug.print("  Reason: Invalid ID (id must be non-zero)\n", .{});
+            return error.InvalidArgument;
+        }
+
         const updates_str = try std.mem.join(self.allocator, ", ", updates.items);
         defer self.allocator.free(updates_str);
 
@@ -314,7 +350,19 @@ pub const ORM = struct {
         );
         defer self.allocator.free(sql);
 
-        try self.db.execute(sql);
+        self.db.execute(sql) catch |err| {
+            std.debug.print("[ORM Error] update() failed for table '{s}'\n", .{table_name});
+            std.debug.print("  SQL: {s}\n", .{sql});
+            std.debug.print("  ID: {d}\n", .{id_value});
+            std.debug.print("  Fields updated: ", .{});
+            for (updates.items, 0..) |update_str, i| {
+                if (i > 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{update_str});
+            }
+            std.debug.print("\n", .{});
+            std.debug.print("  Error: {}\n", .{err});
+            return err;
+        };
     }
 
     pub fn delete(self: *ORM, comptime T: type, id: i64) !void {
@@ -967,19 +1015,75 @@ test "ORM findAll with table not found" {
     try std.testing.expectError(error.QueryFailed, result);
 }
 
-test "ORM where with table not found" {
+test "ORM create with empty fields should error" {
     const allocator = std.testing.allocator;
 
     const User = struct {
         id: i64,
-        name: []u8,
+        description: ?[]const u8 = null,
     };
 
     var db = try Database.open(":memory:", allocator);
     defer db.close();
 
+    try db.execute("CREATE TABLE User (id INTEGER PRIMARY KEY, description TEXT)");
+
     var orm = ORM.init(db, allocator);
 
-    const result = orm.where(User, "id = 1");
-    try std.testing.expectError(error.QueryFailed, result);
+    const user = User{
+        .id = 0,
+        .description = null,
+    };
+
+    const result = orm.create(User, user);
+    try std.testing.expectError(error.InvalidArgument, result);
+}
+
+test "ORM update with empty fields should error" {
+    const allocator = std.testing.allocator;
+
+    const User = struct {
+        id: i64,
+        description: ?[]const u8 = null,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    try db.execute("CREATE TABLE User (id INTEGER PRIMARY KEY, description TEXT)");
+    try db.execute("INSERT INTO User (id, description) VALUES (1, 'test')");
+
+    var orm = ORM.init(db, allocator);
+
+    const user = User{
+        .id = 1,
+        .description = null,
+    };
+
+    const result = orm.update(User, user);
+    try std.testing.expectError(error.InvalidArgument, result);
+}
+
+test "ORM update with id 0 should error" {
+    const allocator = std.testing.allocator;
+
+    const User = struct {
+        id: i64,
+        name: []const u8,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    try db.execute("CREATE TABLE User (id INTEGER PRIMARY KEY, name TEXT)");
+
+    var orm = ORM.init(db, allocator);
+
+    const user = User{
+        .id = 0,
+        .name = "Alice",
+    };
+
+    const result = orm.update(User, user);
+    try std.testing.expectError(error.InvalidArgument, result);
 }

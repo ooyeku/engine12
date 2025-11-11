@@ -7,66 +7,107 @@ pub const Param = struct {
     value: []const u8,
 
     /// Convert parameter to u32
-    /// Returns error if conversion fails
+    /// Returns error if conversion fails or value is out of bounds
+    /// Validates that the value is within u32 range
     ///
     /// Example:
     /// ```zig
     /// const id = try req.param("id").asU32();
     /// ```
     pub fn asU32(self: Param) !u32 {
+        // Validate length to prevent overflow attacks
+        if (self.value.len > 10) {
+            return error.InvalidArgument;
+        }
         return std.fmt.parseInt(u32, self.value, 10);
     }
 
     /// Convert parameter to u32 with default value
-    /// Returns default if conversion fails
+    /// Returns default if conversion fails or value is out of bounds
+    /// Validates that the value is within u32 range
     ///
     /// Example:
     /// ```zig
     /// const limit = req.param("limit").asU32Default(10);
     /// ```
     pub fn asU32Default(self: Param, default: u32) u32 {
+        if (self.value.len > 10) {
+            return default;
+        }
         return std.fmt.parseInt(u32, self.value, 10) catch default;
     }
 
     /// Convert parameter to i64
-    /// Returns error if conversion fails
+    /// Returns error if conversion fails or value is out of bounds
+    /// Validates that the value is within i64 range
     ///
     /// Example:
     /// ```zig
     /// const id = try req.param("id").asI64();
     /// ```
     pub fn asI64(self: Param) !i64 {
+        // Validate length to prevent overflow attacks (i64 max is 19 digits)
+        if (self.value.len > 20) {
+            return error.InvalidArgument;
+        }
         return std.fmt.parseInt(i64, self.value, 10);
     }
 
     /// Convert parameter to i64 with default value
-    /// Returns default if conversion fails
+    /// Returns default if conversion fails or value is out of bounds
+    /// Validates that the value is within i64 range
     ///
     /// Example:
     /// ```zig
     /// const limit = req.param("limit").asI64Default(10);
     /// ```
     pub fn asI64Default(self: Param, default: i64) i64 {
+        if (self.value.len > 20) {
+            return default;
+        }
         return std.fmt.parseInt(i64, self.value, 10) catch default;
     }
 
     /// Convert parameter to i32
+    /// Returns error if conversion fails or value is out of bounds
+    /// Validates that the value is within i32 range
     pub fn asI32(self: Param) !i32 {
+        // Validate length to prevent overflow attacks (i32 max is 10 digits)
+        if (self.value.len > 11) {
+            return error.InvalidArgument;
+        }
         return std.fmt.parseInt(i32, self.value, 10);
     }
 
     /// Convert parameter to i32 with default value
+    /// Returns default if conversion fails or value is out of bounds
+    /// Validates that the value is within i32 range
     pub fn asI32Default(self: Param, default: i32) i32 {
+        if (self.value.len > 11) {
+            return default;
+        }
         return std.fmt.parseInt(i32, self.value, 10) catch default;
     }
 
     /// Convert parameter to u64
+    /// Returns error if conversion fails or value is out of bounds
+    /// Validates that the value is within u64 range
     pub fn asU64(self: Param) !u64 {
+        // Validate length to prevent overflow attacks (u64 max is 20 digits)
+        if (self.value.len > 20) {
+            return error.InvalidArgument;
+        }
         return std.fmt.parseInt(u64, self.value, 10);
     }
 
     /// Convert parameter to f64
+    /// Returns error if conversion fails
+    /// Validates that the value is a valid float format
     pub fn asF64(self: Param) !f64 {
+        // Validate reasonable length to prevent DoS
+        if (self.value.len > 100) {
+            return error.InvalidArgument;
+        }
         return std.fmt.parseFloat(f64, self.value);
     }
 

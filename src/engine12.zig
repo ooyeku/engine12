@@ -33,19 +33,44 @@ fn generateRequestId(alloc: std.mem.Allocator) ![]const u8 {
 
 /// Global middleware pointer (thread-local for thread safety)
 /// This is set when routes are registered and accessed at runtime
+/// 
+/// Thread Safety:
+/// - This pointer is set once per route registration and read-only during request handling
+/// - Each request handler runs in its own thread context
+/// - No mutex needed as the pointer itself is immutable after initialization
 var global_middleware: ?*const middleware_chain.MiddlewareChain = null;
 
 /// Global metrics collector pointer
 /// This is set when routes are registered and accessed at runtime
+/// 
+/// Thread Safety:
+/// - Metrics operations use internal thread-safe mechanisms
+/// - Multiple threads can safely increment counters concurrently
 pub var global_metrics: ?*metrics.MetricsCollector = null;
 
 /// Global rate limiter pointer
 /// This is set when routes are registered and accessed at runtime
+/// 
+/// Thread Safety:
+/// - Rate limiter uses internal mutex for thread-safe access
+/// - Multiple threads can safely check rate limits concurrently
 pub var global_rate_limiter: ?*rate_limit.RateLimiter = null;
 
 /// Global cache pointer
 /// This is set when routes are registered and accessed at runtime
+/// 
+/// Thread Safety:
+/// - Cache uses internal mutex for thread-safe access
+/// - Multiple threads can safely read/write cache entries concurrently
 pub var global_cache: ?*cache.ResponseCache = null;
+
+/// Global error handler registry pointer
+/// This is set when Engine12 is initialized and accessed at runtime
+/// 
+/// Thread Safety:
+/// - Error handler registry is read-only after initialization
+/// - No mutex needed as handlers are immutable function pointers
+pub var global_error_handler: ?*error_handler.ErrorHandlerRegistry = null;
 
 /// Wrap an Engine12 handler to work with ziggurat
 /// Creates an arena allocator for each request and automatically cleans it up
@@ -123,6 +148,7 @@ fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?
             }
 
             // Call the Engine12 handler
+            // Error handler registry is available via global_error_handler if handlers need it
             var engine12_response = handler(&engine12_request);
 
             // Execute response middleware chain (pass request for cache headers)
@@ -190,7 +216,7 @@ pub const Engine12 = struct {
     http_server: ?*anyopaque = null,
 
     pub fn initWithProfile(profile: types.ServerProfile) !Engine12 {
-        return Engine12{
+        var app = Engine12{
             .allocator = allocator,
             .profile = profile,
             .middleware = middleware_chain.MiddlewareChain{},
@@ -198,6 +224,9 @@ pub const Engine12 = struct {
             .metrics_collector = metrics.MetricsCollector.init(allocator),
             .logger = dev_tools.Logger.fromEnvironment(allocator, profile.environment),
         };
+        // Set global error handler registry for access in wrapHandler
+        global_error_handler = &app.error_handler_registry;
+        return app;
     }
 
     /// Initialize Engine12 for development

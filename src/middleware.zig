@@ -91,13 +91,16 @@ pub const MiddlewareChain = struct {
                         if (req.context.get("body_size_exceeded")) |_| {
                             const limit_str = req.context.get("body_size_limit") orelse "unknown";
                             // Create error message with limit info
+                            // Note: error_msg is allocated in request arena, so it will be cleaned up automatically
                             const error_msg = std.fmt.allocPrint(req.arena.allocator(), 
                                 \\{{"error":"Request body too large","message":"Request body exceeds maximum size of {s} bytes","code":"REQUEST_TOO_LARGE"}}
                             , .{limit_str}) catch {
+                                // If allocation fails, return generic error (request arena will still be cleaned up)
                                 return Response.json(
                                     \\{"error":"Request body too large","message":"Request body exceeds maximum allowed size"}
                                 ).withStatus(413);
                             };
+                            // error_msg will be freed when request arena is deinitialized
                             return Response.json(error_msg).withStatus(413);
                         }
                         // Check if CSRF validation failed

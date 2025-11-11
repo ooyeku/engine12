@@ -212,11 +212,38 @@ pub const Json = struct {
         fn parseStruct(self: *Parser, comptime T: type) !T {
             self.skipWhitespace();
             if (self.pos >= self.input.len or self.input[self.pos] != '{') {
+                std.debug.print("[JSON Parser Error] Expected '{' at start of struct\n", .{});
+                std.debug.print("  Input: {s}\n", .{self.input});
+                std.debug.print("  Position: {d}\n", .{self.pos});
+                if (self.pos < self.input.len) {
+                    const context_start = if (self.pos > 20) self.pos - 20 else 0;
+                    const context_end = if (self.pos + 20 < self.input.len) self.pos + 20 else self.input.len;
+                    std.debug.print("  Context: {s}\n", .{self.input[context_start..context_end]});
+                }
                 return error.InvalidJson;
             }
             self.pos += 1;
 
+            // Initialize all fields to default values first for robustness
+            // This ensures no fields remain undefined if missing from JSON
             var result: T = undefined;
+            inline for (std.meta.fields(T)) |field| {
+                const field_type = field.type;
+                const type_info = @typeInfo(field_type);
+                switch (type_info) {
+                    .int => @field(result, field.name) = 0,
+                    .float => @field(result, field.name) = 0.0,
+                    .bool => @field(result, field.name) = false,
+                    .optional => @field(result, field.name) = null,
+                    .pointer => |ptr_info| {
+                        if (ptr_info.size == .slice and ptr_info.child == u8) {
+                            @field(result, field.name) = "";
+                        }
+                    },
+                    else => {},
+                }
+            }
+
             var field_count: usize = 0;
 
             inline for (std.meta.fields(T)) |field| {
@@ -260,6 +287,9 @@ pub const Json = struct {
 
             self.skipWhitespace();
             if (self.pos >= self.input.len or self.input[self.pos] != '}') {
+                std.debug.print("[JSON Parser Error] Expected '}' at end of struct\n", .{});
+                std.debug.print("  Input: {s}\n", .{self.input});
+                std.debug.print("  Position: {d}\n", .{self.pos});
                 return error.InvalidJson;
             }
             self.pos += 1;
@@ -314,6 +344,9 @@ pub const Json = struct {
         fn parseString(self: *Parser) ![]const u8 {
             self.skipWhitespace();
             if (self.pos >= self.input.len or self.input[self.pos] != '"') {
+                std.debug.print("[JSON Parser Error] Expected '\"' at start of string\n", .{});
+                std.debug.print("  Input: {s}\n", .{self.input});
+                std.debug.print("  Position: {d}\n", .{self.pos});
                 return error.InvalidJson;
             }
             self.pos += 1;
@@ -429,6 +462,9 @@ pub const Json = struct {
                 self.pos += 5;
                 return false;
             } else {
+                std.debug.print("[JSON Parser Error] Invalid boolean value\n", .{});
+                std.debug.print("  Input: {s}\n", .{self.input});
+                std.debug.print("  Position: {d}\n", .{self.pos});
                 return error.InvalidJson;
             }
         }

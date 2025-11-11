@@ -61,6 +61,10 @@ pub const QueryParser = struct {
                 // Decode hex sequence
                 const hex_str = encoded[i + 1..i + 3];
                 const byte = std.fmt.parseInt(u8, hex_str, 16) catch {
+                    // Invalid hex - include context in error
+                    std.debug.print("[Parser Error] Invalid percent encoding in query parameter\n", .{});
+                    std.debug.print("  Input: {s}\n", .{encoded});
+                    std.debug.print("  Position: {d}, Invalid hex sequence: {s}\n", .{ i, hex_str });
                     // Invalid hex, treat as literal
                     try result.append(allocator, '%');
                     i += 1;

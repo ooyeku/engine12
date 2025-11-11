@@ -113,6 +113,8 @@ pub const QueryResult = struct {
     }
 
     fn rowToStruct(self: *QueryResult, comptime T: type, row: Row) !T {
+        // Initialize struct - all fields will be set in the loop below
+        // Using undefined is safe here because all fields are explicitly initialized
         var instance: T = undefined;
 
         var col_idx: i32 = 0;

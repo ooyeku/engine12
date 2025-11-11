@@ -91,6 +91,19 @@ pub const Database = struct {
     c_db: *c.E12Database,
     allocator: std.mem.Allocator,
 
+    /// Capture and log C API error message with context
+    /// This provides detailed error information for debugging
+    fn captureError(comptime context: []const u8, sql: ?[]const u8) void {
+        const error_msg = c.e12_orm_get_last_error();
+        if (error_msg != null) {
+            std.debug.print("[Database Error] {s}\n", .{context});
+            std.debug.print("  C API Error: {s}\n", .{error_msg});
+            if (sql) |sql_str| {
+                std.debug.print("  SQL: {s}\n", .{sql_str});
+            }
+        }
+    }
+
     pub fn open(path: []const u8, allocator: std.mem.Allocator) !Database {
         const c_path = try allocator.dupeZ(u8, path);
         defer allocator.free(c_path);
@@ -99,7 +112,7 @@ pub const Database = struct {
         const err = c.e12_db_open(c_path, &c_db);
 
         if (err != c.E12_ORM_OK) {
-            _ = c.e12_orm_get_last_error(); // Ignore error message for now
+            captureError("Failed to open database", null);
             return switch (err) {
                 c.E12_ORM_ERROR_OPEN_FAILED => error.DatabaseOpenFailed,
                 c.E12_ORM_ERROR_INVALID_ARGUMENT => error.InvalidArgument,
@@ -143,7 +156,7 @@ pub const Database = struct {
         const err = c.e12_db_execute(self.c_db, c_sql, null);
 
         if (err != c.E12_ORM_OK) {
-            _ = c.e12_orm_get_last_error(); // Ignore error message for now
+            captureError("Failed to execute SQL statement", sql);
             return switch (err) {
                 c.E12_ORM_ERROR_QUERY_FAILED => error.QueryFailed,
                 c.E12_ORM_ERROR_INVALID_ARGUMENT => error.InvalidArgument,
@@ -160,7 +173,7 @@ pub const Database = struct {
         const err = c.e12_db_execute(self.c_db, c_sql, &rows_affected);
 
         if (err != c.E12_ORM_OK) {
-            _ = c.e12_orm_get_last_error(); // Ignore error message for now
+            captureError("Failed to execute SQL statement with rows affected", sql);
             return switch (err) {
                 c.E12_ORM_ERROR_QUERY_FAILED => error.QueryFailed,
                 c.E12_ORM_ERROR_INVALID_ARGUMENT => error.InvalidArgument,
@@ -179,7 +192,7 @@ pub const Database = struct {
         const err = c.e12_db_query(self.c_db, c_sql, &c_result);
 
         if (err != c.E12_ORM_OK) {
-            _ = c.e12_orm_get_last_error(); // Ignore error message for now
+            captureError("Failed to execute SQL query", sql);
             return switch (err) {
                 c.E12_ORM_ERROR_QUERY_FAILED => error.QueryFailed,
                 c.E12_ORM_ERROR_INVALID_ARGUMENT => error.InvalidArgument,
@@ -247,6 +260,7 @@ pub const Transaction = struct {
 
         const err = c.e12_db_execute(self.db.c_db, c_sql, null);
         if (err != c.E12_ORM_OK) {
+            Database.captureError("Failed to execute SQL statement in transaction", sql);
             return switch (err) {
                 c.E12_ORM_ERROR_QUERY_FAILED => error.QueryFailed,
                 c.E12_ORM_ERROR_INVALID_ARGUMENT => error.InvalidArgument,
@@ -264,6 +278,7 @@ pub const Transaction = struct {
         const err = c.e12_db_query(self.db.c_db, c_sql, &c_result);
 
         if (err != c.E12_ORM_OK) {
+            Database.captureError("Failed to execute SQL query in transaction", sql);
             return switch (err) {
                 c.E12_ORM_ERROR_QUERY_FAILED => error.QueryFailed,
                 c.E12_ORM_ERROR_INVALID_ARGUMENT => error.InvalidArgument,

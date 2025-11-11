@@ -23,6 +23,12 @@ pub const ErrorResponse = struct {
     code: []const u8,
     details: ?[]const u8,
     timestamp: i64,
+    /// Request ID for correlation tracking
+    request_id: ?[]const u8 = null,
+    /// Request path that caused the error
+    path: ?[]const u8 = null,
+    /// HTTP method that caused the error
+    method: ?[]const u8 = null,
     
     /// Convert error response to JSON
     pub fn toJson(self: *const ErrorResponse, allocator: std.mem.Allocator) ![]const u8 {
@@ -38,9 +44,36 @@ pub const ErrorResponse = struct {
             try writer.print(",\"details\":\"{s}\"", .{details});
         }
         
+        if (self.request_id) |req_id| {
+            try writer.print(",\"request_id\":\"{s}\"", .{req_id});
+        }
+        
+        if (self.path) |p| {
+            try writer.print(",\"path\":\"{s}\"", .{p});
+        }
+        
+        if (self.method) |m| {
+            try writer.print(",\"method\":\"{s}\"", .{m});
+        }
+        
         try writer.print("}}}}", .{});
         
         return json.toOwnedSlice(allocator);
+    }
+    
+    /// Create an error response from a request context
+    /// Automatically includes request ID, path, and method
+    pub fn fromRequest(req: *Request, error_type: ErrorType, message: []const u8, code: []const u8, details: ?[]const u8) ErrorResponse {
+        return ErrorResponse{
+            .error_type = error_type,
+            .message = message,
+            .code = code,
+            .details = details,
+            .timestamp = std.time.milliTimestamp(),
+            .request_id = req.requestId(),
+            .path = req.path(),
+            .method = req.method(),
+        };
     }
     
     /// Create a validation error response
