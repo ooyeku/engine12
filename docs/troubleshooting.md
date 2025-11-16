@@ -81,8 +81,20 @@ Or use a signal handler for graceful shutdown.
 1. Check parameter names match route pattern:
    ```zig
    // Route: /todos/:id
-   const id = req.param("id"); // Correct
-   const todo_id = req.param("todo_id"); // Wrong
+   const id = req.paramTyped(i64, "id") catch {
+       return Response.errorResponse("Invalid ID", 400);
+   }; // Correct - type-safe parsing
+   const todo_id = req.paramTyped(i64, "todo_id") catch {
+       return Response.errorResponse("Invalid ID", 400);
+   }; // Wrong - parameter name doesn't match route
+   ```
+
+2. Use `paramTyped()` for type-safe parsing:
+   ```zig
+   // Type-safe route parameter parsing
+   const id = req.paramTyped(i64, "id") catch {
+       return Response.errorResponse("Invalid ID", 400);
+   };
    ```
 
 ### Query Parameter Errors
@@ -91,36 +103,39 @@ Or use a signal handler for graceful shutdown.
 
 **Solution**: Use the appropriate method for your use case:
 
-1. **Optional parameters** - Use `queryOptional()` when the parameter may not be present:
+1. **Type-safe optional parameters** - Use `queryParamTyped()` for automatic type conversion:
    ```zig
-   const limit = req.queryOptional("limit");
-   if (limit) |l| {
-       // Parameter exists
-       const limit_u32 = try std.fmt.parseInt(u32, l, 10);
-   } else {
-       // Parameter not provided, use default
-       const limit_u32 = 10;
-   }
+   const limit = req.queryParamTyped(u32, "limit") catch 20 orelse 20;
+   const page = req.queryParamTyped(u32, "page") catch 1 orelse 1;
    ```
 
-2. **Required parameters** - Use `queryStrict()` when the parameter must be present:
+2. **Type-safe required parameters** - Use `queryParamTyped()` with error handling:
    ```zig
-   const filter = req.queryStrict("filter") catch {
-       return Response.badRequest().withJson("{\"error\":\"Missing filter parameter\"}");
+   const id = req.queryParamTyped(i64, "id") catch {
+       return Response.errorResponse("Invalid ID parameter", 400);
+   } orelse {
+       return Response.errorResponse("Missing ID parameter", 400);
    };
    ```
 
-3. **Legacy method** - Use `query()` for backward compatibility (returns error if missing):
+3. **Legacy methods** - Still available for backward compatibility:
    ```zig
-   const limit = req.query("limit") catch |err| {
-       // Handle error
-       return Response.badRequest();
+   // Optional parameter
+   const limit = req.queryOptional("limit");
+   if (limit) |l| {
+       const limit_u32 = try std.fmt.parseInt(u32, l, 10);
+   }
+   
+   // Required parameter
+   const filter = req.queryStrict("filter") catch {
+       return Response.errorResponse("Missing filter parameter", 400);
    };
    ```
 
 **Common errors:**
-- `error.QueryParameterMissing` - Parameter not found when using `queryStrict()`
-- Solution: Check parameter name spelling, or use `queryOptional()` if parameter is optional
+- `error.InvalidArgument` - Type conversion failed when using `queryParamTyped()` or `paramTyped()`
+- `error.ParameterMissing` - Parameter not found when using `paramTyped()`
+- Solution: Check parameter name spelling, ensure type matches (u32, i64, etc.), or use optional handling with `orelse`
 
 ### Database Connection Errors
 
@@ -326,6 +341,34 @@ pub fn getORM() !*ORM {
    ```
 2. Verify middleware logic isn't always returning `.abort`
 
+**Problem**: CORS headers not being added.
+
+**Solution**:
+1. Ensure CORS middleware is configured and registered:
+   ```zig
+   const cors = cors_middleware.CorsMiddleware.init(.{
+       .allowed_origins = &[_][]const u8{"http://localhost:3000"},
+   });
+   cors.setGlobalConfig(); // Must call this before using middleware
+   const cors_mw_fn = cors.preflightMwFn();
+   try app.usePreRequest(cors_mw_fn);
+   ```
+2. Check that `Origin` header is present in the request
+3. Verify origin is in `allowed_origins` list (or use `"*"` for all origins)
+4. For preflight OPTIONS requests, ensure `Access-Control-Request-Method` and `Access-Control-Request-Headers` are allowed
+
+**Problem**: Request ID header not appearing in responses.
+
+**Solution**:
+1. Ensure Request ID middleware is registered:
+   ```zig
+   const req_id_mw = request_id_middleware.RequestIdMiddleware.init(.{});
+   const req_id_mw_fn = req_id_mw.preRequestMwFn();
+   try app.usePreRequest(req_id_mw_fn);
+   ```
+2. Request IDs are automatically generated - middleware only ensures they're exposed via headers
+3. Access request ID in handlers via `req.requestId()`
+
 ## Performance Issues
 
 ### Memory Leaks
@@ -430,6 +473,12 @@ while (result.nextRow()) |row| {
 **"QueryParameterMissing"**
 - Solution: Query parameter is required but not provided. Use `queryOptional()` if parameter is optional, or ensure client sends the parameter.
 
+**"InvalidArgument"**
+- Solution: Type conversion failed for `queryParamTyped()` or `paramTyped()`. Check that the parameter value matches the expected type (e.g., integer for `u32`, valid boolean string for `bool`).
+
+**"ParameterMissing"**
+- Solution: Route parameter is missing when using `paramTyped()`. Check that the route pattern includes the parameter (e.g., `/todos/:id`), and the parameter name matches exactly.
+
 **ORM Error Messages**
 
 The ORM provides improved error messages with context:
@@ -445,6 +494,41 @@ The template engine provides improved error messages:
 - **Type information**: Shows what type was expected vs what was found
 - **Available fields**: Lists fields available in the context struct
 - **Suggestions**: Provides hints for common mistakes (e.g., checking struct definition, using correct field names)
+
+## Pagination Issues
+
+**Problem**: `Pagination.fromRequest()` returns `error.InvalidArgument`.
+
+**Solution**:
+1. Check that `page` parameter is >= 1:
+   ```zig
+   const pagination = Pagination.fromRequest(req) catch {
+       return Response.errorResponse("Invalid pagination: page must be >= 1", 400);
+   };
+   ```
+2. Check that `limit` parameter is between 1 and 100:
+   ```zig
+   // Limit must be between 1 and 100
+   const pagination = Pagination.fromRequest(req) catch {
+       return Response.errorResponse("Invalid pagination: limit must be between 1 and 100", 400);
+   };
+   ```
+3. Ensure query parameters are valid integers:
+   ```zig
+   // Use queryParamTyped for type-safe parsing
+   const page = req.queryParamTyped(u32, "page") catch 1 orelse 1;
+   const limit = req.queryParamTyped(u32, "limit") catch 20 orelse 20;
+   ```
+
+**Problem**: Pagination metadata shows incorrect `total_pages`.
+
+**Solution**:
+1. Ensure `total` count is accurate (use `COUNT(*)` query)
+2. Check that `Pagination.toResponse()` is called with the correct total:
+   ```zig
+   const total = try countTodos(); // Get accurate count
+   const meta = pagination.toResponse(total);
+   ```
 
 ## Getting Help
 

@@ -71,8 +71,11 @@ fn initDatabase() !void {
     const db_path = "todo.db";
     global_db = try Database.open(db_path, allocator);
 
-    // Create table if it doesn't exist
-    try global_db.?.execute(
+    // Use MigrationRegistry for schema management
+    var registry = MigrationRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.add(Migration.init(1, "create_todos",
         \\CREATE TABLE IF NOT EXISTS Todo (
         \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
         \\  title TEXT NOT NULL,
@@ -81,10 +84,14 @@ fn initDatabase() !void {
         \\  created_at INTEGER NOT NULL,
         \\  updated_at INTEGER NOT NULL
         \\)
-    );
+    ,
+        "DROP TABLE IF EXISTS Todo;"));
 
     // Initialize ORM
     global_orm = try ORM.initPtr(global_db.?, allocator);
+
+    // Run migrations
+    try global_orm.?.runMigrationsFromRegistry(&registry);
 }
 
 pub fn deinit() void {
@@ -149,15 +156,44 @@ Memory management:
 
 ```zig
 fn getAllTodos(orm: *ORM) !std.ArrayListUnmanaged(Todo) {
-    return orm.findAll(Todo) catch |err| {
-        std.debug.print("ORM findAll() error: {}\n", .{err});
-        return err;
-    };
+    // Use managed results for automatic memory management
+    var result = try orm.findAllManaged(Todo);
+    defer result.deinit();
+    
+    // Copy items to return (caller will manage memory)
+    var todos = std.ArrayListUnmanaged(Todo){};
+    for (result.getItems()) |todo| {
+        const todo_copy = Todo{
+            .id = todo.id,
+            .title = try allocator.dupe(u8, todo.title),
+            .description = if (todo.description) |desc| try allocator.dupe(u8, desc) else null,
+            .completed = todo.completed,
+            .status = todo.status,
+            .created_at = todo.created_at,
+            .updated_at = todo.updated_at,
+        };
+        try todos.append(allocator, todo_copy);
+    }
+    return todos;
 }
 
 fn findTodoById(orm: *ORM, id: i64) !?Todo {
-    const todo = try orm.find(Todo, id);
-    return todo;
+    if (try orm.findManaged(Todo, id)) |result| {
+        defer result.deinit();
+        if (result.first()) |todo| {
+            // Return a copy with allocated strings
+            return Todo{
+                .id = todo.id,
+                .title = try allocator.dupe(u8, todo.title),
+                .description = if (todo.description) |desc| try allocator.dupe(u8, desc) else null,
+                .completed = todo.completed,
+                .status = todo.status,
+                .created_at = todo.created_at,
+                .updated_at = todo.updated_at,
+            };
+        }
+    }
+    return null;
 }
 ```
 
@@ -276,29 +312,26 @@ fn handleIndex(request: *Request) Response {
 fn handleGetTodos(request: *Request) Response {
     _ = request;
     const orm = getORM() catch {
-        return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
+        return Response.serverError("Database not initialized");
     };
 
     var todos = getAllTodos(orm) catch {
-        return Response.status(500).withJson("{\"error\":\"Failed to fetch todos\"}");
+        return Response.serverError("Failed to fetch todos");
     };
     defer {
         for (todos.items) |todo| {
             allocator.free(todo.title);
-            allocator.free(todo.description);
+            if (todo.description) |desc| allocator.free(desc);
         }
         todos.deinit(allocator);
     }
 
     const json = formatTodoListJson(todos, allocator) catch {
-        return Response.status(500).withJson("{\"error\":\"Failed to format todos\"}");
+        return Response.serverError("Failed to format todos");
     };
     defer allocator.free(json);
 
-    return Response.json(json)
-        .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-        .withHeader("Pragma", "no-cache")
-        .withHeader("Expires", "0");
+    return Response.json(json).noCache();
 }
 ```
 
@@ -310,29 +343,29 @@ Memory management:
 
 ```zig
 fn handleCreateTodo(request: *Request) Response {
-    const body = request.body();
-    const parsed = parseTodoFromJson(body, allocator) catch {
-        return Response.status(400).withJson("{\"error\":\"Invalid JSON\"}");
+    const TodoInput = struct {
+        title: []const u8,
+        description: []const u8,
     };
-    defer {
-        allocator.free(parsed.title);
-        allocator.free(parsed.description);
-    }
+    
+    const parsed = request.jsonBody(TodoInput) catch {
+        return Response.errorResponse("Invalid JSON", 400);
+    };
 
     const orm = getORM() catch {
-        return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
+        return Response.serverError("Database not initialized");
     };
 
     const todo = createTodo(orm, parsed.title, parsed.description) catch {
-        return Response.status(500).withJson("{\"error\":\"Failed to create todo\"}");
+        return Response.serverError("Failed to create todo");
     };
     defer {
         allocator.free(todo.title);
-        allocator.free(todo.description);
+        if (todo.description) |desc| allocator.free(desc);
     }
 
     const json = formatTodoJson(todo, allocator) catch {
-        return Response.status(500).withJson("{\"error\":\"Failed to format todo\"}");
+        return Response.serverError("Failed to format todo");
     };
     defer allocator.free(json);
 
@@ -344,21 +377,22 @@ fn handleCreateTodo(request: *Request) Response {
 
 ```zig
 fn handleUpdateTodo(request: *Request) Response {
-    const id = request.param("id").asI64() catch {
-        return Response.status(400).withJson("{\"error\":\"Invalid ID\"}");
+    const id = request.paramTyped(i64, "id") catch {
+        return Response.errorResponse("Invalid ID", 400);
     };
 
-    const body = request.body();
-    const parsed = parseTodoFromJson(body, allocator) catch {
-        return Response.status(400).withJson("{\"error\":\"Invalid JSON\"}");
+    const TodoInput = struct {
+        title: []const u8,
+        description: []const u8,
+        completed: bool,
     };
-    defer {
-        allocator.free(parsed.title);
-        allocator.free(parsed.description);
-    }
+    
+    const parsed = request.jsonBody(TodoInput) catch {
+        return Response.errorResponse("Invalid JSON", 400);
+    };
 
     const orm = getORM() catch {
-        return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
+        return Response.serverError("Database not initialized");
     };
 
     const updates = struct {
@@ -368,21 +402,21 @@ fn handleUpdateTodo(request: *Request) Response {
     };
 
     const todo = updateTodo(orm, id, updates) catch {
-        return Response.status(500).withJson("{\"error\":\"Failed to update todo\"}");
+        return Response.serverError("Failed to update todo");
     };
 
     if (todo) |t| {
         defer {
             allocator.free(t.title);
-            allocator.free(t.description);
+            if (t.description) |desc| allocator.free(desc);
         }
         const json = formatTodoJson(t, allocator) catch {
-            return Response.status(500).withJson("{\"error\":\"Failed to format todo\"}");
+            return Response.serverError("Failed to format todo");
         };
         defer allocator.free(json);
         return Response.json(json);
     } else {
-        return Response.status(404).withJson("{\"error\":\"Todo not found\"}");
+        return Response.notFound("Todo not found");
     }
 }
 ```
@@ -391,22 +425,22 @@ fn handleUpdateTodo(request: *Request) Response {
 
 ```zig
 fn handleDeleteTodo(request: *Request) Response {
-    const id = request.param("id").asI64() catch {
-        return Response.status(400).withJson("{\"error\":\"Invalid ID\"}");
+    const id = request.paramTyped(i64, "id") catch {
+        return Response.errorResponse("Invalid ID", 400);
     };
 
     const orm = getORM() catch {
-        return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
+        return Response.serverError("Database not initialized");
     };
 
     const deleted = deleteTodo(orm, id) catch {
-        return Response.status(500).withJson("{\"error\":\"Failed to delete todo\"}");
+        return Response.serverError("Failed to delete todo");
     };
 
     if (deleted) {
         return Response.json("{\"success\":true}");
     } else {
-        return Response.status(404).withJson("{\"error\":\"Todo not found\"}");
+        return Response.notFound("Todo not found");
     }
 }
 ```
@@ -438,12 +472,31 @@ fn handleGetStats(request: *Request) Response {
 
 ## Application Setup
 
+### Using Built-in Middleware
+
 ```zig
 pub fn main() !void {
     try initDatabase();
 
     var app = try Engine12.initDevelopment();
     defer app.deinit();
+
+    // CORS middleware
+    const cors = cors_middleware.CorsMiddleware.init(.{
+        .allowed_origins = &[_][]const u8{"*"}, // Allow all origins for demo
+        .allowed_methods = &[_][]const u8{ "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS" },
+        .allowed_headers = &[_][]const u8{"Content-Type", "Authorization", "X-CSRF-Token"},
+        .max_age = 3600,
+        .allow_credentials = false,
+    });
+    cors.setGlobalConfig();
+    const cors_mw_fn = cors.preflightMwFn();
+    try app.usePreRequest(cors_mw_fn);
+
+    // Request ID middleware
+    const req_id_mw = request_id_middleware.RequestIdMiddleware.init(.{});
+    const req_id_mw_fn = req_id_mw.preRequestMwFn();
+    try app.usePreRequest(req_id_mw_fn);
 
     // Register routes
     try app.get("/", handleIndex);
@@ -597,17 +650,20 @@ try orm.transaction(void, struct {
 
 ### Migrations
 
-Use migrations for schema management:
+Use `MigrationRegistry` for schema management:
 
 ```zig
-const migrations = [_]Migration{
-    Migration.init(1, "create_todos",
-        "CREATE TABLE todos (...);",
-        "DROP TABLE todos;"),
-};
+var registry = MigrationRegistry.init(allocator);
+defer registry.deinit();
 
-try orm.runMigrations(&migrations);
+try registry.add(Migration.init(1, "create_todos",
+    "CREATE TABLE todos (...);",
+    "DROP TABLE todos;"));
+
+try orm.runMigrationsFromRegistry(&registry);
 ```
+
+**Benefits**: Centralized migration management, automatic sorting by version, and easier migration organization.
 
 ## Lessons Learned
 

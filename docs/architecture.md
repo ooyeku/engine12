@@ -34,12 +34,16 @@ Engine12 uses the `ziggurat` library for HTTP server functionality:
 - Provides an arena allocator per request for memory-safe temporary allocations
 - Extracts route parameters, query parameters, and parses request bodies
 - Stores request context for middleware communication
+- **Type-safe parameter parsing**: `paramTyped()` and `queryParamTyped()` provide compile-time type checking for route and query parameters
+- **Automatic request ID generation**: Each request gets a unique ID for correlation tracking
 
 #### Response Wrapper (`src/response.zig`)
 
 - Wraps `ziggurat.response.Response` with fluent builder methods
 - Automatically copies response bodies to persistent memory
 - Provides convenience methods for common response types (JSON, HTML, text)
+- **Error response helpers**: `errorResponse()`, `serverError()`, `validationError()` for standardized error responses
+- **JSON serialization**: `jsonFrom()` automatically serializes structs to JSON responses
 
 ### Router System
 
@@ -64,6 +68,8 @@ The `MiddlewareChain` (`src/middleware.zig`) manages two types of middleware:
 2. **Response Middleware**: Executed after the route handler
    - Transforms responses
    - Used for CORS headers, response logging, etc.
+   - Built-in CORS middleware automatically adds CORS headers based on request context
+   - Built-in Request ID middleware automatically adds Request ID headers
 
 ### Execution Flow
 

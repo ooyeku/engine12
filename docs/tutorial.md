@@ -151,25 +151,35 @@ fn handleGetTodos(req: *Request) Response {
 }
 
 fn handleCreateTodo(req: *Request) Response {
-    const body = req.body();
-    // Simple parsing - in production, use req.jsonBody()
-    if (std.mem.indexOf(u8, body, "title")) |_| {
-        const title = "Sample Todo"; // Simplified
-        todos.append(std.heap.page_allocator, title) catch return Response.status(500);
-        return Response.created().withJson("{\"id\": 1}");
-    }
-    return Response.badRequest().withJson("{\"error\":\"Invalid request\"}");
+    const TodoInput = struct {
+        title: []const u8,
+    };
+    
+    const input = req.jsonBody(TodoInput) catch {
+        return Response.errorResponse("Invalid JSON", 400);
+    };
+    
+    // In production, add to database
+    todos.append(std.heap.page_allocator, input.title) catch {
+        return Response.serverError("Failed to create todo");
+    };
+    
+    return Response.created().withJson("{\"id\": 1}");
 }
 
 fn handleGetTodo(req: *Request) Response {
-    const id_str = req.param("id").value;
-    _ = id_str;
+    const id = req.paramTyped(i64, "id") catch {
+        return Response.errorResponse("Invalid ID", 400);
+    };
+    _ = id;
     return Response.json("{\"id\": 1, \"title\": \"Sample Todo\"}");
 }
 
 fn handleDeleteTodo(req: *Request) Response {
-    const id_str = req.param("id").value;
-    _ = id_str;
+    const id = req.paramTyped(i64, "id") catch {
+        return Response.errorResponse("Invalid ID", 400);
+    };
+    _ = id;
     return Response.noContent();
 }
 
@@ -491,6 +501,35 @@ api.usePreRequest(authMiddleware);
 api.get("/todos", handleGetTodos);
 ```
 
+### 6.3 CORS Middleware
+
+Add CORS support for cross-origin requests:
+
+```zig
+const cors = cors_middleware.CorsMiddleware.init(.{
+    .allowed_origins = &[_][]const u8{"http://localhost:3000"},
+    .allowed_methods = &[_][]const u8{ "GET", "POST", "PUT", "DELETE" },
+    .allowed_headers = &[_][]const u8{"Content-Type", "Authorization"},
+    .max_age = 3600,
+});
+
+cors.setGlobalConfig();
+const cors_mw_fn = cors.preflightMwFn();
+try app.usePreRequest(cors_mw_fn);
+```
+
+### 6.4 Request ID Middleware
+
+Add Request ID headers for tracing:
+
+```zig
+const req_id_mw = request_id_middleware.RequestIdMiddleware.init(.{});
+const req_id_mw_fn = req_id_mw.preRequestMwFn();
+try app.usePreRequest(req_id_mw_fn);
+```
+
+Request IDs are automatically added to response headers and can be accessed in handlers via `req.requestId()`.
+
 ## Step 7: Deploy
 
 ### 7.1 Build for Production
@@ -526,6 +565,82 @@ zig build -Doptimize=ReleaseSafe
 - Set up process management (systemd, supervisor, etc.)
 - Configure logging
 - Set up reverse proxy (nginx, etc.)
+
+## Step 8: Advanced Features
+
+### 8.1 Type-Safe Parameter Parsing
+
+Use `paramTyped()` and `queryParamTyped()` for type-safe parameter parsing:
+
+```zig
+fn handleGetTodo(req: *Request) Response {
+    // Type-safe route parameter
+    const id = req.paramTyped(i64, "id") catch {
+        return Response.errorResponse("Invalid ID", 400);
+    };
+    
+    // Type-safe query parameters
+    const include_completed = req.queryParamTyped(bool, "include_completed") catch false orelse false;
+    const limit = req.queryParamTyped(u32, "limit") catch 20 orelse 20;
+    
+    // Use parameters...
+}
+```
+
+### 8.2 Pagination Helper
+
+Use the pagination helper for paginated endpoints:
+
+```zig
+fn handleGetTodos(req: *Request) Response {
+    const pagination = Pagination.fromRequest(req) catch {
+        return Response.errorResponse("Invalid pagination", 400);
+    };
+    
+    // Fetch paginated results
+    const todos = try fetchTodos(pagination.limit, pagination.offset);
+    const total = try countTodos();
+    
+    // Generate metadata
+    const meta = pagination.toResponse(total);
+    
+    // Return paginated response
+    return Response.jsonFrom(PaginatedResponse, .{
+        .data = todos,
+        .meta = meta,
+    }, req.allocator());
+}
+```
+
+### 8.3 Error Response Helpers
+
+Use standardized error response helpers:
+
+```zig
+// Custom error with status code
+return Response.errorResponse("Invalid input", 400);
+
+// Server error
+return Response.serverError("Database connection failed");
+
+// Validation error
+const errors = try schema.validate();
+if (!errors.isEmpty()) {
+    return Response.validationError(&errors);
+}
+
+// Not found with message
+return Response.notFound("Todo not found");
+```
+
+### 8.4 JSON Serialization
+
+Use `jsonFrom()` to automatically serialize structs:
+
+```zig
+const todo = Todo{ .id = 1, .title = "Hello", .completed = false };
+return Response.jsonFrom(Todo, todo, allocator);
+```
 
 ## Next Steps
 

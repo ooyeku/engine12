@@ -17,6 +17,7 @@ Complete reference for Engine12's public APIs.
 - [Rate Limiting](#rate-limiting)
 - [CSRF Protection](#csrf-protection)
 - [Caching](#caching)
+- [Pagination Helper](#pagination-helper)
 - [Metrics & Health Checks](#metrics--health-checks)
 - [Background Tasks](#background-tasks)
 - [Error Handling](#error-handling)
@@ -323,6 +324,24 @@ const id = try req.param("id").asI64();
 const limit = req.param("limit").asU32Default(10);
 ```
 
+#### `paramTyped(comptime T: type, name: []const u8) !T`
+Get a route parameter with direct type conversion. Returns an error union - fails if parameter is missing or conversion fails.
+
+**Supported types**: `u32`, `i32`, `u64`, `i64`, `f64`, `bool`, `[]const u8`
+
+```zig
+// Integer parameter
+const id = try req.paramTyped(i64, "id");
+
+// String parameter
+const slug = try req.paramTyped([]const u8, "slug");
+
+// Boolean parameter (accepts "true"/"1" or "false"/"0")
+const enabled = try req.paramTyped(bool, "enabled");
+```
+
+**Error handling**: Returns `error.ParameterMissing` if parameter is missing, or `error.InvalidArgument` if type conversion fails.
+
 ### Query Parameters
 
 #### `query(name: []const u8) !?[]const u8`
@@ -364,6 +383,29 @@ Get all query parameters as a hashmap.
 const params = try req.queryParams();
 const limit = params.get("limit");
 ```
+
+#### `queryParamTyped(comptime T: type, name: []const u8) !?T`
+Get a query parameter with automatic type conversion. Returns an optional value - null if parameter is missing, or error if conversion fails.
+
+**Supported types**: `u32`, `i32`, `u64`, `i64`, `f64`, `bool`, `[]const u8`
+
+```zig
+// Optional parameter with default
+const page = req.queryParamTyped(u32, "page") catch 1 orelse 1;
+const limit = req.queryParamTyped(u32, "limit") catch 20 orelse 20;
+
+// Required parameter
+const id = req.queryParamTyped(i64, "id") catch {
+    return Response.errorResponse("Invalid ID parameter", 400);
+} orelse {
+    return Response.errorResponse("Missing ID parameter", 400);
+};
+
+// String parameter
+const search = req.queryParamTyped([]const u8, "q") catch null;
+```
+
+**Error handling**: Returns `error.InvalidArgument` if type conversion fails. Use `catch` to handle errors and `orelse` to handle null values.
 
 ### Headers
 
@@ -513,11 +555,11 @@ Create a 403 Forbidden response.
 return Response.forbidden();
 ```
 
-#### `notFound() Response`
-Create a 404 Not Found response.
+#### `notFound(message: []const u8) Response`
+Create a 404 Not Found response with an error message.
 
 ```zig
-return Response.notFound();
+return Response.notFound("Todo not found");
 ```
 
 #### `internalError() Response`
@@ -532,6 +574,39 @@ Create a response with a specific status code.
 
 ```zig
 return Response.status(418); // I'm a teapot
+```
+
+#### `errorResponse(message: []const u8, status_code: u16) Response`
+Create an error response with a custom message and status code.
+
+```zig
+return Response.errorResponse("Invalid input", 400);
+return Response.errorResponse("Unauthorized", 401);
+```
+
+#### `serverError(message: []const u8) Response`
+Create a 500 Internal Server Error response with a message.
+
+```zig
+return Response.serverError("Database connection failed");
+```
+
+#### `validationError(errors: *ValidationErrors) Response`
+Create a validation error response from `ValidationErrors`. Automatically serializes validation errors to JSON and sets status code to 400.
+
+```zig
+const errors = try schema.validate();
+if (!errors.isEmpty()) {
+    return Response.validationError(&errors);
+}
+```
+
+#### `jsonFrom(comptime T: type, value: T, allocator: Allocator) Response`
+Serialize a struct to JSON and return as a Response. Uses `Json.serialize` internally and handles memory management automatically.
+
+```zig
+const todo = Todo{ .id = 1, .title = "Hello", .completed = false };
+return Response.jsonFrom(Todo, todo, allocator);
 ```
 
 ### Modifying Responses
@@ -624,7 +699,73 @@ try app.useResponse(corsMiddleware);
 Execute all pre-request middleware. Returns `null` if processing should continue, or a response if aborted.
 
 #### `executeResponse(response: Response, req: ?*Request) Response`
-Execute all response middleware, transforming the response.
+Execute all response middleware, transforming the response. Automatically adds CORS headers and Request ID headers if configured.
+
+### Built-in Middleware
+
+Engine12 provides built-in middleware for common use cases:
+
+#### CORS Middleware
+
+The CORS middleware handles Cross-Origin Resource Sharing (CORS) requests, including preflight OPTIONS requests.
+
+**Configuration:**
+
+```zig
+const cors = cors_middleware.CorsMiddleware.init(.{
+    .allowed_origins = &[_][]const u8{"http://localhost:3000", "https://example.com"},
+    .allowed_methods = &[_][]const u8{ "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS" },
+    .allowed_headers = &[_][]const u8{"Content-Type", "Authorization", "X-CSRF-Token"},
+    .max_age = 3600,
+    .allow_credentials = false,
+    .exposed_headers = &[_][]const u8{"X-Request-ID"},
+});
+
+// Set global config before using middleware
+cors.setGlobalConfig();
+
+// Add middleware to app
+const cors_mw_fn = cors.preflightMwFn();
+try app.usePreRequest(cors_mw_fn);
+```
+
+**CorsConfig options:**
+- `allowed_origins`: List of allowed origins (use `"*"` for all origins)
+- `allowed_methods`: List of allowed HTTP methods
+- `allowed_headers`: List of allowed request headers
+- `max_age`: Preflight cache duration in seconds (default: 3600)
+- `allow_credentials`: Whether to allow credentials (cookies, auth headers)
+- `exposed_headers`: Headers that can be accessed by JavaScript
+
+**How it works:**
+- Pre-request middleware checks the `Origin` header and validates it against allowed origins
+- For OPTIONS preflight requests, validates `Access-Control-Request-Method` and `Access-Control-Request-Headers`
+- Response middleware (`executeResponse`) automatically adds CORS headers based on request context
+- Preflight requests return a 204 No Content response
+
+#### Request ID Middleware
+
+The Request ID middleware ensures request IDs are exposed via response headers for tracing and logging.
+
+**Configuration:**
+
+```zig
+const req_id_mw = request_id_middleware.RequestIdMiddleware.init(.{
+    .header_name = "X-Request-ID", // Default
+});
+
+// Add middleware to app
+const req_id_mw_fn = req_id_mw.preRequestMwFn();
+try app.usePreRequest(req_id_mw_fn);
+```
+
+**How it works:**
+- Request IDs are automatically generated in `Request.fromZiggurat()`
+- Middleware stores the header name in request context
+- Response middleware (`executeResponse`) automatically adds the Request ID header
+- Request IDs can be accessed via `req.requestId()` in handlers
+
+**Note**: Request IDs are already auto-generated. This middleware only ensures they're exposed via headers.
 
 ## ORM API
 
@@ -721,6 +862,20 @@ if (todo) |t| {
 }
 ```
 
+#### `findManaged(comptime T: type, id: i64) !?Result(T)`
+Find a record by ID with automatic memory management. Returns a `Result` wrapper that automatically frees string fields on `deinit()`.
+
+```zig
+if (try orm.findManaged(Todo, 1)) |result| {
+    defer result.deinit();
+    if (result.first()) |todo| {
+        // Use todo - strings are automatically freed when result.deinit() is called
+    }
+}
+```
+
+**Benefits**: Eliminates manual memory management for ORM results. The `Result` wrapper handles freeing all string fields automatically.
+
 #### `findAll(comptime T: type) !ArrayListUnmanaged(T)`
 Find all records. Enhanced error handling provides detailed context when errors occur.
 
@@ -775,6 +930,27 @@ defer {
 ```
 
 **Note**: The condition string is inserted directly into the SQL query. Be careful with user input to prevent SQL injection. Consider using parameterized queries or the Query Builder for dynamic conditions.
+
+#### `findAllManaged(comptime T: type) !Result(T)`
+Find all records with automatic memory management. Returns a `Result` wrapper that automatically frees string fields on `deinit()`.
+
+```zig
+var result = try orm.findAllManaged(Todo);
+defer result.deinit();
+for (result.getItems()) |todo| {
+    // Use todo - strings are automatically freed when result.deinit() is called
+}
+```
+
+**Result(T) methods:**
+- `getItems() []const T` - Get items as a slice
+- `getItemsMut() []T` - Get mutable access to items
+- `len() usize` - Get the number of items
+- `isEmpty() bool` - Check if empty
+- `first() ?T` - Get first item, or null if empty
+- `deinit() void` - Free all string fields and deinitialize
+
+**Benefits**: Eliminates manual memory management for ORM results. The `Result` wrapper handles freeing all string fields automatically.
 
 #### `update(comptime T: type, instance: T) !void`
 Update a record. Optional fields that are `null` are skipped in UPDATE statements (not included in the SQL).
@@ -836,6 +1012,36 @@ Alias for `runMigrations`.
 ```zig
 try orm.migrate(&migrations);
 ```
+
+#### `runMigrationsFromRegistry(registry: *MigrationRegistry) !void`
+Run migrations from a `MigrationRegistry`. This is the recommended way to manage migrations.
+
+```zig
+var registry = MigrationRegistry.init(allocator);
+defer registry.deinit();
+
+try registry.add(Migration.init(1, "create_todos", 
+    "CREATE TABLE todos (...);",
+    "DROP TABLE todos;"));
+
+try orm.runMigrationsFromRegistry(&registry);
+```
+
+**Benefits**: Centralized migration management, automatic sorting by version, and easier migration organization.
+
+#### `escapeLike(pattern: []const u8, allocator: Allocator) ![]const u8`
+Escape a string for safe use in SQL LIKE patterns. Prevents SQL injection when using user input in LIKE clauses.
+
+```zig
+const search_query = req.queryParamTyped([]const u8, "q") orelse "";
+const escaped_query = try orm.escapeLike(search_query, allocator);
+defer allocator.free(escaped_query);
+
+const sql = try std.fmt.allocPrint(allocator, 
+    "SELECT * FROM todos WHERE title LIKE '%{s}%'", .{escaped_query});
+```
+
+**Note**: The escaped pattern must be freed by the caller using the provided allocator.
 
 #### `getMigrationVersion() !?u32`
 Get the current migration version.
@@ -1423,6 +1629,109 @@ app.setCache(&cache);
 ```
 
 Once configured, all Request objects can access the cache via `req.cache()`, `req.cacheGet()`, `req.cacheSet()`, etc.
+
+## Pagination Helper
+
+The pagination helper provides utilities for parsing pagination parameters and generating pagination metadata for API responses.
+
+### Pagination Struct
+
+#### `Pagination.fromRequest(req: *Request) !Pagination`
+Create pagination from request query parameters. Defaults to `page=1` and `limit=20` if not provided.
+
+**Validation:**
+- `page` must be >= 1
+- `limit` must be between 1 and 100
+
+```zig
+const pagination = Pagination.fromRequest(request) catch {
+    return Response.errorResponse("Invalid pagination parameters", 400);
+};
+
+// Use pagination values
+const todos = try orm.queryBuilder(Todo)
+    .limit(pagination.limit)
+    .offset(pagination.offset)
+    .build();
+```
+
+**Pagination fields:**
+- `page: u32` - Current page number (1-indexed)
+- `limit: u32` - Number of items per page
+- `offset: u32` - Calculated offset for database queries
+
+#### `Pagination.toResponse(total: u32) PaginationMeta`
+Generate pagination metadata for JSON responses.
+
+```zig
+const pagination = Pagination.fromRequest(request) catch {
+    return Response.errorResponse("Invalid pagination", 400);
+};
+
+const todos = try fetchTodos(pagination.limit, pagination.offset);
+const total = try countTodos();
+
+const meta = pagination.toResponse(total);
+
+// Include in response
+const PaginatedResponse = struct {
+    data: []const Todo,
+    meta: PaginationMeta,
+};
+
+return Response.jsonFrom(PaginatedResponse, .{
+    .data = todos.items,
+    .meta = meta,
+}, allocator);
+```
+
+**PaginationMeta fields:**
+- `page: u32` - Current page number
+- `limit: u32` - Items per page
+- `total: u32` - Total number of items
+- `total_pages: u32` - Total number of pages
+
+**Example usage:**
+
+```zig
+fn handleGetTodos(req: *Request) Response {
+    const pagination = Pagination.fromRequest(req) catch {
+        return Response.errorResponse("Invalid pagination", 400);
+    };
+
+    const orm = getORM() catch {
+        return Response.serverError("Database error");
+    };
+
+    // Fetch paginated results
+    var builder = QueryBuilder.init(req.allocator(), "todos");
+    defer builder.deinit();
+    const sql = builder
+        .limit(pagination.limit)
+        .offset(pagination.offset)
+        .build() catch {
+            return Response.serverError("Query error");
+        };
+    defer req.allocator().free(sql);
+
+    const todos = try orm.query(sql);
+    defer todos.deinit();
+
+    // Get total count
+    const total_result = try orm.query("SELECT COUNT(*) FROM todos");
+    defer total_result.deinit();
+    const total = total_result.nextRow().?.getInt64(0);
+
+    // Generate metadata
+    const meta = pagination.toResponse(@intCast(total));
+
+    // Return paginated response
+    return Response.jsonFrom(PaginatedResponse, .{
+        .data = todos.items,
+        .meta = meta,
+    }, req.allocator());
+}
+```
 
 ## Metrics & Health Checks
 
