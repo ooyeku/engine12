@@ -66,11 +66,20 @@ pub const ValidationErrors = struct {
 /// Validation rule function type
 pub const ValidationRule = *const fn ([]const u8, std.mem.Allocator) ?[]const u8;
 
+/// Parameterized validation rule data
+pub const ParameterizedRule = union(enum) {
+    min_length: usize,
+    max_length: usize,
+    one_of: []const []const u8,
+    range: struct { min: i64, max: i64 },
+};
+
 /// Field validator with rules
 pub const FieldValidator = struct {
     field_name: []const u8,
     value: []const u8,
     rules: std.ArrayListUnmanaged(ValidationRule),
+    param_rules: std.ArrayListUnmanaged(ParameterizedRule),
     allocator: std.mem.Allocator,
     
     pub fn init(allocator: std.mem.Allocator, field_name: []const u8, value: []const u8) FieldValidator {
@@ -78,6 +87,7 @@ pub const FieldValidator = struct {
             .field_name = field_name,
             .value = value,
             .rules = std.ArrayListUnmanaged(ValidationRule){},
+            .param_rules = std.ArrayListUnmanaged(ParameterizedRule){},
             .allocator = allocator,
         };
     }
@@ -87,18 +97,88 @@ pub const FieldValidator = struct {
         try self.rules.append(self.allocator, rule_fn);
     }
     
+    /// Add a minLength validation rule with parameter
+    pub fn minLength(self: *FieldValidator, min_val: usize) !void {
+        try self.param_rules.append(self.allocator, .{ .min_length = min_val });
+    }
+    
+    /// Add a maxLength validation rule with parameter
+    pub fn maxLength(self: *FieldValidator, max_val: usize) !void {
+        try self.param_rules.append(self.allocator, .{ .max_length = max_val });
+    }
+    
+    /// Add a oneOf validation rule
+    pub fn oneOf(self: *FieldValidator, allowed: []const []const u8) !void {
+        try self.param_rules.append(self.allocator, .{ .one_of = allowed });
+    }
+    
+    /// Add a range validation rule for numeric values
+    pub fn range(self: *FieldValidator, min_val: i64, max_val: i64) !void {
+        try self.param_rules.append(self.allocator, .{ .range = .{ .min = min_val, .max = max_val } });
+    }
+    
     /// Validate the field against all rules
-    pub fn validate(self: *const FieldValidator) ?[]const u8 {
+    pub fn validate(self: *FieldValidator) ?[]const u8 {
+        // Check standard rules first
         for (self.rules.items) |rule_fn| {
             if (rule_fn(self.value, self.allocator)) |error_msg| {
                 return error_msg;
             }
         }
+        
+        // Check parameterized rules
+        for (self.param_rules.items) |param_rule| {
+            switch (param_rule) {
+                .min_length => |min_val| {
+                    if (self.value.len < min_val) {
+                        var buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf, "Field must be at least {d} characters", .{min_val}) catch return "Field too short";
+                        const err_msg = self.allocator.dupe(u8, msg) catch return "Field too short";
+                        return err_msg;
+                    }
+                },
+                .max_length => |max_val| {
+                    if (self.value.len > max_val) {
+                        var buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf, "Field must be at most {d} characters", .{max_val}) catch return "Field too long";
+                        const err_msg = self.allocator.dupe(u8, msg) catch return "Field too long";
+                        return err_msg;
+                    }
+                },
+                .one_of => |allowed| {
+                    var found = false;
+                    for (allowed) |allowed_val| {
+                        if (std.mem.eql(u8, self.value, allowed_val)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        const err_msg = self.allocator.dupe(u8, "Field value not in allowed list") catch return "Invalid value";
+                        return err_msg;
+                    }
+                },
+                .range => |r| {
+                    const num = std.fmt.parseInt(i64, self.value, 10) catch {
+                        const err_msg = self.allocator.dupe(u8, "Field must be a number") catch return "Invalid number";
+                        return err_msg;
+                    };
+                    if (num < r.min or num > r.max) {
+                        var buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf, "Field must be between {d} and {d}", .{ r.min, r.max }) catch return "Value out of range";
+                        const err_msg = self.allocator.dupe(u8, msg) catch return "Value out of range";
+                        return err_msg;
+                    }
+                },
+            }
+        }
+        
         return null;
     }
     
     pub fn deinit(self: *FieldValidator) void {
         self.rules.deinit(self.allocator);
+        self.param_rules.deinit(self.allocator);
     }
 };
 
@@ -171,20 +251,6 @@ pub fn maxLength100(value: []const u8, allocator: std.mem.Allocator) ?[]const u8
     return null;
 }
 
-/// Minimum length validation with parameter
-/// For custom lengths, users should create their own validation functions
-pub fn minLength(min_val: usize) ValidationRule {
-    // Since we can't capture runtime values in function pointers easily,
-    // we provide predefined validators and users can create custom ones
-    _ = min_val;
-    return &minLength8;
-}
-
-/// Maximum length validation with parameter  
-pub fn maxLength(max_val: usize) ValidationRule {
-    _ = max_val;
-    return &maxLength100;
-}
 
 /// Email validation (simple)
 pub fn email(value: []const u8, allocator: std.mem.Allocator) ?[]const u8 {

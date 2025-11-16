@@ -19,6 +19,9 @@ pub const dev_tools = @import("dev_tools.zig");
 pub const orm = @import("orm/orm.zig");
 pub const json = @import("json.zig");
 pub const utils = @import("utils.zig");
+pub const cors_middleware = @import("cors_middleware.zig");
+pub const request_id_middleware = @import("request_id_middleware.zig");
+pub const pagination = @import("pagination.zig");
 
 // Re-export main types for convenience
 pub const Engine12 = engine12.Engine12;
@@ -46,3 +49,6 @@ pub const OutputFormat = dev_tools.OutputFormat;
 // Re-export cache types
 pub const ResponseCache = cache.ResponseCache;
 pub const CacheEntry = cache.CacheEntry;
+
+// Re-export JSON utilities
+pub const Json = json.Json;

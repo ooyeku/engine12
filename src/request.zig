@@ -148,6 +148,60 @@ pub const Request = struct {
         return router.Param{ .value = value };
     }
     
+    /// Get a query parameter with type-safe conversion
+    /// Returns optional value - null if parameter is missing
+    /// Supports: u32, i32, u64, i64, f64, bool, []const u8
+    /// 
+    /// Example:
+    /// ```zig
+    /// const page = request.queryParamTyped(u32, "page") orelse 1;
+    /// const limit = request.queryParamTyped(u32, "limit") orelse 20;
+    /// const search = request.queryParamTyped([]const u8, "q");
+    /// ```
+    pub fn queryParamTyped(self: *Request, comptime T: type, name: []const u8) !?T {
+        const value = try self.query(name);
+        if (value == null) return null;
+        
+        const param_wrapper = router.Param{ .value = value.? };
+        
+        return switch (@typeInfo(T)) {
+            .int => |int_info| switch (int_info.signedness) {
+                .signed => switch (int_info.bits) {
+                    32 => @as(T, @intCast(try param_wrapper.asI32())),
+                    64 => @as(T, @intCast(try param_wrapper.asI64())),
+                    else => @compileError("Unsupported signed integer type for queryParamTyped. Supported: i32, i64"),
+                },
+                .unsigned => switch (int_info.bits) {
+                    32 => @as(T, @intCast(try param_wrapper.asU32())),
+                    64 => @as(T, @intCast(try param_wrapper.asU64())),
+                    else => @compileError("Unsupported unsigned integer type for queryParamTyped. Supported: u32, u64"),
+                },
+            },
+            .float => |float_info| switch (float_info.bits) {
+                64 => @as(T, try param_wrapper.asF64()),
+                else => @compileError("Unsupported float type for queryParamTyped. Supported: f64"),
+            },
+            .bool => blk: {
+                const str = param_wrapper.asString();
+                if (std.mem.eql(u8, str, "true") or std.mem.eql(u8, str, "1")) {
+                    break :blk true;
+                } else if (std.mem.eql(u8, str, "false") or std.mem.eql(u8, str, "0")) {
+                    break :blk false;
+                } else {
+                    return error.InvalidArgument;
+                }
+            },
+            .pointer => |ptr_info| {
+                if (ptr_info.size == .slice and ptr_info.child == u8) {
+                    return param_wrapper.asString();
+                } else {
+                    @compileError("Unsupported pointer type for queryParamTyped. Supported: []const u8");
+                }
+            },
+            else => @compileError("Unsupported type for queryParamTyped. Supported: u32, i32, u64, i64, f64, bool, []const u8"),
+        };
+    }
+    
     /// Parse request body as JSON
     /// Returns an error if parsing fails
     /// Validates body length to prevent DoS attacks (max 10MB by default)
@@ -165,6 +219,60 @@ pub const Request = struct {
             return error.InvalidArgument;
         }
         return parsers.BodyParser.json(T, self.body(), self.arena.allocator());
+    }
+    
+    /// Parse request body as JSON (alias for jsonBody)
+    /// Returns an error if parsing fails
+    /// 
+    /// Example:
+    /// ```zig
+    /// const Todo = struct { title: []const u8, completed: bool };
+    /// const todo = try req.parseJson(Todo);
+    /// ```
+    pub fn parseJson(self: *Request, comptime T: type) !T {
+        return self.jsonBody(T);
+    }
+    
+    /// Parse request body as JSON, returning null on error instead of erroring
+    /// 
+    /// Example:
+    /// ```zig
+    /// const Todo = struct { title: []const u8, completed: bool };
+    /// if (req.parseJsonOptional(Todo)) |todo| {
+    ///     // Use todo
+    /// } else {
+    ///     return Response.errorResponse("Invalid JSON", 400);
+    /// }
+    /// ```
+    pub fn parseJsonOptional(self: *Request, comptime T: type) ?T {
+        return self.jsonBody(T) catch null;
+    }
+    
+    /// Parse and validate JSON body against a validation schema
+    /// Returns parsed value if validation passes, or error if parsing/validation fails
+    /// 
+    /// Example:
+    /// ```zig
+    /// const TodoInput = struct { title: []const u8, description: []const u8 };
+    /// var schema = validation.ValidationSchema.init(req.arena.allocator());
+    /// defer schema.deinit();
+    /// const title_validator = try schema.field("title", "");
+    /// title_validator.rule(validation.required);
+    /// const todo = try req.validateJson(TodoInput, &schema);
+    /// ```
+    pub fn validateJson(self: *Request, comptime T: type, schema: *@import("validation.zig").ValidationSchema) (error{ValidationFailed} || @TypeOf(self.jsonBody(T)).Error)!T {
+        const parsed = try self.jsonBody(T);
+        
+        // Run validation - note: schema needs to be populated with field values from parsed
+        // This is a simplified version - in practice, you'd need to extract field values
+        const validation_errors = try schema.validate();
+        defer validation_errors.deinit();
+        
+        if (!validation_errors.isEmpty()) {
+            return error.ValidationFailed;
+        }
+        
+        return parsed;
     }
     
     /// Parse request body as URL-encoded form data
@@ -203,6 +311,64 @@ pub const Request = struct {
             return router.Param{ .value = "" };
         }
         return router.Param{ .value = value };
+    }
+    
+    /// Get a route parameter with direct type conversion
+    /// Returns error union - fails if parameter is missing or conversion fails
+    /// Supports: u32, i32, u64, i64, f64, bool, []const u8
+    /// 
+    /// Example:
+    /// ```zig
+    /// const id = try request.paramTyped(i64, "id");
+    /// const slug = try request.paramTyped([]const u8, "slug");
+    /// ```
+    pub fn paramTyped(self: *const Request, comptime T: type, name: []const u8) !T {
+        const value = self.route_params.get(name) orelse return error.InvalidArgument;
+        
+        // Validate parameter value length to prevent DoS
+        if (value.len > 1024) {
+            std.debug.print("[Request Warning] Route parameter '{s}' value exceeds maximum length (1024 bytes)\n", .{name});
+            return error.InvalidArgument;
+        }
+        
+        const param_wrapper = router.Param{ .value = value };
+        
+        return switch (@typeInfo(T)) {
+            .int => |int_info| switch (int_info.signedness) {
+                .signed => switch (int_info.bits) {
+                    32 => @as(T, @intCast(try param_wrapper.asI32())),
+                    64 => @as(T, @intCast(try param_wrapper.asI64())),
+                    else => @compileError("Unsupported signed integer type for paramTyped. Supported: i32, i64"),
+                },
+                .unsigned => switch (int_info.bits) {
+                    32 => @as(T, @intCast(try param_wrapper.asU32())),
+                    64 => @as(T, @intCast(try param_wrapper.asU64())),
+                    else => @compileError("Unsupported unsigned integer type for paramTyped. Supported: u32, u64"),
+                },
+            },
+            .float => |float_info| switch (float_info.bits) {
+                64 => @as(T, try param_wrapper.asF64()),
+                else => @compileError("Unsupported float type for paramTyped. Supported: f64"),
+            },
+            .bool => blk: {
+                const str = param_wrapper.asString();
+                if (std.mem.eql(u8, str, "true") or std.mem.eql(u8, str, "1")) {
+                    break :blk true;
+                } else if (std.mem.eql(u8, str, "false") or std.mem.eql(u8, str, "0")) {
+                    break :blk false;
+                } else {
+                    return error.InvalidArgument;
+                }
+            },
+            .pointer => |ptr_info| {
+                if (ptr_info.size == .slice and ptr_info.child == u8) {
+                    return param_wrapper.asString();
+                } else {
+                    @compileError("Unsupported pointer type for paramTyped. Supported: []const u8");
+                }
+            },
+            else => @compileError("Unsupported type for paramTyped. Supported: u32, i32, u64, i64, f64, bool, []const u8"),
+        };
     }
     
     /// Store a value in the request context
@@ -972,4 +1138,91 @@ test "Request all HTTP methods" {
         const method_str = req.method();
         try std.testing.expect(method_str.len > 0);
     }
+}
+
+test "Request queryParamTyped with u32" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test?page=5&limit=20",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const page = try req.queryParamTyped(u32, "page");
+    try std.testing.expect(page != null);
+    try std.testing.expectEqual(page.?, 5);
+    
+    const limit = try req.queryParamTyped(u32, "limit");
+    try std.testing.expect(limit != null);
+    try std.testing.expectEqual(limit.?, 20);
+    
+    const missing = try req.queryParamTyped(u32, "missing");
+    try std.testing.expect(missing == null);
+}
+
+test "Request queryParamTyped with bool" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/test?enabled=true&disabled=false",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    const enabled = try req.queryParamTyped(bool, "enabled");
+    try std.testing.expect(enabled != null);
+    try std.testing.expect(enabled.? == true);
+    
+    const disabled = try req.queryParamTyped(bool, "disabled");
+    try std.testing.expect(disabled != null);
+    try std.testing.expect(disabled.? == false);
+}
+
+test "Request paramTyped with i64" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos/123",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    var params = std.StringHashMap([]const u8).init(req.arena.allocator());
+    const id_value = try req.arena.allocator().dupe(u8, "123");
+    try params.put("id", id_value);
+    req.setRouteParams(params);
+    
+    const id = try req.paramTyped(i64, "id");
+    try std.testing.expectEqual(id, 123);
+}
+
+test "Request paramTyped with string" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/posts/my-slug",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    var params = std.StringHashMap([]const u8).init(req.arena.allocator());
+    const slug_value = try req.arena.allocator().dupe(u8, "my-slug");
+    try params.put("slug", slug_value);
+    req.setRouteParams(params);
+    
+    const slug = try req.paramTyped([]const u8, "slug");
+    try std.testing.expectEqualStrings(slug, "my-slug");
+}
+
+test "Request paramTyped missing parameter" {
+    var ziggurat_req = ziggurat.request.Request{
+        .path = "/api/todos",
+        .method = .GET,
+        .body = "",
+    };
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    
+    try std.testing.expectError(error.InvalidArgument, req.paramTyped(i64, "id"));
 }

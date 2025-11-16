@@ -5,11 +5,85 @@ const QueryBuilder = @import("query_builder.zig").QueryBuilder;
 const model = @import("model.zig");
 const MigrationRunner = @import("migration_runner.zig").MigrationRunner;
 const Migration = @import("migration.zig").Migration;
+const MigrationRegistry = @import("migration.zig").MigrationRegistry;
 
 // Re-export utility modules
 pub const SqlEscape = @import("sql_escape.zig").SqlEscape;
 pub const Schema = @import("schema.zig").Schema;
 pub const DatabaseSingleton = @import("singleton.zig").DatabaseSingleton;
+
+// Re-export migration types
+pub const MigrationType = Migration;
+pub const MigrationRegistryType = MigrationRegistry;
+
+/// Managed ORM result wrapper that automatically frees string fields on deinit
+pub fn Result(comptime T: type) type {
+    return struct {
+        items: std.ArrayListUnmanaged(T),
+        allocator: std.mem.Allocator,
+        
+        const Self = @This();
+        
+        pub fn init(items: std.ArrayListUnmanaged(T), allocator: std.mem.Allocator) Self {
+            return Self{
+                .items = items,
+                .allocator = allocator,
+            };
+        }
+        
+        /// Get the items as a slice
+        pub fn getItems(self: *const Self) []const T {
+            return self.items.items;
+        }
+        
+        /// Get mutable access to items
+        pub fn getItemsMut(self: *Self) []T {
+            return self.items.items;
+        }
+        
+        /// Get the length
+        pub fn len(self: *const Self) usize {
+            return self.items.items.len;
+        }
+        
+        /// Check if empty
+        pub fn isEmpty(self: *const Self) bool {
+            return self.items.items.len == 0;
+        }
+        
+        /// Get first item, or null if empty
+        pub fn first(self: *const Self) ?T {
+            if (self.items.items.len == 0) return null;
+            return self.items.items[0];
+        }
+        
+        /// Deinitialize and free all string fields
+        pub fn deinit(self: *Self) void {
+            for (self.items.items) |item| {
+                inline for (std.meta.fields(T)) |field| {
+                    const field_type = @TypeOf(@field(item, field.name));
+                    if (@typeInfo(field_type) == .pointer) {
+                        const ptr_info = @typeInfo(field_type).pointer;
+                        if (ptr_info.size == .slice and ptr_info.child == u8) {
+                            self.allocator.free(@field(item, field.name));
+                        }
+                    } else if (@typeInfo(field_type) == .optional) {
+                        const opt_info = @typeInfo(field_type).optional;
+                        if (@typeInfo(opt_info.child) == .pointer) {
+                            const ptr_info = @typeInfo(opt_info.child).pointer;
+                            if (ptr_info.size == .slice and ptr_info.child == u8) {
+                                if (@field(item, field.name)) |val| {
+                                    self.allocator.free(val);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            self.items.deinit(self.allocator);
+        }
+    };
+}
 
 pub const ORM = struct {
     db: Database,
@@ -215,6 +289,28 @@ pub const ORM = struct {
 
         return null;
     }
+    
+    /// Find a record by ID with automatic memory management
+    /// Returns a Result wrapper that automatically frees string fields on deinit
+    /// Returns null if not found
+    /// 
+    /// Example:
+    /// ```zig
+    /// if (try orm.findManaged(Todo, 1)) |result| {
+    ///     defer result.deinit();
+    ///     const todo = result.first() orelse return;
+    ///     // Use todo - strings are automatically freed when result.deinit() is called
+    /// }
+    /// ```
+    pub fn findManaged(self: *ORM, comptime T: type, id: i64) !?Result(T) {
+        const item = try self.find(T, id);
+        if (item == null) return null;
+        
+        // Wrap single item in Result
+        var items = std.ArrayListUnmanaged(T){};
+        try items.append(self.allocator, item.?);
+        return Result(T).init(items, self.allocator);
+    }
 
     pub fn findAll(self: *ORM, comptime T: type) !std.ArrayListUnmanaged(T) {
         const table_name = model.inferTableName(T);
@@ -248,6 +344,22 @@ pub const ORM = struct {
         };
 
         return result;
+    }
+    
+    /// Find all records with automatic memory management
+    /// Returns a Result wrapper that automatically frees string fields on deinit
+    /// 
+    /// Example:
+    /// ```zig
+    /// var result = try orm.findAllManaged(Todo);
+    /// defer result.deinit();
+    /// for (result.getItems()) |todo| {
+    ///     // Use todo - strings are automatically freed when result.deinit() is called
+    /// }
+    /// ```
+    pub fn findAllManaged(self: *ORM, comptime T: type) !Result(T) {
+        const items = try self.findAll(T);
+        return Result(T).init(items, self.allocator);
     }
 
     pub fn where(self: *ORM, comptime T: type, condition: []const u8) !std.ArrayListUnmanaged(T) {
@@ -402,6 +514,20 @@ pub const ORM = struct {
         var runner = MigrationRunner.init(&self.db, self.allocator);
         try runner.runMigrations(migrations);
     }
+    
+    /// Run migrations from a MigrationRegistry
+    /// 
+    /// Example:
+    /// ```zig
+    /// var registry = MigrationRegistry.init(allocator);
+    /// defer registry.deinit();
+    /// try registry.add(Migration.init(1, "create_todos", "CREATE TABLE...", "DROP TABLE..."));
+    /// try orm.runMigrationsFromRegistry(&registry);
+    /// ```
+    pub fn runMigrationsFromRegistry(self: *ORM, registry: *MigrationRegistry) !void {
+        const migrations = registry.getMigrations();
+        try self.runMigrations(migrations);
+    }
 
     pub fn getMigrationVersion(self: *ORM) !?u32 {
         var runner = MigrationRunner.init(&self.db, self.allocator);
@@ -410,6 +536,19 @@ pub const ORM = struct {
 
     pub fn migrate(self: *ORM, migrations: []const Migration) !void {
         try self.runMigrations(migrations);
+    }
+    
+    /// Escape a string for safe use in SQL LIKE patterns
+    /// Convenience wrapper around SqlEscape.escapeLikePattern
+    /// 
+    /// Example:
+    /// ```zig
+    /// const safe_pattern = try orm.escapeLike("test%_data", allocator);
+    /// defer allocator.free(safe_pattern);
+    /// const sql = try std.fmt.allocPrint(allocator, "SELECT * FROM Todo WHERE title LIKE '{s}'", .{safe_pattern});
+    /// ```
+    pub fn escapeLike(_: *ORM, pattern: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+        return SqlEscape.escapeLikePattern(allocator, pattern);
     }
 
     pub fn close(self: *ORM) void {

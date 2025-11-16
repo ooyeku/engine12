@@ -9,11 +9,15 @@ const cache = E12.cache;
 const templates = E12.templates;
 const Database = E12.orm.Database;
 const ORM = E12.orm.ORM;
+const MigrationRegistry = E12.orm.MigrationRegistryType;
 const Logger = E12.Logger;
 const LogLevel = E12.LogLevel;
 const ResponseCache = E12.ResponseCache;
 const error_handler = E12.error_handler;
 const ErrorResponse = error_handler.ErrorResponse;
+const cors_middleware = E12.cors_middleware;
+const request_id_middleware = E12.request_id_middleware;
+const pagination = E12.pagination;
 
 const allocator = std.heap.page_allocator;
 
@@ -73,86 +77,30 @@ fn initDatabase() !void {
     // Initialize ORM first (needed for migrations)
     global_orm = ORM.init(global_db.?, allocator);
 
-    // Define migrations
-    // Note: Using inline Migration struct since it's not exported from E12.orm
-    // The struct matches the Migration type from src/orm/migration.zig
-    const MigrationType = struct {
-        version: u32,
-        name: []const u8,
-        up: []const u8,
-        down: []const u8,
-        
-        pub fn init(version: u32, name: []const u8, up: []const u8, down: []const u8) @This() {
-            return @This(){
-                .version = version,
-                .name = name,
-                .up = up,
-                .down = down,
-            };
-        }
-    };
-    
-    const migrations = [_]MigrationType{
-        MigrationType.init(1, "create_todos",
-            \\CREATE TABLE IF NOT EXISTS Todo (
-            \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
-            \\  title TEXT NOT NULL,
-            \\  description TEXT NOT NULL,
-            \\  completed INTEGER NOT NULL DEFAULT 0,
-            \\  created_at INTEGER NOT NULL,
-            \\  updated_at INTEGER NOT NULL
-            \\)
-        ,
-            "DROP TABLE IF EXISTS Todo"),
-        
-        MigrationType.init(2, "add_priority",
-            "ALTER TABLE Todo ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'",
-            "ALTER TABLE Todo DROP COLUMN priority"),
-        
-        MigrationType.init(3, "add_due_date",
-            "ALTER TABLE Todo ADD COLUMN due_date INTEGER",
-            "-- Cannot automatically reverse ALTER TABLE ADD COLUMN"),
-        
-        MigrationType.init(4, "add_tags",
-            "ALTER TABLE Todo ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE Todo DROP COLUMN tags"),
-    };
+    // Use MigrationRegistry to manage migrations
+    var registry = MigrationRegistry.init(allocator);
+    defer registry.deinit();
 
-    // Run migrations manually since Migration type is not exported
-    // This executes the same logic as the migration system
-    // Create migrations table if it doesn't exist
-    global_db.?.execute(
-        \\CREATE TABLE IF NOT EXISTS schema_migrations (
-        \\  version INTEGER PRIMARY KEY,
-        \\  name TEXT NOT NULL,
-        \\  applied_at INTEGER NOT NULL
-        \\);
-    ) catch {};
-    
-    // Execute each migration if not already applied
-    for (migrations) |migration| {
-        // Check if migration is already applied
-        const check_sql = std.fmt.allocPrint(allocator, "SELECT COUNT(*) FROM schema_migrations WHERE version = {d}", .{migration.version}) catch continue;
-        defer allocator.free(check_sql);
-        var check_result = global_db.?.query(check_sql) catch continue;
-        defer check_result.deinit();
-        
-        var already_applied = false;
-        if (check_result.nextRow()) |row| {
-            already_applied = row.getInt64(0) > 0;
-        }
-        
-        if (!already_applied) {
-            // Execute migration
-            global_db.?.execute(migration.up) catch continue;
-            
-            // Record migration
-            const timestamp = std.time.timestamp();
-            const record_sql = std.fmt.allocPrint(allocator, "INSERT INTO schema_migrations (version, name, applied_at) VALUES ({d}, '{s}', {d})", .{ migration.version, migration.name, timestamp }) catch continue;
-            defer allocator.free(record_sql);
-            global_db.?.execute(record_sql) catch continue;
-        }
-    }
+    // Add migrations to registry
+    try registry.add(E12.orm.MigrationType.init(1, "create_todos",
+        \\CREATE TABLE IF NOT EXISTS Todo (
+        \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
+        \\  title TEXT NOT NULL,
+        \\  description TEXT NOT NULL,
+        \\  completed INTEGER NOT NULL DEFAULT 0,
+        \\  created_at INTEGER NOT NULL,
+        \\  updated_at INTEGER NOT NULL
+        \\)
+    , "DROP TABLE IF EXISTS Todo"));
+
+    try registry.add(E12.orm.MigrationType.init(2, "add_priority", "ALTER TABLE Todo ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'", "ALTER TABLE Todo DROP COLUMN priority"));
+
+    try registry.add(E12.orm.MigrationType.init(3, "add_due_date", "ALTER TABLE Todo ADD COLUMN due_date INTEGER", "-- Cannot automatically reverse ALTER TABLE ADD COLUMN"));
+
+    try registry.add(E12.orm.MigrationType.init(4, "add_tags", "ALTER TABLE Todo ADD COLUMN tags TEXT NOT NULL DEFAULT ''", "ALTER TABLE Todo DROP COLUMN tags"));
+
+    // Run migrations using the registry
+    try global_orm.?.runMigrationsFromRegistry(&registry);
 }
 
 const TodoStats = struct {
@@ -191,25 +139,17 @@ fn createTodo(orm: *ORM, title: []const u8, description: []const u8, priority: [
     // Get the last insert row ID
     const last_id = orm.db.lastInsertRowId() catch {
         // Fallback: query for the most recently created todo
-        var all_todos = try orm.findAll(Todo);
-        defer {
-            for (all_todos.items) |t| {
-                allocator.free(t.title);
-                allocator.free(t.description);
-                allocator.free(t.priority);
-                allocator.free(t.tags);
-            }
-            all_todos.deinit(allocator);
-        }
+        var all_todos_result = try orm.findAllManaged(Todo);
+        defer all_todos_result.deinit();
 
-        if (all_todos.items.len == 0) {
+        if (all_todos_result.isEmpty()) {
             return error.FailedToCreateTodo;
         }
 
         // Find the todo with the highest ID
         var max_id: i64 = 0;
         var found_todo: ?Todo = null;
-        for (all_todos.items) |t| {
+        for (all_todos_result.getItems()) |t| {
             if (t.id > max_id) {
                 max_id = t.id;
                 found_todo = t;
@@ -233,38 +173,82 @@ fn createTodo(orm: *ORM, title: []const u8, description: []const u8, priority: [
         return error.FailedToCreateTodo;
     };
 
-    // Fetch the created todo by ID
-    const created = try orm.find(Todo, last_id);
-    if (created) |t| {
-        defer {
-            allocator.free(t.title);
-            allocator.free(t.description);
-            allocator.free(t.priority);
-            allocator.free(t.tags);
+    // Fetch the created todo by ID using managed result
+    var find_result = try orm.findManaged(Todo, last_id);
+    if (find_result) |*result| {
+        defer result.deinit();
+        if (result.first()) |t| {
+            return Todo{
+                .id = t.id,
+                .title = try allocator.dupe(u8, t.title),
+                .description = try allocator.dupe(u8, t.description),
+                .completed = t.completed,
+                .priority = try allocator.dupe(u8, t.priority),
+                .due_date = t.due_date,
+                .tags = try allocator.dupe(u8, t.tags),
+                .created_at = t.created_at,
+                .updated_at = t.updated_at,
+            };
         }
-        return Todo{
-            .id = t.id,
-            .title = try allocator.dupe(u8, t.title),
-            .description = try allocator.dupe(u8, t.description),
-            .completed = t.completed,
-            .priority = try allocator.dupe(u8, t.priority),
-            .due_date = t.due_date,
-            .tags = try allocator.dupe(u8, t.tags),
-            .created_at = t.created_at,
-            .updated_at = t.updated_at,
-        };
     }
 
     return error.FailedToCreateTodo;
 }
 
 fn findTodoById(orm: *ORM, id: i64) !?Todo {
-    const todo = try orm.find(Todo, id);
-    return todo;
+    var find_result = try orm.findManaged(Todo, id);
+    if (find_result) |*result| {
+        defer result.deinit();
+        if (result.first()) |todo| {
+            // Return a copy with allocated strings
+            return Todo{
+                .id = todo.id,
+                .title = try allocator.dupe(u8, todo.title),
+                .description = try allocator.dupe(u8, todo.description),
+                .completed = todo.completed,
+                .priority = try allocator.dupe(u8, todo.priority),
+                .due_date = todo.due_date,
+                .tags = try allocator.dupe(u8, todo.tags),
+                .created_at = todo.created_at,
+                .updated_at = todo.updated_at,
+            };
+        }
+    }
+    return null;
 }
 
 fn getAllTodos(orm: *ORM) !std.ArrayListUnmanaged(Todo) {
-    return try orm.findAll(Todo);
+    // Keep the old API for backward compatibility, but use managed internally
+    var result = try orm.findAllManaged(Todo);
+    defer result.deinit();
+
+    // Copy items to a new ArrayListUnmanaged with allocated strings
+    var todos = std.ArrayListUnmanaged(Todo){};
+    errdefer {
+        for (todos.items) |todo| {
+            allocator.free(todo.title);
+            allocator.free(todo.description);
+            allocator.free(todo.priority);
+            allocator.free(todo.tags);
+        }
+        todos.deinit(allocator);
+    }
+
+    for (result.getItems()) |todo| {
+        try todos.append(allocator, Todo{
+            .id = todo.id,
+            .title = try allocator.dupe(u8, todo.title),
+            .description = try allocator.dupe(u8, todo.description),
+            .completed = todo.completed,
+            .priority = try allocator.dupe(u8, todo.priority),
+            .due_date = todo.due_date,
+            .tags = try allocator.dupe(u8, todo.tags),
+            .created_at = todo.created_at,
+            .updated_at = todo.updated_at,
+        });
+    }
+
+    return todos;
 }
 
 fn updateTodo(orm: *ORM, id: i64, updates: struct {
@@ -275,10 +259,32 @@ fn updateTodo(orm: *ORM, id: i64, updates: struct {
     due_date: ?i64 = null,
     tags: ?[]const u8 = null,
 }) !?Todo {
-    const existing = try orm.find(Todo, id);
-    if (existing == null) return null;
+    // Use managed find to avoid manual cleanup
+    const existing_result = try orm.findManaged(Todo, id);
+    if (existing_result == null) return null;
 
-    var todo = existing.?;
+    var todo: Todo = undefined;
+    {
+        var result = existing_result.?;
+        defer result.deinit();
+        if (result.first()) |t| {
+            // Copy strings before result is deinitialized
+            todo = Todo{
+                .id = t.id,
+                .title = try allocator.dupe(u8, t.title),
+                .description = try allocator.dupe(u8, t.description),
+                .completed = t.completed,
+                .priority = try allocator.dupe(u8, t.priority),
+                .due_date = t.due_date,
+                .tags = try allocator.dupe(u8, t.tags),
+                .created_at = t.created_at,
+                .updated_at = t.updated_at,
+            };
+        } else {
+            return null;
+        }
+    }
+
     defer {
         allocator.free(todo.title);
         allocator.free(todo.description);
@@ -335,38 +341,29 @@ fn updateTodo(orm: *ORM, id: i64, updates: struct {
 }
 
 fn deleteTodo(orm: *ORM, id: i64) !bool {
-    const existing = try orm.find(Todo, id);
-    if (existing == null) return false;
+    // Use managed find to avoid manual cleanup
+    var existing_result = try orm.findManaged(Todo, id);
+    if (existing_result == null) return false;
 
-    defer {
-        allocator.free(existing.?.title);
-        allocator.free(existing.?.description);
-        allocator.free(existing.?.priority);
-        allocator.free(existing.?.tags);
-    }
+    // Result will be automatically cleaned up when it goes out of scope
+    defer if (existing_result) |*result| result.deinit();
 
     try orm.delete(Todo, id);
     return true;
 }
 
 fn getStats(orm: *ORM) !TodoStats {
-    var all_todos = try orm.findAll(Todo);
-    defer {
-        for (all_todos.items) |t| {
-            allocator.free(t.title);
-            allocator.free(t.description);
-            allocator.free(t.priority);
-            allocator.free(t.tags);
-        }
-        all_todos.deinit(allocator);
-    }
+    var all_todos_result = try orm.findAllManaged(Todo);
+    defer all_todos_result.deinit();
+
+    const all_todos = all_todos_result.getItems();
 
     var total: u32 = 0;
     var completed: u32 = 0;
     var overdue: u32 = 0;
     const now = std.time.milliTimestamp();
 
-    for (all_todos.items) |todo| {
+    for (all_todos) |todo| {
         total += 1;
         if (todo.completed) {
             completed += 1;
@@ -601,11 +598,11 @@ fn handleGetTodos(request: *Request) Response {
     }
 
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.serverError("Database not initialized");
     };
 
     var todos = getAllTodos(orm) catch {
-        return Response.json("{\"error\":\"Failed to fetch todos\"}").withStatus(500);
+        return Response.serverError("Failed to fetch todos");
     };
     defer {
         for (todos.items) |todo| {
@@ -618,32 +615,32 @@ fn handleGetTodos(request: *Request) Response {
     }
 
     const json = formatTodoListJson(todos, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todos\"}").withStatus(500);
+        return Response.serverError("Failed to format todos");
     };
     defer allocator.free(json);
-    
+
     // Cache the result for 30 seconds
     request.cacheSet(cache_key, json, 30000, "application/json") catch {};
-    
+
     return Response.json(json)
         .withHeader("X-Cache", "MISS");
 }
 
 fn handleGetTodo(request: *Request) Response {
-    const id = request.param("id").asI64() catch {
-        return Response.json("{\"error\":\"Invalid ID\"}").withStatus(400);
+    const id = request.paramTyped(i64, "id") catch {
+        return Response.errorResponse("Invalid ID", 400);
     };
 
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.serverError("Database not initialized");
     };
 
     const todo = findTodoById(orm, id) catch {
-        return Response.json("{\"error\":\"Failed to fetch todo\"}").withStatus(500);
+        return Response.serverError("Failed to fetch todo");
     };
 
     const found = todo orelse {
-        return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
+        return Response.notFound("Todo not found");
     };
     defer {
         allocator.free(found.title);
@@ -653,7 +650,7 @@ fn handleGetTodo(request: *Request) Response {
     }
 
     const json = formatTodoJson(found, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
+        return Response.serverError("Failed to format todo");
     };
     defer allocator.free(json);
     return Response.json(json)
@@ -664,7 +661,7 @@ fn handleGetTodo(request: *Request) Response {
 
 fn handleCreateTodo(request: *Request) Response {
     const parsed = parseTodoFromJson(request.body(), allocator) catch {
-        return Response.json("{\"error\":\"Invalid JSON\"}");
+        return Response.errorResponse("Invalid JSON", 400);
     };
     defer {
         if (parsed.title.len > 0) allocator.free(parsed.title);
@@ -679,104 +676,64 @@ fn handleCreateTodo(request: *Request) Response {
 
     // Validate title (required, max 200 chars)
     const title_validator = schema.field("title", parsed.title) catch {
-        return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        return Response.serverError("Validation error");
     };
     title_validator.rule(validation.required) catch {
-        return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        return Response.serverError("Validation error");
     };
-
-    const titleMaxLength = struct {
-        fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
-            _ = alloc;
-            if (value.len > 200) {
-                return "Title must be 200 characters or less";
-            }
-            return null;
-        }
-    };
-    title_validator.rule(titleMaxLength.validate) catch {
-        return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+    title_validator.maxLength(200) catch {
+        return Response.serverError("Validation error");
     };
 
     // Validate description if provided (max 1000 chars)
     if (parsed.description.len > 0) {
         const desc_validator = schema.field("description", parsed.description) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+            return Response.serverError("Validation error");
         };
-        const descMaxLength = struct {
-            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
-                _ = alloc;
-                if (value.len > 1000) {
-                    return "Description must be 1000 characters or less";
-                }
-                return null;
-            }
-        };
-        desc_validator.rule(descMaxLength.validate) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        desc_validator.maxLength(1000) catch {
+            return Response.serverError("Validation error");
         };
     }
 
     // Validate priority if provided
     if (parsed.priority) |priority| {
         const priority_validator = schema.field("priority", priority) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+            return Response.serverError("Validation error");
         };
-        const validPriority = struct {
-            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
-                _ = alloc;
-                if (!std.mem.eql(u8, value, "low") and !std.mem.eql(u8, value, "medium") and !std.mem.eql(u8, value, "high")) {
-                    return "Priority must be 'low', 'medium', or 'high'";
-                }
-                return null;
-            }
-        };
-        priority_validator.rule(validPriority.validate) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        const allowed_priorities = [_][]const u8{ "low", "medium", "high" };
+        priority_validator.oneOf(&allowed_priorities) catch {
+            return Response.serverError("Validation error");
         };
     }
 
     // Validate tags if provided (max 500 chars)
     if (parsed.tags) |tags| {
         const tags_validator = schema.field("tags", tags) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+            return Response.serverError("Validation error");
         };
-        const tagsMaxLength = struct {
-            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
-                _ = alloc;
-                if (value.len > 500) {
-                    return "Tags must be 500 characters or less";
-                }
-                return null;
-            }
-        };
-        tags_validator.rule(tagsMaxLength.validate) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        tags_validator.maxLength(500) catch {
+            return Response.serverError("Validation error");
         };
     }
 
     // Run validation
     var validation_errors = schema.validate() catch {
-        return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        return Response.serverError("Validation error");
     };
     defer validation_errors.deinit();
 
     if (!validation_errors.isEmpty()) {
-        const error_json = validation_errors.toJson() catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
-        };
-        defer allocator.free(error_json);
-        return Response.json(error_json).withStatus(400);
+        return Response.validationError(&validation_errors);
     }
 
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.serverError("Database not initialized");
     };
 
     const priority_value = parsed.priority orelse "medium";
     const tags_value = parsed.tags orelse "";
     const todo = createTodo(orm, parsed.title, parsed.description, priority_value, parsed.due_date, tags_value) catch {
-        return Response.json("{\"error\":\"Failed to create todo\"}").withStatus(500);
+        return Response.serverError("Failed to create todo");
     };
     defer {
         allocator.free(todo.title);
@@ -786,24 +743,24 @@ fn handleCreateTodo(request: *Request) Response {
     }
 
     const json = formatTodoJson(todo, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
+        return Response.serverError("Failed to format todo");
     };
     defer allocator.free(json);
-    
+
     // Invalidate cache when todos change
     request.cacheInvalidate("todos:all");
     request.cacheInvalidate("todos:stats");
-    
+
     return Response.json(json);
 }
 
 fn handleUpdateTodo(request: *Request) Response {
-    const id = request.param("id").asI64() catch {
-        return Response.json("{\"error\":\"Invalid ID\"}").withStatus(400);
+    const id = request.paramTyped(i64, "id") catch {
+        return Response.errorResponse("Invalid ID", 400);
     };
 
     const parsed = parseTodoFromJson(request.body(), allocator) catch {
-        return Response.json("{\"error\":\"Invalid JSON\"}");
+        return Response.errorResponse("Invalid JSON", 400);
     };
 
     defer {
@@ -820,95 +777,56 @@ fn handleUpdateTodo(request: *Request) Response {
     // Validate title if provided
     if (parsed.title.len > 0) {
         const title_validator = schema.field("title", parsed.title) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+            return Response.serverError("Validation error");
         };
-        const titleMaxLength = struct {
-            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
-                _ = alloc;
-                if (value.len > 200) {
-                    return "Title must be 200 characters or less";
-                }
-                return null;
-            }
-        };
-        title_validator.rule(titleMaxLength.validate) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        title_validator.maxLength(200) catch {
+            return Response.serverError("Validation error");
         };
     }
 
     // Validate description if provided
     if (parsed.description.len > 0) {
         const desc_validator = schema.field("description", parsed.description) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+            return Response.serverError("Validation error");
         };
-        const descMaxLength = struct {
-            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
-                _ = alloc;
-                if (value.len > 1000) {
-                    return "Description must be 1000 characters or less";
-                }
-                return null;
-            }
-        };
-        desc_validator.rule(descMaxLength.validate) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        desc_validator.maxLength(1000) catch {
+            return Response.serverError("Validation error");
         };
     }
 
     // Validate priority if provided
     if (parsed.priority) |priority| {
         const priority_validator = schema.field("priority", priority) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+            return Response.serverError("Validation error");
         };
-        const validPriority = struct {
-            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
-                _ = alloc;
-                if (!std.mem.eql(u8, value, "low") and !std.mem.eql(u8, value, "medium") and !std.mem.eql(u8, value, "high")) {
-                    return "Priority must be 'low', 'medium', or 'high'";
-                }
-                return null;
-            }
-        };
-        priority_validator.rule(validPriority.validate) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        const allowed_priorities = [_][]const u8{ "low", "medium", "high" };
+        priority_validator.oneOf(&allowed_priorities) catch {
+            return Response.serverError("Validation error");
         };
     }
 
     // Validate tags if provided (max 500 chars)
     if (parsed.tags) |tags| {
         const tags_validator = schema.field("tags", tags) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+            return Response.serverError("Validation error");
         };
-        const tagsMaxLength = struct {
-            fn validate(value: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
-                _ = alloc;
-                if (value.len > 500) {
-                    return "Tags must be 500 characters or less";
-                }
-                return null;
-            }
-        };
-        tags_validator.rule(tagsMaxLength.validate) catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        tags_validator.maxLength(500) catch {
+            return Response.serverError("Validation error");
         };
     }
 
     // Run validation
     var validation_errors = schema.validate() catch {
-        return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
+        return Response.serverError("Validation error");
     };
     defer validation_errors.deinit();
 
     if (!validation_errors.isEmpty()) {
-        const error_json = validation_errors.toJson() catch {
-            return Response.json("{\"error\":\"Validation error\"}").withStatus(500);
-        };
-        defer allocator.free(error_json);
-        return Response.json(error_json).withStatus(400);
+        return Response.validationError(&validation_errors);
     }
 
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.serverError("Database not initialized");
     };
 
     const updates = updateTodo(orm, id, .{
@@ -919,11 +837,11 @@ fn handleUpdateTodo(request: *Request) Response {
         .due_date = parsed.due_date,
         .tags = parsed.tags,
     }) catch {
-        return Response.json("{\"error\":\"Failed to update todo\"}").withStatus(500);
+        return Response.serverError("Failed to update todo");
     };
 
     const todo = updates orelse {
-        return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
+        return Response.notFound("Todo not found");
     };
     defer {
         allocator.free(todo.title);
@@ -933,10 +851,10 @@ fn handleUpdateTodo(request: *Request) Response {
     }
 
     const json = formatTodoJson(todo, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todo\"}").withStatus(500);
+        return Response.serverError("Failed to format todo");
     };
     defer allocator.free(json);
-    
+
     // Invalidate cache when todos change
     request.cacheInvalidate("todos:all");
     request.cacheInvalidate("todos:stats");
@@ -946,21 +864,21 @@ fn handleUpdateTodo(request: *Request) Response {
         return Response.json(json);
     };
     request.cacheInvalidate(todo_cache_key);
-    
+
     return Response.json(json);
 }
 
 fn handleDeleteTodo(request: *Request) Response {
-    const id = request.param("id").asI64() catch {
-        return Response.json("{\"error\":\"Invalid ID\"}").withStatus(400);
+    const id = request.paramTyped(i64, "id") catch {
+        return Response.errorResponse("Invalid ID", 400);
     };
 
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.serverError("Database not initialized");
     };
 
     const deleted = deleteTodo(orm, id) catch {
-        return Response.json("{\"error\":\"Failed to delete todo\"}").withStatus(500);
+        return Response.serverError("Failed to delete todo");
     };
 
     if (deleted) {
@@ -972,10 +890,10 @@ fn handleDeleteTodo(request: *Request) Response {
             return Response.json("{\"success\":true}");
         };
         request.cacheInvalidate(todo_cache_key);
-        
+
         return Response.json("{\"success\":true}");
     } else {
-        return Response.json("{\"error\":\"Todo not found\"}").withStatus(404);
+        return Response.notFound("Todo not found");
     }
 }
 
@@ -995,41 +913,25 @@ fn handleSearchTodos(request: *Request) Response {
     // ```
     //
     // For OR conditions or complex queries, raw SQL is the current approach.
-    
-    const query_param = request.query("q") catch {
-        return Response.json("{\"error\":\"Missing query parameter\"}").withStatus(400);
-    };
 
-    const search_query = query_param orelse {
-        return Response.json("{\"error\":\"Missing query parameter\"}").withStatus(400);
+    const search_query = request.queryParamTyped([]const u8, "q") catch {
+        return Response.errorResponse("Invalid query parameter", 400);
+    } orelse {
+        return Response.errorResponse("Missing query parameter", 400);
     };
 
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.serverError("Database not initialized");
     };
 
-    // Escape single quotes for SQL safety (SQLite escapes by doubling)
-    var escaped_query = std.ArrayListUnmanaged(u8){};
-    defer escaped_query.deinit(request.arena.allocator());
-    for (search_query) |char| {
-        if (char == '\'') {
-            escaped_query.append(request.arena.allocator(), '\'') catch {
-                return Response.json("{\"error\":\"Failed to escape query\"}").withStatus(500);
-            };
-            escaped_query.append(request.arena.allocator(), '\'') catch {
-                return Response.json("{\"error\":\"Failed to escape query\"}").withStatus(500);
-            };
-        } else {
-            escaped_query.append(request.arena.allocator(), char) catch {
-                return Response.json("{\"error\":\"Failed to escape query\"}").withStatus(500);
-            };
-        }
-    }
-    const safe_query = escaped_query.items;
+    // Use ORM's escapeLike method for safe SQL LIKE pattern escaping
+    const escaped_query = orm.escapeLike(search_query, request.arena.allocator()) catch {
+        return Response.serverError("Failed to escape query");
+    };
 
     // Build search query - search in title, description, and tags
-    const search_pattern = std.fmt.allocPrint(request.arena.allocator(), "%{s}%", .{safe_query}) catch {
-        return Response.json("{\"error\":\"Failed to format search query\"}").withStatus(500);
+    const search_pattern = std.fmt.allocPrint(request.arena.allocator(), "%{s}%", .{escaped_query}) catch {
+        return Response.serverError("Failed to format search query");
     };
     const sql = std.fmt.allocPrint(request.arena.allocator(),
         \\SELECT * FROM Todo WHERE 
@@ -1038,16 +940,16 @@ fn handleSearchTodos(request: *Request) Response {
         \\  tags LIKE '{s}'
         \\ORDER BY created_at DESC
     , .{ search_pattern, search_pattern, search_pattern }) catch {
-        return Response.json("{\"error\":\"Failed to build search query\"}").withStatus(500);
+        return Response.serverError("Failed to build search query");
     };
 
     var result = orm.db.query(sql) catch {
-        return Response.json("{\"error\":\"Failed to search todos\"}").withStatus(500);
+        return Response.serverError("Failed to search todos");
     };
     defer result.deinit();
 
     var todos = result.toArrayList(Todo) catch {
-        return Response.json("{\"error\":\"Failed to parse search results\"}").withStatus(500);
+        return Response.serverError("Failed to parse search results");
     };
     defer {
         for (todos.items) |todo| {
@@ -1060,7 +962,7 @@ fn handleSearchTodos(request: *Request) Response {
     }
 
     const json = formatTodoListJson(todos, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format todos\"}").withStatus(500);
+        return Response.serverError("Failed to format todos");
     };
     defer allocator.free(json);
     return Response.json(json)
@@ -1073,18 +975,18 @@ fn handleMetrics(request: *Request) Response {
     _ = request;
     // Access global metrics collector
     const metrics_collector = E12.engine12.global_metrics;
-    
+
     if (metrics_collector) |mc| {
         const prometheus_output = mc.getPrometheusMetrics() catch {
-            return Response.json("{\"error\":\"Failed to generate metrics\"}").withStatus(500);
+            return Response.serverError("Failed to generate metrics");
         };
         defer std.heap.page_allocator.free(prometheus_output);
-        
+
         var resp = Response.text(prometheus_output);
         resp = resp.withContentType("text/plain; version=0.0.4");
         return resp;
     }
-    
+
     // Fallback if metrics collector not available
     return Response.json("{\"metrics\":{\"uptime_ms\":0,\"requests_total\":0}}");
 }
@@ -1098,21 +1000,21 @@ fn handleGetStats(request: *Request) Response {
             .withHeader("X-Cache", "HIT");
     }
     const orm = getORM() catch {
-        return Response.json("{\"error\":\"Database not initialized\"}").withStatus(500);
+        return Response.serverError("Database not initialized");
     };
 
     const stats = getStats(orm) catch {
-        return Response.json("{\"error\":\"Failed to fetch stats\"}").withStatus(500);
+        return Response.serverError("Failed to fetch stats");
     };
 
     const json = formatStatsJson(stats, allocator) catch {
-        return Response.json("{\"error\":\"Failed to format stats\"}").withStatus(500);
+        return Response.serverError("Failed to format stats");
     };
     defer allocator.free(json);
-    
+
     // Cache stats for 10 seconds (shorter TTL since stats change frequently)
     request.cacheSet(cache_key, json, 10000, "application/json") catch {};
-    
+
     return Response.json(json)
         .withHeader("X-Cache", "MISS");
 }
@@ -1133,7 +1035,7 @@ fn customErrorHandler(req: *Request, err: ErrorResponse, alloc: std.mem.Allocato
             .timeout => .warn,
             .internal_error, .unknown => LogLevel.err,
         };
-        
+
         const entry_opt = logger.log(log_level, err.message) catch null;
         if (entry_opt) |entry| {
             _ = entry.field("error_code", err.code) catch {};
@@ -1148,13 +1050,13 @@ fn customErrorHandler(req: *Request, err: ErrorResponse, alloc: std.mem.Allocato
             entry.log();
         }
     }
-    
+
     // Create JSON error response
     const json = err.toJson(alloc) catch {
-        return Response.json("{\"error\":\"Failed to serialize error\"}").withStatus(500);
+        return Response.serverError("Failed to serialize error");
     };
     defer alloc.free(json);
-    
+
     // Determine status code
     const status_code: u16 = switch (err.error_type) {
         .validation_error, .bad_request => 400,
@@ -1166,58 +1068,59 @@ fn customErrorHandler(req: *Request, err: ErrorResponse, alloc: std.mem.Allocato
         .timeout => 408,
         .internal_error, .unknown => 500,
     };
-    
+
     var resp = Response.json(json).withStatus(status_code);
-    
+
     // Add request ID to response headers if available
     if (req.get("request_id")) |request_id| {
         resp = resp.withHeader("X-Request-ID", request_id);
     }
-    
+
     return resp;
 }
 
 fn bodySizeLimitMiddleware(req: *Request) middleware_chain.MiddlewareResult {
     const MAX_BODY_SIZE: usize = 10 * 1024; // 10KB
-    
+
     const body = req.body();
     if (body.len > MAX_BODY_SIZE) {
         // Set context flag
         req.set("body_size_exceeded", "true") catch {};
-        
+
         // Abort request
         return .abort;
     }
-    
+
     return .proceed;
 }
 
 fn csrfMiddleware(req: *Request) middleware_chain.MiddlewareResult {
     const method = req.method();
-    
+
     // Skip CSRF check for safe methods
-    if (std.mem.eql(u8, method, "GET") or 
-        std.mem.eql(u8, method, "HEAD") or 
-        std.mem.eql(u8, method, "OPTIONS")) {
+    if (std.mem.eql(u8, method, "GET") or
+        std.mem.eql(u8, method, "HEAD") or
+        std.mem.eql(u8, method, "OPTIONS"))
+    {
         return .proceed;
     }
-    
+
     // For POST/PUT/DELETE, check for CSRF token
     // Simplified implementation - in production, validate token against session
     // For demo purposes, we'll allow requests without CSRF token
     // In production, uncomment the code below to enforce CSRF protection
     const csrf_token = req.header("X-CSRF-Token");
-    
+
     if (csrf_token == null or csrf_token.?.len == 0) {
         // Missing CSRF token - for demo app, we'll allow it
         // Uncomment below for strict CSRF protection:
         // req.set("csrf_error", "true") catch {};
         // return .abort;
     }
-    
+
     // In a full implementation, we would validate the token here
     // A real implementation would compare against a session-stored token
-    
+
     return .proceed;
 }
 
@@ -1229,7 +1132,7 @@ fn requestTrackingMiddleware(req: *Request) middleware_chain.MiddlewareResult {
         return .proceed;
     };
     req.set("request_start_time", start_time_str) catch {};
-    
+
     return .proceed;
 }
 
@@ -1239,22 +1142,24 @@ fn loggingMiddleware(req: *Request) middleware_chain.MiddlewareResult {
             // If logging fails, just proceed
             return .proceed;
         };
-        
+
         // Add request timing if available
         if (req.get("request_start_time")) |start_time_str| {
             _ = entry.field("start_time", start_time_str) catch {};
         }
-        
+
         // Add request ID if available
         if (req.get("request_id")) |request_id| {
             _ = entry.field("request_id", request_id) catch {};
         }
-        
+
         entry.log();
     }
     return .proceed;
 }
 
+// CORS middleware is now handled by the built-in CorsMiddleware
+// This function is kept for backward compatibility but is replaced in createApp()
 fn corsMiddleware(resp: Response) Response {
     return resp;
 }
@@ -1448,19 +1353,36 @@ pub fn createApp() !E12.Engine12 {
     const response_cache = try allocator.create(ResponseCache);
     response_cache.* = ResponseCache.init(allocator, 60000);
     app.setCache(response_cache);
-    
+
     // Store cache globally for potential background task usage
     cache_mutex.lock();
     global_cache = response_cache;
     cache_mutex.unlock();
 
     // Middleware
-    // Order matters: body size limit -> CSRF -> request tracking -> logging
+    // Order matters: body size limit -> CSRF -> CORS -> request ID -> request tracking -> logging
     try app.usePreRequest(&bodySizeLimitMiddleware);
     try app.usePreRequest(&csrfMiddleware);
+
+    // CORS middleware
+    var cors = cors_middleware.CorsMiddleware.init(.{
+        .allowed_origins = &[_][]const u8{"*"}, // Allow all origins for demo
+        .allowed_methods = &[_][]const u8{ "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS" },
+        .allowed_headers = &[_][]const u8{ "Content-Type", "Authorization", "X-CSRF-Token" },
+        .max_age = 3600,
+        .allow_credentials = false,
+    });
+    cors.setGlobalConfig(); // Set global config before using middleware
+    const cors_mw_fn = cors.preflightMwFn();
+    try app.usePreRequest(cors_mw_fn);
+
+    // Request ID middleware (ensures request IDs are exposed via headers)
+    const req_id_mw = request_id_middleware.RequestIdMiddleware.init(.{});
+    const req_id_mw_fn = req_id_mw.preRequestMwFn();
+    try app.usePreRequest(req_id_mw_fn);
+
     try app.usePreRequest(&requestTrackingMiddleware);
     try app.usePreRequest(&loggingMiddleware);
-    try app.useResponse(&corsMiddleware);
 
     // Custom error handler
     app.useErrorHandler(customErrorHandler);

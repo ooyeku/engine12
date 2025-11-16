@@ -1,9 +1,11 @@
 const std = @import("std");
 const ziggurat = @import("ziggurat");
+const json_module = @import("json.zig");
+const validation = @import("validation.zig");
 
 /// Persistent allocator for response bodies
 /// ziggurat stores references to response data, so we must use persistent memory
-/// 
+///
 /// IMPORTANT: Memory Lifetime
 /// --------------------------
 /// Response bodies are allocated using page_allocator (persistent_allocator) and are
@@ -11,12 +13,12 @@ const ziggurat = @import("ziggurat");
 /// 1. ziggurat stores references to response data that must remain valid after the request completes
 /// 2. Response bodies are typically small (JSON, text, HTML) and the memory overhead is acceptable
 /// 3. Freeing response bodies would require tracking all responses, which adds complexity
-/// 
+///
 /// For large responses (>1MB), consider:
 /// - Streaming responses (if ziggurat supports it)
 /// - Using a custom allocator with explicit cleanup
 /// - Implementing response pooling for frequently-used responses
-/// 
+///
 /// Memory allocated here persists for the lifetime of the application.
 const persistent_allocator = std.heap.page_allocator;
 
@@ -195,18 +197,21 @@ pub const Response = struct {
         return resp.withStatus(403);
     }
 
-    /// Create a 404 Not Found response
+    /// Create a 404 Not Found response with error message
     ///
     /// Example:
     /// ```zig
-    /// return Response.notFound().json(.{ .error = "Resource not found" });
+    /// return Response.notFound("Todo not found");
     /// ```
-    pub fn notFound() Response {
-        var resp = Response{
-            .inner = ziggurat.response.Response.text(""),
-            ._persistent_body = null,
+    pub fn notFound(message: []const u8) Response {
+        const error_json = std.fmt.allocPrint(persistent_allocator, "{{\"error\":\"{s}\"}}", .{message}) catch {
+            var resp = Response{
+                .inner = ziggurat.response.Response.text(""),
+                ._persistent_body = null,
+            };
+            return resp.withStatus(404);
         };
-        return resp.withStatus(404);
+        return Response.json(error_json).withStatus(404);
     }
 
     /// Create a 500 Internal Server Error response
@@ -221,6 +226,73 @@ pub const Response = struct {
             ._persistent_body = null,
         };
         return resp.withStatus(500);
+    }
+
+    /// Create an error response with custom message and status code
+    ///
+    /// Example:
+    /// ```zig
+    /// return Response.errorResponse("Invalid input", 400);
+    /// ```
+    pub fn errorResponse(message: []const u8, status_code: u16) Response {
+        const error_json = std.fmt.allocPrint(persistent_allocator, "{{\"error\":\"{s}\"}}", .{message}) catch {
+            return Response.internalError();
+        };
+        return Response.json(error_json).withStatus(status_code);
+    }
+
+    /// Create a 500 Internal Server Error response with message
+    ///
+    /// Example:
+    /// ```zig
+    /// return Response.serverError("Database connection failed");
+    /// ```
+    pub fn serverError(message: []const u8) Response {
+        return Response.errorResponse(message, 500);
+    }
+
+    /// Create a validation error response from ValidationErrors
+    ///
+    /// Example:
+    /// ```zig
+    /// const errors = try schema.validate();
+    /// if (!errors.isEmpty()) {
+    ///     return Response.validationError(&errors);
+    /// }
+    /// ```
+    pub fn validationError(errors: *validation.ValidationErrors) Response {
+        const error_json = errors.toJson() catch {
+            return Response.serverError("Failed to serialize validation errors");
+        };
+        // Note: error_json is allocated by errors.toJson() using errors.allocator
+        // We need to copy it to persistent memory
+        const persistent_json = persistent_allocator.dupe(u8, error_json) catch {
+            errors.allocator.free(error_json); // Free original on allocation failure
+            return Response.serverError("Failed to allocate validation error response");
+        };
+        errors.allocator.free(error_json); // Free original after successful duplication
+        return Response.json(persistent_json).withStatus(400);
+    }
+
+    /// Serialize a struct to JSON and return as Response
+    /// Uses Json.serialize internally
+    ///
+    /// Example:
+    /// ```zig
+    /// const todo = Todo{ .id = 1, .title = "Hello", .completed = false };
+    /// return Response.jsonFrom(Todo, todo, allocator);
+    /// ```
+    pub fn jsonFrom(comptime T: type, value: T, allocator: std.mem.Allocator) Response {
+        const json_str = json_module.Json.serialize(T, value, allocator) catch {
+            return Response.serverError("Failed to serialize response");
+        };
+        // Copy to persistent memory since allocator may be arena
+        const persistent_json = persistent_allocator.dupe(u8, json_str) catch {
+            allocator.free(json_str);
+            return Response.serverError("Failed to allocate response");
+        };
+        allocator.free(json_str);
+        return Response.json(persistent_json);
     }
 
     /// Set cache-control headers to prevent caching
@@ -558,7 +630,7 @@ test "Response forbidden" {
 }
 
 test "Response notFound" {
-    const resp = Response.notFound();
+    const resp = Response.notFound("Not found");
     _ = resp;
 }
 
@@ -665,7 +737,7 @@ test "Response all status code helpers" {
     const forbidden = Response.forbidden();
     _ = forbidden;
 
-    const notFound = Response.notFound();
+    const notFound = Response.notFound("Not found");
     _ = notFound;
 
     const internalError = Response.internalError();
