@@ -110,11 +110,11 @@ Key points:
 - Initializes the ORM with `initPtr()` for pointer-based usage
 - Provides `deinit()` for proper cleanup
 
-**Note**: Using `initPtr()` is recommended when you need to pass ORM instances to handlers or maintain global ORM state. The ORM now provides enhanced error messages with detailed context (table name, SQL query, column count) when `findAll()` or `where()` operations fail.
+**Note**: Using `initPtr()` is recommended when you need to pass ORM instances to handlers or maintain global ORM state. The ORM maps columns to struct fields by name, so column order doesn't matter. The ORM provides enhanced error messages with detailed context (table name, SQL query, missing columns) when operations fail.
 
 ## CRUD Operations
 
-**Important**: When using ORM methods like `find()`, `findAll()`, and `where()`, be aware that they use `SELECT *` internally, which may cause column order issues if your table schema order differs from struct field order. If you encounter `error.NullValueForNonOptional` errors, use raw SQL with explicit column names that match your struct field order. See the [Troubleshooting Guide](../troubleshooting.md) for more details.
+**Note**: The ORM maps columns to struct fields by name, not by position. This means column order in your queries doesn't need to match struct field order - the ORM will automatically match columns by name.
 
 ### Create Todo
 
@@ -156,19 +156,11 @@ Memory management:
 
 ### Read Todos
 
-**Note**: The example below uses `orm.findAllManaged()` which uses `SELECT *` internally. If you encounter column order issues, use raw SQL with explicit column names matching your struct field order.
-
 ```zig
 fn getAllTodos(orm: *ORM) !std.ArrayListUnmanaged(Todo) {
     // Use managed results for automatic memory management
-    // Note: This uses SELECT * internally - may have column order issues
+    // Columns are mapped by name, so order doesn't matter
     var result = try orm.findAllManaged(Todo);
-    
-    // Alternative: Use raw SQL with explicit column order (recommended for complex schemas)
-    // const sql = "SELECT id, title, description, completed, status, created_at, updated_at FROM todos";
-    // var query_result = try orm.query(sql);
-    // defer query_result.deinit();
-    // var result = try query_result.toResult(Todo);
     defer result.deinit();
     
     // Copy items to return (caller will manage memory)
@@ -210,22 +202,14 @@ fn findTodoById(orm: *ORM, id: i64) !?Todo {
 
 ### Update Todo
 
-**Note**: The example below uses `orm.find()` which uses `SELECT *` internally. If you encounter column order issues, use raw SQL with explicit column names matching your struct field order.
-
 ```zig
 fn updateTodo(orm: *ORM, id: i64, updates: struct {
     title: ?[]const u8 = null,
     description: ?[]const u8 = null,
     completed: ?bool = null,
 }) !?Todo {
-    // Note: This uses SELECT * internally - may have column order issues
+    // Columns are mapped by name, so order doesn't matter
     const existing = try orm.find(Todo, id);
-    
-    // Alternative: Use raw SQL with explicit column order
-    // const sql = "SELECT id, title, description, completed, status, created_at, updated_at FROM todos WHERE id = ?";
-    // var query_result = try orm.query(sql);
-    // defer query_result.deinit();
-    // const existing = try query_result.toStruct(Todo);
     if (existing == null) return null;
 
     var todo = existing.?;
@@ -273,11 +257,9 @@ Key points:
 
 ### Delete Todo
 
-**Note**: The example below uses `orm.find()` which uses `SELECT *` internally. If you encounter column order issues, use raw SQL with explicit column names matching your struct field order.
-
 ```zig
 fn deleteTodo(orm: *ORM, id: i64) !bool {
-    // Note: This uses SELECT * internally - may have column order issues
+    // Columns are mapped by name, so order doesn't matter
     const existing = try orm.find(Todo, id);
     if (existing == null) return false;
 

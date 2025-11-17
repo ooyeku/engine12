@@ -270,50 +270,31 @@ pub fn getORM() !*ORM {
 }
 ```
 
-**Problem**: `error.NullValueForNonOptional` when querying with `find()`, `findAll()`, or `where()`.
+**Problem**: `error.ColumnMismatch` when querying with `find()`, `findAll()`, `where()`, or `query()`.
 
-**Cause**: Column order mismatch. SQLite returns columns in table creation order, but the ORM maps them to struct fields in struct field order. If these don't match, you'll get `error.NullValueForNonOptional` errors.
+**Cause**: Missing columns. The ORM maps columns to struct fields by name. If a struct field doesn't have a corresponding column in the query result, you'll get `error.ColumnMismatch`.
 
-**Solution**: Use raw SQL with explicit column names that match your struct field order:
+**Solution**: Ensure all struct fields have corresponding columns in your query:
 
 ```zig
-// Instead of:
-var todos = try orm.findAll(Todo); // Uses SELECT * - may have column order issues
+// Struct requires: id, title, description
+const Todo = struct {
+    id: i64,
+    title: []const u8,
+    description: []const u8,
+};
 
-// Use raw SQL with explicit column order:
-// Struct field order: id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at
-const sql = "SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE user_id = ?";
+// Query must include all required columns (order doesn't matter):
+var todos = try orm.findAll(Todo); // Works - generates SELECT with all columns
+
+// Or with raw SQL - column order doesn't matter:
+const sql = "SELECT description, id, title FROM todos"; // Works - columns matched by name
 var query_result = try orm.query(sql);
 defer query_result.deinit();
 var todos = try query_result.toArrayList(Todo);
 ```
 
-**How to determine struct field order**:
-1. Look at your struct definition - fields are in declaration order
-2. Match that exact order in your SELECT statement
-3. Ensure all fields are included (or handle optional fields appropriately)
-
-**Example**:
-```zig
-// Struct definition (field order matters!)
-const Todo = struct {
-    id: i64,                    // Field 1
-    user_id: i64,               // Field 2
-    title: []const u8,          // Field 3
-    description: ?[]const u8,    // Field 4 (optional)
-    completed: bool,            // Field 5
-    priority: []const u8,        // Field 6
-    due_date: ?i64,            // Field 7 (optional)
-    tags: ?[]const u8,          // Field 8 (optional)
-    created_at: i64,            // Field 9
-    updated_at: i64,            // Field 10
-};
-
-// SQL must match this exact order:
-const sql = "SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE user_id = ?";
-```
-
-**Note**: ORM methods like `find()`, `findAll()`, and `where()` use `SELECT *` internally, which may cause column order issues if your table schema order differs from struct field order. For complex schemas, always use raw SQL with explicit column names.
+**Note**: The ORM maps columns by name, not by position. Column order in your queries doesn't matter. Extra columns in the query result are ignored.
 
 ## Migration Issues
 

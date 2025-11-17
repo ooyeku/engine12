@@ -214,7 +214,7 @@ curl -X DELETE http://127.0.0.1:8080/todos/1
 
 Now let's add persistent storage with SQLite.
 
-**Important**: When using raw SQL queries with `orm.query()`, ensure the column order in your SELECT statement matches the struct field order. SQLite returns columns in table creation order, but the ORM maps them to struct fields in struct field order. If these don't match, you'll get `error.NullValueForNonOptional` errors. ORM methods like `find()`, `findAll()`, and `where()` use `SELECT *` internally, which may cause column order issues if your table schema order differs from struct field order. For complex schemas, consider using raw SQL with explicit column names.
+**Note**: The ORM maps columns to struct fields by name, not by position. This means column order in your queries doesn't need to match struct field order - the ORM will automatically match columns by name.
 
 ### 4.1 Create Database Module
 
@@ -289,8 +289,6 @@ const Todo = struct {
 
 ### 4.3 Update Handlers
 
-**Note**: The example below uses `orm.findAll()` which uses `SELECT *` internally. If you encounter `error.NullValueForNonOptional` errors due to column order mismatches, use raw SQL with explicit column names that match your struct field order.
-
 ```zig
 fn handleGetTodos(req: *Request) Response {
     _ = req;
@@ -298,24 +296,11 @@ fn handleGetTodos(req: *Request) Response {
         return Response.status(500).withJson("{\"error\":\"Database error\"}");
     };
 
-    // Option 1: Using ORM method (may have column order issues)
     var todos_list = orm.findAll(Todo) catch |err| {
         // Enhanced error handling - error messages now include table name, SQL, and column info
         std.debug.print("Failed to fetch todos: {}\n", .{err});
         return Response.status(500).withJson("{\"error\":\"Failed to fetch todos\"}");
     };
-    
-    // Option 2: Using raw SQL with explicit column order (recommended for complex schemas)
-    // const sql = "SELECT id, title, description, completed, status, created_at, updated_at FROM todos";
-    // var query_result = orm.query(sql) catch |err| {
-    //     std.debug.print("Failed to query todos: {}\n", .{err});
-    //     return Response.status(500).withJson("{\"error\":\"Failed to fetch todos\"}");
-    // };
-    // defer query_result.deinit();
-    // var todos_list = query_result.toArrayList(Todo) catch |err| {
-    //     std.debug.print("Failed to deserialize todos: {}\n", .{err});
-    //     return Response.status(500).withJson("{\"error\":\"Failed to fetch todos\"}");
-    // };
     defer {
         for (todos_list.items) |todo| {
             std.heap.page_allocator.free(todo.title);

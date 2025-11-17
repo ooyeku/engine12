@@ -229,11 +229,19 @@ pub const ORM = struct {
     pub fn find(self: *ORM, comptime T: type, id: i64) !?T {
         const table_name = try self.getTableName(T);
         defer self.allocator.free(table_name);
-        const sql = try std.fmt.allocPrint(
-            self.allocator,
-            "SELECT * FROM {s} WHERE id = {d}",
-            .{ table_name, id },
-        );
+        
+        // Generate SELECT with explicit column names in struct field order
+        var sql_buf = std.ArrayListUnmanaged(u8){};
+        defer sql_buf.deinit(self.allocator);
+        
+        try sql_buf.writer(self.allocator).print("SELECT ", .{});
+        inline for (std.meta.fields(T), 0..) |field, i| {
+            if (i > 0) try sql_buf.writer(self.allocator).print(", ", .{});
+            try sql_buf.writer(self.allocator).print("{s}", .{field.name});
+        }
+        try sql_buf.writer(self.allocator).print(" FROM {s} WHERE id = {d}", .{ table_name, id });
+        
+        const sql = try sql_buf.toOwnedSlice(self.allocator);
         defer self.allocator.free(sql);
 
         var result = self.db.query(sql) catch |err| {
@@ -337,11 +345,20 @@ pub const ORM = struct {
     pub fn findAll(self: *ORM, comptime T: type) !std.ArrayListUnmanaged(T) {
         const table_name = try self.getTableName(T);
         defer self.allocator.free(table_name);
-        const sql = try std.fmt.allocPrint(
-            self.allocator,
-            "SELECT * FROM {s}",
-            .{table_name},
-        );
+        
+        // Generate SELECT with explicit column names in struct field order
+        // This ensures column order matches struct field order and improves clarity
+        var sql_buf = std.ArrayListUnmanaged(u8){};
+        defer sql_buf.deinit(self.allocator);
+        
+        try sql_buf.writer(self.allocator).print("SELECT ", .{});
+        inline for (std.meta.fields(T), 0..) |field, i| {
+            if (i > 0) try sql_buf.writer(self.allocator).print(", ", .{});
+            try sql_buf.writer(self.allocator).print("{s}", .{field.name});
+        }
+        try sql_buf.writer(self.allocator).print(" FROM {s}", .{table_name});
+        
+        const sql = try sql_buf.toOwnedSlice(self.allocator);
         defer self.allocator.free(sql);
 
         var query_result = self.db.query(sql) catch |err| {
@@ -388,11 +405,19 @@ pub const ORM = struct {
     pub fn where(self: *ORM, comptime T: type, condition: []const u8) !std.ArrayListUnmanaged(T) {
         const table_name = try self.getTableName(T);
         defer self.allocator.free(table_name);
-        const sql = try std.fmt.allocPrint(
-            self.allocator,
-            "SELECT * FROM {s} WHERE {s}",
-            .{ table_name, condition },
-        );
+        
+        // Generate SELECT with explicit column names in struct field order
+        var sql_buf = std.ArrayListUnmanaged(u8){};
+        defer sql_buf.deinit(self.allocator);
+        
+        try sql_buf.writer(self.allocator).print("SELECT ", .{});
+        inline for (std.meta.fields(T), 0..) |field, i| {
+            if (i > 0) try sql_buf.writer(self.allocator).print(", ", .{});
+            try sql_buf.writer(self.allocator).print("{s}", .{field.name});
+        }
+        try sql_buf.writer(self.allocator).print(" FROM {s} WHERE {s}", .{ table_name, condition });
+        
+        const sql = try sql_buf.toOwnedSlice(self.allocator);
         defer self.allocator.free(sql);
 
         var query_result = self.db.query(sql) catch |err| {

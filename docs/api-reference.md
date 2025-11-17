@@ -1216,15 +1216,7 @@ defer orm.close();
 
 ### CRUD Operations
 
-**Important**: When using raw SQL queries with `orm.query()`, ensure the column order in your SELECT statement matches the struct field order. SQLite returns columns in table creation order, but the ORM maps them to struct fields in struct field order. If these don't match, you'll get `error.NullValueForNonOptional` errors.
-
-**Example**:
-```zig
-// Struct field order: id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at
-const sql = "SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE user_id = ?";
-```
-
-**Note**: ORM methods like `find()`, `findAll()`, and `where()` use `SELECT *` internally, which may cause column order issues if your table schema order differs from struct field order. For complex schemas, consider using raw SQL with explicit column names.
+The ORM maps columns to struct fields by name, not by position. This means column order in your queries doesn't need to match struct field order - the ORM will automatically match columns by name.
 
 #### `create(comptime T: type, instance: T) !void`
 Create a new record. Supports structs with enum types and optional fields.
@@ -1262,9 +1254,7 @@ try orm.create(Todo, todo);
 **Note**: Optional enum fields are also supported. Null optional fields are skipped in INSERT/UPDATE operations.
 
 #### `find(comptime T: type, id: i64) !?T`
-Find a record by ID.
-
-**Note**: This method uses `SELECT *` internally, which may cause column order issues if your table schema order differs from struct field order. If you encounter `error.NullValueForNonOptional` errors, consider using raw SQL with explicit column names that match your struct field order.
+Find a record by ID. Columns are mapped to struct fields by name, so column order doesn't matter.
 
 ```zig
 const todo = try orm.find(Todo, 1);
@@ -1318,11 +1308,11 @@ defer {
 
 **Validation:**
 The ORM automatically validates that:
-- Column count matches struct field count
+- All struct fields have corresponding columns (by name)
 - Field types are compatible with column types
 - Null values are handled correctly for optional/non-optional fields
 
-**Note**: This method uses `SELECT *` internally, which may cause column order issues if your table schema order differs from struct field order. If you encounter `error.NullValueForNonOptional` errors, consider using raw SQL with explicit column names that match your struct field order.
+**Column Mapping**: Columns are mapped to struct fields by name, so column order in the query doesn't matter. Extra columns in the query result are ignored.
 
 #### `where(comptime T: type, condition: []const u8) !ArrayListUnmanaged(T)`
 Find records matching a condition. Enhanced error handling provides detailed context when errors occur.
@@ -1345,7 +1335,7 @@ defer {
 
 **Note**: The condition string is inserted directly into the SQL query. Be careful with user input to prevent SQL injection. Consider using parameterized queries or the Query Builder for dynamic conditions.
 
-**Column Order Warning**: This method uses `SELECT *` internally, which may cause column order issues if your table schema order differs from struct field order. If you encounter `error.NullValueForNonOptional` errors, consider using raw SQL with explicit column names that match your struct field order.
+**Column Mapping**: Columns are mapped to struct fields by name, so column order doesn't matter.
 
 #### `findAllManaged(comptime T: type) !Result(T)`
 Find all records with automatic memory management. Returns a `Result` wrapper that automatically frees string fields on `deinit()`.
@@ -1469,22 +1459,17 @@ const version = try orm.getMigrationVersion();
 ### Raw SQL
 
 #### `query(sql: []const u8) !QueryResult`
-Execute a SELECT query.
+Execute a SELECT query. Columns are mapped to struct fields by name, so column order in your SELECT statement doesn't matter.
 
-**Important**: When using `SELECT *`, ensure the column order in your SELECT statement matches the struct field order. SQLite returns columns in table creation order, but the ORM maps them to struct fields in struct field order. If these don't match, you'll get `error.NullValueForNonOptional` errors.
-
-**Example with explicit column order**:
+**Example**:
 ```zig
-// Struct field order: id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at
-const sql = "SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE completed = 1";
-var result = try orm.query(sql);
+// Column order doesn't matter - ORM maps by name
+var result = try orm.query("SELECT id, title, completed FROM todos WHERE completed = 1");
 defer result.deinit();
-```
 
-**Example with SELECT * (may cause column order issues)**:
-```zig
-var result = try orm.query("SELECT * FROM todos WHERE completed = 1");
-defer result.deinit();
+// SELECT * also works - columns are matched by name
+var result2 = try orm.query("SELECT * FROM todos WHERE completed = 1");
+defer result2.deinit();
 ```
 
 #### `execute(sql: []const u8) !void`

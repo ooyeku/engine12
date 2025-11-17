@@ -173,7 +173,7 @@ The `QueryResult` (`src/orm/row.zig`) handles:
 - **Optional field deserialization**: Correctly handles null values for optional fields
 - **Optional enum deserialization**: Supports optional enum fields with proper type conversion
 
-**Column Order Mapping**: The ORM maps database columns to struct fields by position, not by name. SQLite returns columns in table creation order, but the ORM maps them to struct fields in struct field declaration order. If these orders don't match, you'll get `error.NullValueForNonOptional` errors. When using raw SQL queries with `orm.query()`, ensure the column order in your SELECT statement matches the struct field order. ORM methods like `find()`, `findAll()`, and `where()` use `SELECT *` internally, which may cause column order issues if your table schema order differs from struct field order. For complex schemas, always use raw SQL with explicit column names that match your struct field order.
+**Column Mapping**: The ORM maps database columns to struct fields by name, not by position. This means column order in queries doesn't need to match struct field order - the ORM automatically matches columns by name. Extra columns in query results are ignored, and missing columns result in `error.ColumnMismatch` with detailed error messages listing missing fields.
 
 ### Error Messages
 
@@ -181,16 +181,16 @@ The ORM provides improved error messages with detailed context:
 
 - **Table name**: Shows which table caused the error
 - **SQL query**: Shows the exact SQL query that was executed
-- **Column count**: Shows expected vs actual column count
+- **Missing fields**: Lists struct fields that don't have corresponding columns
+- **Available columns**: Lists columns available in the query result
 - **Field information**: Shows struct field names and types
-- **Column information**: Shows database column names
 - **Error type**: Shows the specific error that occurred
 
-When `findAll()` or `where()` operations fail, error messages include:
+When `findAll()`, `where()`, or `query()` operations fail, error messages include:
 - Table name
 - SQL query that was executed
-- Expected vs actual column count
-- Field and column information for debugging
+- Missing struct fields
+- Available columns in the query result
 
 This makes it much easier to diagnose schema mismatches and type errors.
 

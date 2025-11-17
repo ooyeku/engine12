@@ -43,13 +43,43 @@ pub const QueryResult = struct {
     c_result: *c.E12Result,
     allocator: std.mem.Allocator,
     column_count: i32,
+    _column_map: ?std.StringHashMap(i32) = null,
 
     pub fn init(c_result: *c.E12Result, allocator: std.mem.Allocator) QueryResult {
         return QueryResult{
             .c_result = c_result,
             .allocator = allocator,
             .column_count = c.e12_result_column_count(c_result),
+            ._column_map = null,
         };
+    }
+    
+    /// Build column name -> index mapping (lazy initialization)
+    fn buildColumnMap(self: *QueryResult) !std.StringHashMap(i32) {
+        if (self._column_map) |*map| {
+            return map.*;
+        }
+        
+        var column_map = std.StringHashMap(i32).init(self.allocator);
+        errdefer column_map.deinit();
+        
+        for (0..@as(usize, @intCast(self.column_count))) |i| {
+            const col_idx = @as(i32, @intCast(i));
+            if (self.columnName(col_idx)) |name| {
+                // Duplicate the column name string for the map key
+                const name_copy = try self.allocator.dupe(u8, name);
+                try column_map.put(name_copy, col_idx);
+            }
+        }
+        
+        self._column_map = column_map;
+        return column_map;
+    }
+    
+    /// Get column index by name, building the map if necessary
+    fn getColumnIndex(self: *QueryResult, field_name: []const u8) !?i32 {
+        const column_map = try self.buildColumnMap();
+        return column_map.get(field_name);
     }
 
     pub fn columnCount(self: QueryResult) i32 {
@@ -73,6 +103,14 @@ pub const QueryResult = struct {
     }
 
     pub fn deinit(self: *QueryResult) void {
+        if (self._column_map) |*map| {
+            // Free all allocated column name strings
+            var iterator = map.iterator();
+            while (iterator.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+            }
+            map.deinit();
+        }
         c.e12_result_free(self.c_result);
     }
 
@@ -80,25 +118,29 @@ pub const QueryResult = struct {
         var list = std.ArrayListUnmanaged(T){};
         errdefer list.deinit(self.allocator);
 
-        // Validate column count matches struct field count
-        const field_count = std.meta.fields(T).len;
-        if (self.column_count != field_count) {
-            var column_names = std.ArrayListUnmanaged([]const u8){};
-            defer column_names.deinit(self.allocator);
-            
-            for (0..@as(usize, @intCast(self.column_count))) |i| {
-                if (self.columnName(@as(i32, @intCast(i)))) |name| {
-                    try column_names.append(self.allocator, name);
-                }
+        // Build column map to validate all required fields are present
+        const column_map = try self.buildColumnMap();
+        
+        // Validate that all struct fields have corresponding columns
+        var missing_fields = std.ArrayListUnmanaged([]const u8){};
+        defer missing_fields.deinit(self.allocator);
+        
+        inline for (std.meta.fields(T)) |field| {
+            if (column_map.get(field.name) == null) {
+                try missing_fields.append(self.allocator, field.name);
             }
-            
-            var field_names = std.ArrayListUnmanaged([]const u8){};
-            defer field_names.deinit(self.allocator);
-            
-            inline for (std.meta.fields(T)) |field| {
-                try field_names.append(self.allocator, field.name);
+        }
+        
+        if (missing_fields.items.len > 0) {
+            std.debug.print("[ORM Error] Missing columns for struct fields:\n", .{});
+            for (missing_fields.items) |field_name| {
+                std.debug.print("  - {s}\n", .{field_name});
             }
-            
+            std.debug.print("Available columns:\n", .{});
+            var iterator = column_map.iterator();
+            while (iterator.next()) |entry| {
+                std.debug.print("  - {s}\n", .{entry.key_ptr.*});
+            }
             return error.ColumnMismatch;
         }
 
@@ -117,11 +159,17 @@ pub const QueryResult = struct {
         // Using undefined is safe here because all fields are explicitly initialized
         var instance: T = undefined;
 
-        var col_idx: i32 = 0;
+        // Build column name -> index mapping (cached after first call)
+        const column_map = try self.buildColumnMap();
+
+        // Map struct fields to columns by name
         inline for (std.meta.fields(T)) |field| {
-            if (col_idx >= self.column_count) {
+            // Get column index for this field name
+            const col_idx = column_map.get(field.name) orelse {
+                // Field not found in query result - this is an error
+                std.debug.print("[ORM Error] Field '{s}' not found in query result columns\n", .{field.name});
                 return error.ColumnMismatch;
-            }
+            };
 
             const field_type = @TypeOf(@field(instance, field.name));
 
@@ -212,13 +260,6 @@ pub const QueryResult = struct {
                         "and enums. For complex types, consider storing as JSON text."),
                 }
             }
-
-            col_idx += 1;
-        }
-
-        // Check if we have more columns than fields
-        if (col_idx < self.column_count) {
-            return error.ColumnMismatch;
         }
 
         return instance;
@@ -464,4 +505,132 @@ test "QueryResult toArrayList with boolean" {
     try std.testing.expectEqual(@as(usize, 2), users.items.len);
     try std.testing.expect(users.items[0].active == true);
     try std.testing.expect(users.items[1].active == false);
+}
+
+test "QueryResult toArrayList column order independence" {
+    const allocator = std.testing.allocator;
+    const Database = @import("database.zig").Database;
+
+    const Todo = struct {
+        id: i64,
+        title: []u8,
+        completed: bool,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    // Create table with columns in different order than struct fields
+    try db.execute("CREATE TABLE todos (completed INTEGER, id INTEGER PRIMARY KEY, title TEXT)");
+    try db.execute("INSERT INTO todos (title, completed) VALUES ('Test Todo', 1)");
+
+    // Query with columns in different order - should still work
+    var result = try db.query("SELECT id, title, completed FROM todos");
+    defer result.deinit();
+
+    var todos = try result.toArrayList(Todo);
+    defer {
+        for (todos.items) |todo| {
+            allocator.free(todo.title);
+        }
+        todos.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), todos.items.len);
+    try std.testing.expectEqualStrings("Test Todo", todos.items[0].title);
+    try std.testing.expect(todos.items[0].completed == true);
+}
+
+test "QueryResult toArrayList with extra columns" {
+    const allocator = std.testing.allocator;
+    const Database = @import("database.zig").Database;
+
+    const User = struct {
+        id: i64,
+        name: []u8,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    try db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER, email TEXT)");
+    try db.execute("INSERT INTO users (name, age, email) VALUES ('Alice', 25, 'alice@example.com')");
+
+    // Query with extra columns - should work (only maps fields that exist in struct)
+    var result = try db.query("SELECT id, name, age, email FROM users");
+    defer result.deinit();
+
+    var users = try result.toArrayList(User);
+    defer {
+        for (users.items) |user| {
+            allocator.free(user.name);
+        }
+        users.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), users.items.len);
+    try std.testing.expectEqualStrings("Alice", users.items[0].name);
+}
+
+test "QueryResult toArrayList with missing column" {
+    const allocator = std.testing.allocator;
+    const Database = @import("database.zig").Database;
+
+    const User = struct {
+        id: i64,
+        name: []u8,
+        email: []u8,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    try db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+    try db.execute("INSERT INTO users (name) VALUES ('Alice')");
+
+    // Query missing email column - should fail with ColumnMismatch
+    var result = try db.query("SELECT id, name FROM users");
+    defer result.deinit();
+
+    const users = result.toArrayList(User);
+    try std.testing.expectError(error.ColumnMismatch, users);
+}
+
+test "QueryResult toArrayList with reordered columns in SELECT" {
+    const allocator = std.testing.allocator;
+    const Database = @import("database.zig").Database;
+
+    const Todo = struct {
+        id: i64,
+        title: []u8,
+        description: ?[]u8,
+        completed: bool,
+    };
+
+    var db = try Database.open(":memory:", allocator);
+    defer db.close();
+
+    try db.execute("CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT, description TEXT, completed INTEGER)");
+    try db.execute("INSERT INTO todos (title, description, completed) VALUES ('Test', 'Description', 1)");
+
+    // Query with columns in completely different order - should still work
+    var result = try db.query("SELECT completed, description, title, id FROM todos");
+    defer result.deinit();
+
+    var todos = try result.toArrayList(Todo);
+    defer {
+        for (todos.items) |todo| {
+            allocator.free(todo.title);
+            if (todo.description) |desc| allocator.free(desc);
+        }
+        todos.deinit();
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), todos.items.len);
+    try std.testing.expectEqualStrings("Test", todos.items[0].title);
+    try std.testing.expect(todos.items[0].completed == true);
+    try std.testing.expect(todos.items[0].description != null);
+    if (todos.items[0].description) |desc| {
+        try std.testing.expectEqualStrings("Description", desc);
+    }
 }
