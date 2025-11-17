@@ -1,4 +1,5 @@
 const API_BASE = '/api/todos';
+const AUTH_BASE = '/auth';
 
 let todos = [];
 let currentFilter = 'all';
@@ -6,13 +7,198 @@ let currentSort = 'created_desc';
 let searchQuery = '';
 let currentPage = 'dashboard';
 let completedSearchQuery = '';
+let currentUser = null;
+
+// Authentication Functions
+function getAuthToken() {
+    return localStorage.getItem('auth_token');
+}
+
+function setAuthToken(token) {
+    if (token) {
+        localStorage.setItem('auth_token', token);
+    } else {
+        localStorage.removeItem('auth_token');
+    }
+}
+
+function isAuthenticated() {
+    return getAuthToken() !== null;
+}
+
+function getAuthHeaders() {
+    const headers = {
+        'Content-Type': 'application/json',
+    };
+    const token = getAuthToken();
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    return headers;
+}
+
+async function login(username, password) {
+    try {
+        const response = await fetch(`${AUTH_BASE}/login`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ username, password }),
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => 'Login failed');
+            console.error('[Login] Error response:', response.status, errorText);
+            let error;
+            try {
+                error = JSON.parse(errorText);
+            } catch {
+                error = { error: errorText || 'Login failed' };
+            }
+            throw new Error(error.error || 'Login failed');
+        }
+        
+        const responseText = await response.text();
+        console.log('[Login] Response text:', responseText);
+        const data = JSON.parse(responseText);
+        console.log('[Login] Parsed data:', data);
+        
+        if (data.token) {
+            setAuthToken(data.token);
+            currentUser = data.user;
+            updateAuthUI();
+            return true;
+        }
+        console.error('[Login] No token in response:', data);
+        throw new Error('No token received');
+    } catch (error) {
+        showAuthError(error.message);
+        return false;
+    }
+}
+
+async function signup(username, email, password) {
+    try {
+        const response = await fetch(`${AUTH_BASE}/register`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ username, email, password }),
+        });
+        
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ error: 'Signup failed' }));
+            throw new Error(error.error || 'Signup failed');
+        }
+        
+        // After signup, automatically log in
+        return await login(username, password);
+    } catch (error) {
+        showAuthError(error.message);
+        return false;
+    }
+}
+
+async function logout() {
+    try {
+        await fetch(`${AUTH_BASE}/logout`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+        });
+    } catch (error) {
+        console.error('Logout error:', error);
+    } finally {
+        setAuthToken(null);
+        currentUser = null;
+        updateAuthUI();
+        todos = [];
+    }
+}
+
+async function checkAuth() {
+    const token = getAuthToken();
+    if (!token) {
+        updateAuthUI();
+        return false;
+    }
+    
+    try {
+        const response = await fetch(`${AUTH_BASE}/me`, {
+            headers: getAuthHeaders(),
+        });
+        
+        if (!response.ok) {
+            setAuthToken(null);
+            currentUser = null;
+            updateAuthUI();
+            return false;
+        }
+        
+        const data = await response.json();
+        currentUser = data.user || data;
+        updateAuthUI();
+        return true;
+    } catch (error) {
+        console.error('Auth check error:', error);
+        setAuthToken(null);
+        currentUser = null;
+        updateAuthUI();
+        return false;
+    }
+}
+
+function updateAuthUI() {
+    const authFormContainer = document.getElementById('auth-form-container');
+    const userInfoContainer = document.getElementById('user-info-container');
+    const mainNav = document.getElementById('main-nav');
+    const mainContent = document.getElementById('main-content');
+    const userUsername = document.getElementById('user-username');
+    
+    if (isAuthenticated() && currentUser) {
+        // Show user info, hide login form
+        authFormContainer.style.display = 'none';
+        userInfoContainer.style.display = 'block';
+        mainNav.style.display = 'flex';
+        mainContent.style.display = 'block';
+        if (userUsername) {
+            userUsername.textContent = currentUser.username || 'User';
+        }
+    } else {
+        // Show login form, hide user info and main content
+        authFormContainer.style.display = 'block';
+        userInfoContainer.style.display = 'none';
+        mainNav.style.display = 'none';
+        mainContent.style.display = 'none';
+    }
+}
+
+function showAuthError(message) {
+    const errorDiv = document.getElementById('auth-error');
+    if (errorDiv) {
+        errorDiv.textContent = message;
+        errorDiv.style.display = 'block';
+        setTimeout(() => {
+            errorDiv.style.display = 'none';
+        }, 5000);
+    }
+}
 
 // API Functions
 async function fetchTodos() {
+    if (!isAuthenticated()) {
+        return;
+    }
     try {
         const response = await fetch(API_BASE, {
+            headers: getAuthHeaders(),
             cache: 'no-store',
         });
+        if (response.status === 401) {
+            await logout();
+            return;
+        }
         if (!response.ok) throw new Error('Failed to fetch todos');
         const data = await response.json();
         todos = Array.isArray(data) ? data : [];
@@ -24,12 +210,13 @@ async function fetchTodos() {
 }
 
 async function createTodo(title, description, priority = 'medium', dueDate = null, tags = []) {
+    if (!isAuthenticated()) {
+        return;
+    }
     try {
         const response = await fetch(API_BASE, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: getAuthHeaders(),
             body: JSON.stringify({ 
                 title, 
                 description,
@@ -39,6 +226,10 @@ async function createTodo(title, description, priority = 'medium', dueDate = nul
             }),
             cache: 'no-store',
         });
+        if (response.status === 401) {
+            await logout();
+            return;
+        }
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || 'Failed to create todo');
@@ -54,15 +245,20 @@ async function createTodo(title, description, priority = 'medium', dueDate = nul
 }
 
 async function updateTodo(id, updates) {
+    if (!isAuthenticated()) {
+        return;
+    }
     try {
         const response = await fetch(`${API_BASE}/${id}`, {
             method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: getAuthHeaders(),
             body: JSON.stringify(updates),
             cache: 'no-store',
         });
+        if (response.status === 401) {
+            await logout();
+            return;
+        }
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || 'Failed to update todo');
@@ -78,11 +274,20 @@ async function updateTodo(id, updates) {
 }
 
 async function deleteTodo(id) {
+    if (!isAuthenticated()) {
+        return;
+    }
     try {
         const response = await fetch(`${API_BASE}/${id}`, {
             method: 'DELETE',
+            headers: getAuthHeaders(),
             cache: 'no-store',
         });
+        
+        if (response.status === 401) {
+            await logout();
+            return;
+        }
         
         if (!response.ok) {
             const error = await response.json();
@@ -98,10 +303,18 @@ async function deleteTodo(id) {
 }
 
 async function fetchStats() {
+    if (!isAuthenticated()) {
+        return;
+    }
     try {
         const response = await fetch(`${API_BASE}/stats`, {
+            headers: getAuthHeaders(),
             cache: 'no-store',
         });
+        if (response.status === 401) {
+            await logout();
+            return;
+        }
         if (!response.ok) throw new Error('Failed to fetch stats');
         const data = await response.json();
         const stats = data.stats || data;
@@ -693,7 +906,110 @@ function formatDate(timestamp) {
 }
 
 // Event Listeners
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // Initialize authentication
+    await checkAuth();
+    
+    // Auth form event listeners
+    const loginBtn = document.getElementById('login-btn');
+    const signupBtn = document.getElementById('signup-btn');
+    const toggleSignupBtn = document.getElementById('toggle-signup-btn');
+    const toggleLoginBtn = document.getElementById('toggle-login-btn');
+    const logoutBtn = document.getElementById('logout-btn');
+    const authUsername = document.getElementById('auth-username');
+    const authEmail = document.getElementById('auth-email');
+    const authPassword = document.getElementById('auth-password');
+    
+    let isSignupMode = false;
+    
+    function toggleSignupMode() {
+        isSignupMode = !isSignupMode;
+        authEmail.style.display = isSignupMode ? 'block' : 'none';
+        loginBtn.style.display = isSignupMode ? 'none' : 'block';
+        signupBtn.style.display = isSignupMode ? 'block' : 'none';
+        toggleSignupBtn.style.display = isSignupMode ? 'none' : 'block';
+        toggleLoginBtn.style.display = isSignupMode ? 'block' : 'none';
+        
+        // Clear any error messages when switching modes
+        showAuthError('');
+        
+        // Focus on email field when entering signup mode
+        if (isSignupMode && authEmail) {
+            authEmail.focus();
+        }
+    }
+    
+    if (toggleSignupBtn) {
+        toggleSignupBtn.addEventListener('click', toggleSignupMode);
+    }
+    if (toggleLoginBtn) {
+        toggleLoginBtn.addEventListener('click', toggleSignupMode);
+    }
+    
+    if (loginBtn) {
+        loginBtn.addEventListener('click', async () => {
+            const username = authUsername.value.trim();
+            const password = authPassword.value;
+            if (!username || !password) {
+                showAuthError('Username and password are required');
+                return;
+            }
+            const success = await login(username, password);
+            if (success) {
+                authUsername.value = '';
+                authPassword.value = '';
+                await fetchTodos();
+                await fetchStats();
+            }
+        });
+    }
+    
+    if (signupBtn) {
+        signupBtn.addEventListener('click', async () => {
+            // If not in signup mode yet, toggle to signup mode first
+            if (!isSignupMode) {
+                toggleSignupMode();
+                return;
+            }
+            
+            // Now in signup mode, proceed with signup
+            const username = authUsername.value.trim();
+            const email = authEmail.value.trim();
+            const password = authPassword.value;
+            if (!username || !email || !password) {
+                showAuthError('Username, email, and password are required');
+                return;
+            }
+            const success = await signup(username, email, password);
+            if (success) {
+                authUsername.value = '';
+                authEmail.value = '';
+                authPassword.value = '';
+                await fetchTodos();
+                await fetchStats();
+            }
+        });
+    }
+    
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+            await logout();
+        });
+    }
+    
+    // Allow Enter key to submit auth forms
+    if (authPassword) {
+        authPassword.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                if (isSignupMode && signupBtn) {
+                    signupBtn.click();
+                } else if (loginBtn) {
+                    loginBtn.click();
+                }
+            }
+        });
+    }
+    
     // Tab switching
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -892,11 +1208,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Initial load
-    fetchTodos();
-    fetchStats();
-    initializePageFromHash();
-
-    // Refresh stats periodically
-    setInterval(fetchStats, 30000);
+    // Initial load (only if authenticated)
+    if (isAuthenticated()) {
+        fetchTodos();
+        fetchStats();
+        initializePageFromHash();
+        
+        // Refresh stats periodically
+        setInterval(fetchStats, 30000);
+    }
 });

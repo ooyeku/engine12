@@ -11,10 +11,36 @@
         <header>
             <h1>{{ .title }}</h1>
             <p class="subtitle">{{ .subtitle }}</p>
+            <div id="auth-section" style="margin-top: 1rem;">
+                <!-- Login/Signup Form (shown when not authenticated) -->
+                <div id="auth-form-container" style="display: none;">
+                    <div style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+                        <div style="display: flex; gap: 0.5rem;">
+                            <input type="text" id="auth-username" placeholder="Username" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                            <input type="email" id="auth-email" placeholder="Email" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; display: none;">
+                            <input type="password" id="auth-password" placeholder="Password" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px;">
+                        </div>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <button id="login-btn" class="btn btn-primary">Log In</button>
+                            <button id="signup-btn" class="btn btn-secondary">Sign Up</button>
+                            <button id="toggle-signup-btn" class="btn btn-secondary" style="display: none;">Switch to Sign Up</button>
+                            <button id="toggle-login-btn" class="btn btn-secondary" style="display: none;">Switch to Log In</button>
+                        </div>
+                    </div>
+                    <div id="auth-error" style="color: red; margin-top: 0.5rem; display: none;"></div>
+                </div>
+                <!-- User Info (shown when authenticated) -->
+                <div id="user-info-container" style="display: none;">
+                    <div style="display: flex; gap: 1rem; align-items: center;">
+                        <span id="user-username" style="font-weight: bold;"></span>
+                        <button id="logout-btn" class="btn btn-secondary">Logout</button>
+                    </div>
+                </div>
+            </div>
         </header>
 
         <!-- Tab Navigation -->
-        <nav class="tab-navigation">
+        <nav class="tab-navigation" id="main-nav" style="display: none;">
             <button class="tab-btn active" data-page="dashboard">Dashboard</button>
             <button class="tab-btn" data-page="active">Active Tasks</button>
             <button class="tab-btn" data-page="completed">Completed</button>
@@ -22,7 +48,7 @@
         </nav>
 
         <!-- Dashboard Page -->
-        <div class="page-container active" data-page="dashboard">
+        <div class="page-container active" data-page="dashboard" id="main-content" style="display: none;">
             <div class="stats-bar">
                 <div class="stat">
                     <span class="stat-label">Total</span>

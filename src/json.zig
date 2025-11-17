@@ -244,26 +244,20 @@ pub const Json = struct {
                 }
             }
 
-            var field_count: usize = 0;
-
-            inline for (std.meta.fields(T)) |field| {
+            // Parse all JSON fields first, then match to struct fields
+            // This allows fields to appear in any order
+            while (true) {
                 self.skipWhitespace();
 
-                if (field_count > 0) {
-                    if (self.pos >= self.input.len or self.input[self.pos] != ',') {
-                        break;
-                    }
-                    self.pos += 1;
-                    self.skipWhitespace();
-                }
-
                 // Check for closing brace
-                if (self.pos < self.input.len and self.input[self.pos] == '}') {
+                if (self.pos >= self.input.len or self.input[self.pos] == '}') {
                     break;
                 }
 
                 // Parse field name
                 const field_name = try self.parseString();
+                defer self.allocator.free(field_name);
+
                 self.skipWhitespace();
 
                 if (self.pos >= self.input.len or self.input[self.pos] != ':') {
@@ -272,17 +266,27 @@ pub const Json = struct {
                 self.pos += 1;
                 self.skipWhitespace();
 
-                // Parse field value if field name matches
-                if (std.mem.eql(u8, field_name, field.name)) {
-                    const field_value = try self.parseFieldValue(field.type);
-                    @field(result, field.name) = field_value;
-                } else {
-                    // Skip this field value
+                // Find matching struct field
+                var found = false;
+                inline for (std.meta.fields(T)) |field| {
+                    if (std.mem.eql(u8, field_name, field.name)) {
+                        const field_value = try self.parseFieldValue(field.type);
+                        @field(result, field.name) = field_value;
+                        found = true;
+                        break;
+                    }
+                }
+
+                // If no matching struct field, skip the value
+                if (!found) {
                     _ = try self.skipValue();
                 }
 
-                self.allocator.free(field_name);
-                field_count += 1;
+                // Check for comma before next field
+                self.skipWhitespace();
+                if (self.pos < self.input.len and self.input[self.pos] == ',') {
+                    self.pos += 1;
+                }
             }
 
             self.skipWhitespace();

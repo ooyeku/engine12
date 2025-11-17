@@ -12,6 +12,7 @@ const ORM = orm.ORM;
 const Model = orm.Model;
 const ModelWithORM = orm.ModelWithORM;
 const Migration = @import("../../orm/migration.zig").Migration;
+const SqlEscape = orm.SqlEscape;
 const jwt = @import("jwt.zig");
 const Claims = jwt.Claims;
 const password = @import("password.zig");
@@ -110,11 +111,9 @@ pub const BasicAuthValve = struct {
         defer registry_mutex.unlock();
         global_registry = self;
 
-        // Register authentication routes
-        try ctx.registerRoute("POST", "/auth/register", Self.handleRegister);
-        try ctx.registerRoute("POST", "/auth/login", Self.handleLogin);
-        try ctx.registerRoute("POST", "/auth/logout", Self.handleLogout);
-        try ctx.registerRoute("GET", "/auth/me", Self.handleGetMe);
+        // Note: Route registration through ctx.registerRoute() is not yet implemented
+        // Routes must be registered directly on the app using app.post(), app.get(), etc.
+        // The handlers (handleRegister, handleLogin, etc.) can be called directly.
 
         // Register authentication middleware
         try ctx.registerMiddleware(&Self.authMiddleware);
@@ -140,26 +139,28 @@ pub const BasicAuthValve = struct {
 
     /// Run database migration to create users table
     fn runMigration(self: *Self, allocator: std.mem.Allocator) !void {
-        const migration = Migration{
-            .version = 1,
-            .name = "create_users_table",
-            .up = try std.fmt.allocPrint(allocator,
-                \\CREATE TABLE IF NOT EXISTS {s} (
-                \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                \\  username TEXT UNIQUE NOT NULL,
-                \\  email TEXT UNIQUE NOT NULL,
-                \\  password_hash TEXT NOT NULL,
-                \\  created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-                \\);
-                \\CREATE INDEX IF NOT EXISTS idx_users_username ON {s}(username);
-                \\CREATE INDEX IF NOT EXISTS idx_users_email ON {s}(email);
-            , .{ self.config.user_table_name, self.config.user_table_name, self.config.user_table_name }),
-            .down = try std.fmt.allocPrint(allocator, "DROP TABLE IF EXISTS {s};", .{self.config.user_table_name}),
-        };
-        defer allocator.free(migration.up);
-        defer allocator.free(migration.down);
+        // Create table directly - simpler and more reliable for built-in valve
+        const create_table_sql = try std.fmt.allocPrint(allocator,
+            \\CREATE TABLE IF NOT EXISTS {s} (
+            \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
+            \\  username TEXT UNIQUE NOT NULL,
+            \\  email TEXT UNIQUE NOT NULL,
+            \\  password_hash TEXT NOT NULL,
+            \\  created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            \\);
+            \\CREATE INDEX IF NOT EXISTS idx_users_username ON {s}(username);
+            \\CREATE INDEX IF NOT EXISTS idx_users_email ON {s}(email);
+        , .{ self.config.user_table_name, self.config.user_table_name, self.config.user_table_name });
+        defer allocator.free(create_table_sql);
 
-        try self.config.orm.runMigrations(&[_]Migration{migration});
+        // Execute the SQL directly
+        self.config.orm.db.execute(create_table_sql) catch |err| {
+            std.debug.print("[BasicAuthValve] Failed to create users table: {}\n", .{err});
+            std.debug.print("[BasicAuthValve] SQL: {s}\n", .{create_table_sql});
+            return err;
+        };
+
+        std.debug.print("[BasicAuthValve] Successfully created users table '{s}'\n", .{self.config.user_table_name});
     }
 
     /// Authentication middleware
@@ -187,7 +188,7 @@ pub const BasicAuthValve = struct {
     }
 
     /// Handle user registration
-    fn handleRegister(req: *Request) Response {
+    pub fn handleRegister(req: *Request) Response {
         const self = Self.getInstance(req) orelse {
             return Response.errorResponse("Authentication valve not initialized", 500);
         };
@@ -227,9 +228,23 @@ pub const BasicAuthValve = struct {
         };
         defer self.config.orm.allocator.free(password_hash);
 
-        // Check if user already exists
-        var all_users = self.user_model.findAll() catch {
+        // Check if user already exists using raw SQL with configured table name
+        const check_sql = std.fmt.allocPrint(
+            allocator,
+            "SELECT * FROM {s}",
+            .{self.config.user_table_name},
+        ) catch {
+            return Response.serverError("Failed to allocate memory");
+        };
+        defer allocator.free(check_sql);
+
+        var check_result = self.config.orm.db.query(check_sql) catch {
             return Response.serverError("Failed to query users");
+        };
+        defer check_result.deinit();
+
+        var all_users = check_result.toArrayList(User) catch {
+            return Response.serverError("Failed to parse user data");
         };
         defer {
             for (all_users.items) |user| {
@@ -254,43 +269,72 @@ pub const BasicAuthValve = struct {
             return Response.serverError("Failed to allocate username");
         };
         errdefer self.config.orm.allocator.free(username_copy);
-        
+
         const email_copy = self.config.orm.allocator.dupe(u8, email) catch {
             self.config.orm.allocator.free(username_copy);
             return Response.serverError("Failed to allocate email");
         };
         errdefer self.config.orm.allocator.free(email_copy);
 
-        // Create user
+        // Create user using raw SQL with configured table name
         const now = std.time.timestamp();
-        const new_user = User{
-            .id = 0, // Will be set by database
-            .username = username_copy,
-            .email = email_copy,
-            .password_hash = password_hash,
-            .created_at = now,
-        };
 
-        const created_user = self.user_model.create(new_user) catch |err| {
+        // Escape strings for SQL
+        const escaped_username = SqlEscape.escapeString(allocator, username_copy) catch {
             self.config.orm.allocator.free(username_copy);
             self.config.orm.allocator.free(email_copy);
-            return switch (err) {
-                error.DuplicateKey => Response.errorResponse("Username or email already exists", 409),
-                else => Response.serverError("Failed to create user"),
-            };
+            return Response.serverError("Failed to escape username");
         };
-        defer {
-            self.config.orm.allocator.free(created_user.username);
-            self.config.orm.allocator.free(created_user.email);
-            self.config.orm.allocator.free(created_user.password_hash);
-        }
+        defer allocator.free(escaped_username);
+        const escaped_email = SqlEscape.escapeString(allocator, email_copy) catch {
+            self.config.orm.allocator.free(username_copy);
+            self.config.orm.allocator.free(email_copy);
+            return Response.serverError("Failed to escape email");
+        };
+        defer allocator.free(escaped_email);
+        const escaped_password_hash = SqlEscape.escapeString(allocator, password_hash) catch {
+            self.config.orm.allocator.free(username_copy);
+            self.config.orm.allocator.free(email_copy);
+            return Response.serverError("Failed to escape password hash");
+        };
+        defer allocator.free(escaped_password_hash);
 
+        const insert_sql = std.fmt.allocPrint(
+            allocator,
+            "INSERT INTO {s} (username, email, password_hash, created_at) VALUES ('{s}', '{s}', '{s}', {d})",
+            .{ self.config.user_table_name, escaped_username, escaped_email, escaped_password_hash, now },
+        ) catch {
+            self.config.orm.allocator.free(username_copy);
+            self.config.orm.allocator.free(email_copy);
+            return Response.serverError("Failed to allocate memory");
+        };
+        defer allocator.free(insert_sql);
+
+        self.config.orm.db.execute(insert_sql) catch {
+            self.config.orm.allocator.free(username_copy);
+            self.config.orm.allocator.free(email_copy);
+            // Check if user already exists (we checked earlier, but handle race condition)
+            return Response.errorResponse("Failed to create user", 500);
+        };
+
+        // Get the created user's ID
+        const user_id = self.config.orm.db.lastInsertRowId() catch {
+            self.config.orm.allocator.free(username_copy);
+            self.config.orm.allocator.free(email_copy);
+            return Response.errorResponse("Failed to get created user ID", 500);
+        };
+
+        std.debug.print("[BasicAuthValve] User created successfully: {s} (id: {d})\n", .{ username_copy, user_id });
+
+        // Return success - user created (frontend will automatically log in)
         return Response.created();
     }
 
     /// Handle user login
-    fn handleLogin(req: *Request) Response {
+    pub fn handleLogin(req: *Request) Response {
+        std.debug.print("[BasicAuthValve] Login request received\n", .{});
         const self = Self.getInstance(req) orelse {
+            std.debug.print("[BasicAuthValve] Valve not initialized\n", .{});
             return Response.errorResponse("Authentication valve not initialized", 500);
         };
 
@@ -298,22 +342,53 @@ pub const BasicAuthValve = struct {
 
         // Parse request body
         const body = req.body();
-        const input = json_module.Json.deserialize(UserInput, body, allocator) catch {
+        std.debug.print("[BasicAuthValve] Login request body: {s}\n", .{body});
+        const input = json_module.Json.deserialize(UserInput, body, allocator) catch |err| {
+            std.debug.print("[BasicAuthValve] Failed to parse login request: {}\n", .{err});
             return Response.errorResponse("Invalid request body", 400);
         };
 
+        std.debug.print("[BasicAuthValve] Parsed input - username: {?s}, email: {?s}, password: {?s}\n", .{ input.username, input.email, input.password });
+
         // Get username/email and password
         const username_or_email = input.username orelse input.email orelse {
+            std.debug.print("[BasicAuthValve] Missing username/email\n", .{});
             return Response.errorResponse("Username or email is required", 400);
         };
         const pwd = input.password orelse {
+            std.debug.print("[BasicAuthValve] Missing password - input.password is null\n", .{});
             return Response.errorResponse("Password is required", 400);
         };
 
-        // Find user by username or email
-        var all_users = self.user_model.findAll() catch {
+        std.debug.print("[BasicAuthValve] Looking up user: {s}\n", .{username_or_email});
+
+        // Find user by username or email using raw SQL with configured table name
+        const find_sql = std.fmt.allocPrint(
+            allocator,
+            "SELECT * FROM {s}",
+            .{self.config.user_table_name},
+        ) catch |err| {
+            std.debug.print("[BasicAuthValve] Failed to allocate SQL: {}\n", .{err});
+            return Response.serverError("Failed to allocate memory");
+        };
+        defer allocator.free(find_sql);
+
+        std.debug.print("[BasicAuthValve] Executing query: {s}\n", .{find_sql});
+
+        var find_result = self.config.orm.db.query(find_sql) catch |err| {
+            std.debug.print("[BasicAuthValve] Query failed: {}\n", .{err});
             return Response.serverError("Failed to query users");
         };
+        defer find_result.deinit();
+
+        std.debug.print("[BasicAuthValve] Query executed successfully\n", .{});
+
+        var all_users = find_result.toArrayList(User) catch |err| {
+            std.debug.print("[BasicAuthValve] Failed to parse user data: {}\n", .{err});
+            return Response.serverError("Failed to parse user data");
+        };
+
+        std.debug.print("[BasicAuthValve] Found {d} users in database\n", .{all_users.items.len});
         defer {
             for (all_users.items) |user| {
                 self.config.orm.allocator.free(user.username);
@@ -324,51 +399,73 @@ pub const BasicAuthValve = struct {
         }
 
         var found_user: ?User = null;
-        for (all_users.items) |user| {
+        var found_user_index: ?usize = null;
+        for (all_users.items, 0..) |user, i| {
             if (std.mem.eql(u8, user.username, username_or_email) or std.mem.eql(u8, user.email, username_or_email)) {
                 found_user = user;
+                found_user_index = i;
                 break;
             }
         }
 
         const user = found_user orelse {
+            std.debug.print("[BasicAuthValve] User not found: {s}\n", .{username_or_email});
             return Response.errorResponse("Invalid username or password", 401);
         };
-        defer {
-            self.config.orm.allocator.free(user.username);
-            self.config.orm.allocator.free(user.email);
-            self.config.orm.allocator.free(user.password_hash);
-        }
+
+        std.debug.print("[BasicAuthValve] User found: {s} (id: {d})\n", .{ user.username, user.id });
+
+        // Copy user data we need before all_users is freed
+        const user_id = user.id;
+        const user_username = allocator.dupe(u8, user.username) catch {
+            return Response.serverError("Failed to allocate username");
+        };
+        defer allocator.free(user_username);
+        const user_email = allocator.dupe(u8, user.email) catch {
+            return Response.serverError("Failed to allocate email");
+        };
+        defer allocator.free(user_email);
+        const user_password_hash = allocator.dupe(u8, user.password_hash) catch {
+            return Response.serverError("Failed to allocate password hash");
+        };
+        defer allocator.free(user_password_hash);
 
         // Verify password
-        if (!password.verify(pwd, user.password_hash)) {
+        const password_valid = password.verify(pwd, user_password_hash);
+        if (!password_valid) {
+            std.debug.print("[BasicAuthValve] Password verification failed for user: {s}\n", .{user_username});
             return Response.errorResponse("Invalid username or password", 401);
         }
+
+        std.debug.print("[BasicAuthValve] Password verified successfully for user: {s}\n", .{user_username});
 
         // Generate JWT token
         const now = std.time.timestamp();
         const claims = Claims{
-            .user_id = user.id,
-            .username = user.username,
+            .user_id = user_id,
+            .username = user_username,
             .exp = now + self.config.token_expiry_seconds,
         };
 
-        const token = jwt.encode(claims, self.config.secret_key, allocator) catch {
+        const token = jwt.encode(claims, self.config.secret_key, allocator) catch |err| {
+            std.debug.print("[BasicAuthValve] Failed to generate token: {}\n", .{err});
             return Response.serverError("Failed to generate token");
         };
         defer allocator.free(token);
+
+        std.debug.print("[BasicAuthValve] Generated token successfully for user: {s}\n", .{user_username});
 
         // Copy token to persistent memory for response
         const persistent_token = std.heap.page_allocator.dupe(u8, token) catch {
             return Response.serverError("Failed to allocate token");
         };
 
-        // Copy username and email to persistent memory
-        const persistent_username = std.heap.page_allocator.dupe(u8, user.username) catch {
+        // Copy username and email to persistent memory (already copied above, but need persistent versions)
+        const persistent_username = std.heap.page_allocator.dupe(u8, user_username) catch {
             std.heap.page_allocator.free(persistent_token);
             return Response.serverError("Failed to allocate username");
         };
-        const persistent_email = std.heap.page_allocator.dupe(u8, user.email) catch {
+        const persistent_email = std.heap.page_allocator.dupe(u8, user_email) catch {
             std.heap.page_allocator.free(persistent_token);
             std.heap.page_allocator.free(persistent_username);
             return Response.serverError("Failed to allocate email");
@@ -379,20 +476,23 @@ pub const BasicAuthValve = struct {
             .token = persistent_token,
             .expires_in = self.config.token_expiry_seconds,
             .user = .{
-                .id = user.id,
+                .id = user_id,
                 .username = persistent_username,
                 .email = persistent_email,
             },
         };
 
         // Serialize to JSON (need to copy to persistent memory)
-        const json_str = json_module.Json.serialize(LoginResponse, login_response, allocator) catch {
+        const json_str = json_module.Json.serialize(LoginResponse, login_response, allocator) catch |err| {
+            std.debug.print("[BasicAuthValve] Failed to serialize login response: {}\n", .{err});
             std.heap.page_allocator.free(persistent_token);
             std.heap.page_allocator.free(persistent_username);
             std.heap.page_allocator.free(persistent_email);
             return Response.serverError("Failed to serialize response");
         };
         defer allocator.free(json_str);
+
+        std.debug.print("[BasicAuthValve] Login response JSON: {s}\n", .{json_str});
 
         const persistent_json = std.heap.page_allocator.dupe(u8, json_str) catch {
             std.heap.page_allocator.free(persistent_token);
@@ -405,7 +505,7 @@ pub const BasicAuthValve = struct {
     }
 
     /// Handle logout
-    fn handleLogout(req: *Request) Response {
+    pub fn handleLogout(req: *Request) Response {
         _ = req;
         // JWT tokens are stateless, so logout is just a success response
         // In a real implementation, you might want to maintain a token blacklist
@@ -413,7 +513,7 @@ pub const BasicAuthValve = struct {
     }
 
     /// Handle get current user
-    fn handleGetMe(req: *Request) Response {
+    pub fn handleGetMe(req: *Request) Response {
         const self = Self.getInstance(req) orelse {
             return Response.errorResponse("Authentication valve not initialized", 500);
         };
@@ -494,4 +594,3 @@ pub const BasicAuthValve = struct {
         return global_registry;
     }
 };
-
