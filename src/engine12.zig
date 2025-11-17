@@ -14,6 +14,8 @@ const metrics = @import("metrics.zig");
 const rate_limit = @import("rate_limit.zig");
 const cache = @import("cache.zig");
 const dev_tools = @import("dev_tools.zig");
+const valve_registry_mod = @import("valve/registry.zig");
+const valve_mod = @import("valve/valve.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -33,7 +35,7 @@ fn generateRequestId(alloc: std.mem.Allocator) ![]const u8 {
 
 /// Global middleware pointer (thread-local for thread safety)
 /// This is set when routes are registered and accessed at runtime
-/// 
+///
 /// Thread Safety:
 /// - This pointer is set once per route registration and read-only during request handling
 /// - Each request handler runs in its own thread context
@@ -42,7 +44,7 @@ var global_middleware: ?*const middleware_chain.MiddlewareChain = null;
 
 /// Global metrics collector pointer
 /// This is set when routes are registered and accessed at runtime
-/// 
+///
 /// Thread Safety:
 /// - Metrics operations use internal thread-safe mechanisms
 /// - Multiple threads can safely increment counters concurrently
@@ -50,7 +52,7 @@ pub var global_metrics: ?*metrics.MetricsCollector = null;
 
 /// Global rate limiter pointer
 /// This is set when routes are registered and accessed at runtime
-/// 
+///
 /// Thread Safety:
 /// - Rate limiter uses internal mutex for thread-safe access
 /// - Multiple threads can safely check rate limits concurrently
@@ -58,7 +60,7 @@ pub var global_rate_limiter: ?*rate_limit.RateLimiter = null;
 
 /// Global cache pointer
 /// This is set when routes are registered and accessed at runtime
-/// 
+///
 /// Thread Safety:
 /// - Cache uses internal mutex for thread-safe access
 /// - Multiple threads can safely read/write cache entries concurrently
@@ -66,7 +68,7 @@ pub var global_cache: ?*cache.ResponseCache = null;
 
 /// Global error handler registry pointer
 /// This is set when Engine12 is initialized and accessed at runtime
-/// 
+///
 /// Thread Safety:
 /// - Error handler registry is read-only after initialization
 /// - No mutex needed as handlers are immutable function pointers
@@ -211,12 +213,15 @@ pub const Engine12 = struct {
     // Logger
     logger: dev_tools.Logger,
 
+    // Valve Registry
+    valve_registry: ?valve_registry_mod.ValveRegistry = null,
+
     // Lifecycle
     supervisor: ?*anyopaque = null,
     http_server: ?*anyopaque = null,
 
     pub fn initWithProfile(profile: types.ServerProfile) !Engine12 {
-        var app = Engine12{
+        const app = Engine12{
             .allocator = allocator,
             .profile = profile,
             .middleware = middleware_chain.MiddlewareChain{},
@@ -224,8 +229,6 @@ pub const Engine12 = struct {
             .metrics_collector = metrics.MetricsCollector.init(allocator),
             .logger = dev_tools.Logger.fromEnvironment(allocator, profile.environment),
         };
-        // Set global error handler registry for access in wrapHandler
-        global_error_handler = &app.error_handler_registry;
         return app;
     }
 
@@ -247,6 +250,55 @@ pub const Engine12 = struct {
     /// Clean up server resources
     pub fn deinit(self: *Engine12) void {
         self.is_running = false;
+
+        // Cleanup valve registry
+        if (self.valve_registry) |*registry| {
+            registry.deinit();
+            self.valve_registry = null;
+        }
+    }
+
+    /// Register a valve with this Engine12 instance
+    /// Valves provide isolated services that integrate with Engine12 runtime
+    ///
+    /// Example:
+    /// ```zig
+    /// var auth_valve = AuthValve.init(...);
+    /// try app.registerValve(&auth_valve.valve);
+    /// ```
+    pub fn registerValve(self: *Engine12, valve_ptr: *valve_mod.Valve) !void {
+        // Initialize registry if needed
+        if (self.valve_registry == null) {
+            self.valve_registry = valve_registry_mod.ValveRegistry.init(self.allocator);
+        }
+
+        // Register valve
+        if (self.valve_registry) |*registry| {
+            try registry.register(valve_ptr, self);
+        }
+    }
+
+    /// Unregister a valve by name
+    ///
+    /// Example:
+    /// ```zig
+    /// try app.unregisterValve("auth");
+    /// ```
+    pub fn unregisterValve(self: *Engine12, name: []const u8) !void {
+        if (self.valve_registry) |*registry| {
+            try registry.unregister(name);
+        } else {
+            return valve_mod.ValveError.ValveNotFound;
+        }
+    }
+
+    /// Get the valve registry instance
+    /// Returns null if no valves are registered
+    pub fn getValveRegistry(self: *Engine12) ?*valve_registry_mod.ValveRegistry {
+        if (self.valve_registry) |*registry| {
+            return registry;
+        }
+        return null;
     }
 
     /// Register a GET endpoint
@@ -785,11 +837,23 @@ pub const Engine12 = struct {
 
         try self.startHttpServer();
         try self.startBackgroundTasks();
+
+        // Call onAppStart for all registered valves
+        if (self.valve_registry) |*registry| {
+            registry.onAppStart() catch |err| {
+                std.debug.print("[Valve] Error during valve onAppStart: {}\n", .{err});
+            };
+        }
     }
 
     /// Stop the entire system gracefully
     pub fn stop(self: *Engine12) !void {
         std.debug.print("\n[System] Initiating graceful shutdown...\n", .{});
+
+        // Call onAppStop for all registered valves
+        if (self.valve_registry) |*registry| {
+            registry.onAppStop();
+        }
 
         try self.stopHttpServer();
         try self.stopBackgroundTasks();
@@ -1083,6 +1147,108 @@ test "Engine12 useResponseMiddleware sets middleware" {
     defer app.deinit();
     app.useResponseMiddleware(&testDummyResponseMiddleware);
     try std.testing.expect(app.response_middleware != null);
+}
+
+test "Engine12 registerValve" {
+    var app = try Engine12.initTesting();
+    defer app.deinit();
+
+    const TestValve = struct {
+        valve: valve_mod.Valve,
+        init_called: bool = false,
+
+        pub fn initFn(v: *valve_mod.Valve, ctx: *valve_registry_mod.context.ValveContext) !void {
+            const Self = @This();
+            const offset = @offsetOf(Self, "valve");
+            const addr = @intFromPtr(v) - offset;
+            const self = @as(*Self, @ptrFromInt(addr));
+            self.init_called = true;
+            _ = ctx;
+        }
+
+        pub fn deinitFn(v: *valve_mod.Valve) void {
+            _ = v;
+        }
+    };
+
+    var test_valve = TestValve{
+        .valve = valve_mod.Valve{
+            .metadata = valve_mod.ValveMetadata{
+                .name = "test",
+                .version = "1.0.0",
+                .description = "Test",
+                .author = "Test",
+                .required_capabilities = &[_]valve_mod.ValveCapability{},
+            },
+            .init = &TestValve.initFn,
+            .deinit = &TestValve.deinitFn,
+        },
+    };
+
+    try app.registerValve(&test_valve.valve);
+    try std.testing.expect(test_valve.init_called);
+    try std.testing.expect(app.valve_registry != null);
+}
+
+test "Engine12 valve lifecycle hooks" {
+    var app = try Engine12.initTesting();
+    defer app.deinit();
+
+    var on_start_called = false;
+    var on_stop_called = false;
+
+    const TestValve = struct {
+        valve: valve_mod.Valve,
+        on_start_called: *bool,
+        on_stop_called: *bool,
+
+        pub fn initFn(_: *valve_mod.Valve, _: *valve_registry_mod.context.ValveContext) !void {}
+        pub fn deinitFn(_: *valve_mod.Valve) void {}
+
+        pub fn onStartFn(v: *valve_mod.Valve, _: *valve_registry_mod.context.ValveContext) !void {
+            const Self = @This();
+            const offset = @offsetOf(Self, "valve");
+            const addr = @intFromPtr(v) - offset;
+            const self = @as(*Self, @ptrFromInt(addr));
+            self.on_start_called.* = true;
+        }
+
+        pub fn onStopFn(v: *valve_mod.Valve, _: *valve_registry_mod.context.ValveContext) void {
+            const Self = @This();
+            const offset = @offsetOf(Self, "valve");
+            const addr = @intFromPtr(v) - offset;
+            const self = @as(*Self, @ptrFromInt(addr));
+            self.on_stop_called.* = true;
+        }
+    };
+
+    var test_valve = TestValve{
+        .valve = valve_mod.Valve{
+            .metadata = valve_mod.ValveMetadata{
+                .name = "lifecycle_test",
+                .version = "1.0.0",
+                .description = "Test",
+                .author = "Test",
+                .required_capabilities = &[_]valve_mod.ValveCapability{},
+            },
+            .init = &TestValve.initFn,
+            .deinit = &TestValve.deinitFn,
+            .onAppStart = &TestValve.onStartFn,
+            .onAppStop = &TestValve.onStopFn,
+        },
+        .on_start_called = &on_start_called,
+        .on_stop_called = &on_stop_called,
+    };
+
+    try app.registerValve(&test_valve.valve);
+
+    // Simulate app start
+    try app.start();
+    try std.testing.expect(on_start_called);
+
+    // Simulate app stop
+    try app.stop();
+    try std.testing.expect(on_stop_called);
 }
 
 // Static file registry for runtime dispatch

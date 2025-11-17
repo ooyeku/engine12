@@ -212,7 +212,7 @@ pub const Json = struct {
         fn parseStruct(self: *Parser, comptime T: type) !T {
             self.skipWhitespace();
             if (self.pos >= self.input.len or self.input[self.pos] != '{') {
-                std.debug.print("[JSON Parser Error] Expected '{' at start of struct\n", .{});
+                std.debug.print("[JSON Parser Error] Expected '{{' at start of struct\n", .{});
                 std.debug.print("  Input: {s}\n", .{self.input});
                 std.debug.print("  Position: {d}\n", .{self.pos});
                 if (self.pos < self.input.len) {
@@ -287,7 +287,7 @@ pub const Json = struct {
 
             self.skipWhitespace();
             if (self.pos >= self.input.len or self.input[self.pos] != '}') {
-                std.debug.print("[JSON Parser Error] Expected '}' at end of struct\n", .{});
+                std.debug.print("[JSON Parser Error] Expected '}}' at end of struct\n", .{});
                 std.debug.print("  Input: {s}\n", .{self.input});
                 std.debug.print("  Position: {d}\n", .{self.pos});
                 return error.InvalidJson;
@@ -344,7 +344,7 @@ pub const Json = struct {
         fn parseString(self: *Parser) ![]const u8 {
             self.skipWhitespace();
             if (self.pos >= self.input.len or self.input[self.pos] != '"') {
-                std.debug.print("[JSON Parser Error] Expected '\"' at start of string\n", .{});
+                std.debug.print("[JSON Parser Error] Expected '\\\"' at start of string\n", .{});
                 std.debug.print("  Input: {s}\n", .{self.input});
                 std.debug.print("  Position: {d}\n", .{self.pos});
                 return error.InvalidJson;

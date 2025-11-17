@@ -37,6 +37,21 @@ const Todo = struct {
     updated_at: i64,
 };
 
+// Model wrappers for Todo
+const TodoModel = E12.orm.Model(Todo);
+const TodoModelORM = E12.orm.ModelWithORM(Todo);
+const TodoStatsModel = E12.orm.ModelStats(Todo, TodoStats);
+
+// Input struct for JSON parsing (matches what parseTodoFromJson returned)
+const TodoInput = struct {
+    title: ?[]const u8,
+    description: ?[]const u8,
+    completed: ?bool,
+    priority: ?[]const u8,
+    due_date: ?i64,
+    tags: ?[]const u8,
+};
+
 var global_db: ?Database = null;
 var global_orm: ?ORM = null;
 var db_mutex: std.Thread.Mutex = .{};
@@ -196,59 +211,15 @@ fn createTodo(orm: *ORM, title: []const u8, description: []const u8, priority: [
 }
 
 fn findTodoById(orm: *ORM, id: i64) !?Todo {
-    var find_result = try orm.findManaged(Todo, id);
-    if (find_result) |*result| {
-        defer result.deinit();
-        if (result.first()) |todo| {
-            // Return a copy with allocated strings
-            return Todo{
-                .id = todo.id,
-                .title = try allocator.dupe(u8, todo.title),
-                .description = try allocator.dupe(u8, todo.description),
-                .completed = todo.completed,
-                .priority = try allocator.dupe(u8, todo.priority),
-                .due_date = todo.due_date,
-                .tags = try allocator.dupe(u8, todo.tags),
-                .created_at = todo.created_at,
-                .updated_at = todo.updated_at,
-            };
-        }
-    }
-    return null;
+    // Use ModelWithORM for automatic memory management
+    var model = TodoModelORM.init(orm);
+    return try model.find(id);
 }
 
 fn getAllTodos(orm: *ORM) !std.ArrayListUnmanaged(Todo) {
-    // Keep the old API for backward compatibility, but use managed internally
-    var result = try orm.findAllManaged(Todo);
-    defer result.deinit();
-
-    // Copy items to a new ArrayListUnmanaged with allocated strings
-    var todos = std.ArrayListUnmanaged(Todo){};
-    errdefer {
-        for (todos.items) |todo| {
-            allocator.free(todo.title);
-            allocator.free(todo.description);
-            allocator.free(todo.priority);
-            allocator.free(todo.tags);
-        }
-        todos.deinit(allocator);
-    }
-
-    for (result.getItems()) |todo| {
-        try todos.append(allocator, Todo{
-            .id = todo.id,
-            .title = try allocator.dupe(u8, todo.title),
-            .description = try allocator.dupe(u8, todo.description),
-            .completed = todo.completed,
-            .priority = try allocator.dupe(u8, todo.priority),
-            .due_date = todo.due_date,
-            .tags = try allocator.dupe(u8, todo.tags),
-            .created_at = todo.created_at,
-            .updated_at = todo.updated_at,
-        });
-    }
-
-    return todos;
+    // Use ModelWithORM for automatic memory management
+    var model = TodoModelORM.init(orm);
+    return try model.findAll();
 }
 
 fn updateTodo(orm: *ORM, id: i64, updates: struct {
@@ -259,32 +230,12 @@ fn updateTodo(orm: *ORM, id: i64, updates: struct {
     due_date: ?i64 = null,
     tags: ?[]const u8 = null,
 }) !?Todo {
-    // Use managed find to avoid manual cleanup
-    const existing_result = try orm.findManaged(Todo, id);
-    if (existing_result == null) return null;
+    // Use ModelWithORM to find existing record
+    var model = TodoModelORM.init(orm);
+    const existing = try model.find(id);
+    if (existing == null) return null;
 
-    var todo: Todo = undefined;
-    {
-        var result = existing_result.?;
-        defer result.deinit();
-        if (result.first()) |t| {
-            // Copy strings before result is deinitialized
-            todo = Todo{
-                .id = t.id,
-                .title = try allocator.dupe(u8, t.title),
-                .description = try allocator.dupe(u8, t.description),
-                .completed = t.completed,
-                .priority = try allocator.dupe(u8, t.priority),
-                .due_date = t.due_date,
-                .tags = try allocator.dupe(u8, t.tags),
-                .created_at = t.created_at,
-                .updated_at = t.updated_at,
-            };
-        } else {
-            return null;
-        }
-    }
-
+    var todo = existing.?;
     defer {
         allocator.free(todo.title);
         allocator.free(todo.description);
@@ -292,7 +243,7 @@ fn updateTodo(orm: *ORM, id: i64, updates: struct {
         allocator.free(todo.tags);
     }
 
-    // Update fields
+    // Merge updates into existing todo
     if (updates.title) |title| {
         allocator.free(todo.title);
         todo.title = try allocator.dupe(u8, title);
@@ -323,220 +274,57 @@ fn updateTodo(orm: *ORM, id: i64, updates: struct {
 
     todo.updated_at = std.time.milliTimestamp();
 
-    // Update in database
-    try orm.update(Todo, todo);
-
-    // Return a copy with allocated strings
-    return Todo{
-        .id = todo.id,
-        .title = try allocator.dupe(u8, todo.title),
-        .description = try allocator.dupe(u8, todo.description),
-        .completed = todo.completed,
-        .priority = try allocator.dupe(u8, todo.priority),
-        .due_date = todo.due_date,
-        .tags = try allocator.dupe(u8, todo.tags),
-        .created_at = todo.created_at,
-        .updated_at = todo.updated_at,
-    };
+    // Use ModelWithORM.update which handles memory management
+    return try model.update(id, todo);
 }
 
 fn deleteTodo(orm: *ORM, id: i64) !bool {
-    // Use managed find to avoid manual cleanup
-    var existing_result = try orm.findManaged(Todo, id);
-    if (existing_result == null) return false;
-
-    // Result will be automatically cleaned up when it goes out of scope
-    defer if (existing_result) |*result| result.deinit();
-
-    try orm.delete(Todo, id);
-    return true;
+    // Use ModelWithORM for automatic memory management
+    var model = TodoModelORM.init(orm);
+    return try model.delete(id);
 }
 
 fn getStats(orm: *ORM) !TodoStats {
-    var all_todos_result = try orm.findAllManaged(Todo);
-    defer all_todos_result.deinit();
+    // Use ModelStats.calculate for automatic data fetching
+    var stats_model = TodoStatsModel.init(orm);
+    return try stats_model.calculate(struct {
+        fn calc(items: []const Todo, alloc: std.mem.Allocator) anyerror!TodoStats {
+            _ = alloc;
+            var total: u32 = 0;
+            var completed: u32 = 0;
+            var overdue: u32 = 0;
+            const now = std.time.milliTimestamp();
 
-    const all_todos = all_todos_result.getItems();
-
-    var total: u32 = 0;
-    var completed: u32 = 0;
-    var overdue: u32 = 0;
-    const now = std.time.milliTimestamp();
-
-    for (all_todos) |todo| {
-        total += 1;
-        if (todo.completed) {
-            completed += 1;
-        } else if (todo.due_date) |due_date| {
-            if (due_date < now) {
-                overdue += 1;
-            }
-        }
-    }
-
-    const pending = total - completed;
-    const completed_percentage = if (total > 0)
-        (@as(f32, @floatFromInt(completed)) / @as(f32, @floatFromInt(total))) * 100.0
-    else
-        0.0;
-
-    return TodoStats{
-        .total = total,
-        .completed = completed,
-        .pending = pending,
-        .completed_percentage = completed_percentage,
-        .overdue = overdue,
-    };
-}
-
-// ============================================================================
-// JSON UTILITIES
-// ============================================================================
-
-fn formatTodoJson(todo: Todo, alloc: std.mem.Allocator) ![]const u8 {
-    var list = std.ArrayListUnmanaged(u8){};
-    defer list.deinit(alloc);
-
-    const due_date_str = if (todo.due_date) |dd| try std.fmt.allocPrint(alloc, "{}", .{dd}) else try alloc.dupe(u8, "null");
-    defer alloc.free(due_date_str);
-
-    try list.writer(alloc).print(
-        \\{{"id":{},"title":"{s}","description":"{s}","completed":{},"priority":"{s}","due_date":{s},"tags":"{s}","created_at":{},"updated_at":{}}}
-    , .{ todo.id, todo.title, todo.description, todo.completed, todo.priority, due_date_str, todo.tags, todo.created_at, todo.updated_at });
-
-    return list.toOwnedSlice(alloc);
-}
-
-fn formatTodoListJson(todos: std.ArrayListUnmanaged(Todo), alloc: std.mem.Allocator) ![]const u8 {
-    var list = std.ArrayListUnmanaged(u8){};
-    defer list.deinit(alloc);
-
-    try list.writer(alloc).print("[", .{});
-
-    for (todos.items, 0..) |todo, i| {
-        if (i > 0) {
-            try list.writer(alloc).print(",", .{});
-        }
-        const todo_json = try formatTodoJson(todo, alloc);
-        defer alloc.free(todo_json);
-        try list.writer(alloc).print("{s}", .{todo_json});
-    }
-
-    try list.writer(alloc).print("]", .{});
-    return list.toOwnedSlice(alloc);
-}
-
-fn formatStatsJson(stats: TodoStats, alloc: std.mem.Allocator) ![]const u8 {
-    var list = std.ArrayListUnmanaged(u8){};
-    defer list.deinit(alloc);
-
-    try list.writer(alloc).print(
-        \\{{"total":{},"completed":{},"pending":{},"completed_percentage":{d:.2},"overdue":{}}}
-    , .{ stats.total, stats.completed, stats.pending, stats.completed_percentage, stats.overdue });
-
-    return list.toOwnedSlice(alloc);
-}
-
-fn parseTodoFromJson(json_str: []const u8, alloc: std.mem.Allocator) !struct {
-    title: []const u8,
-    description: []const u8,
-    completed: ?bool,
-    priority: ?[]const u8,
-    due_date: ?i64,
-    tags: ?[]const u8,
-} {
-    var title: ?[]const u8 = null;
-    var description: ?[]const u8 = null;
-    var completed: ?bool = null;
-    var priority: ?[]const u8 = null;
-    var due_date: ?i64 = null;
-    var tags: ?[]const u8 = null;
-
-    var i: usize = 0;
-    while (i < json_str.len) {
-        if (std.mem.indexOf(u8, json_str[i..], "\"title\"") != null) {
-            const title_start = std.mem.indexOf(u8, json_str[i..], "\"title\"") orelse break;
-            const colon = std.mem.indexOf(u8, json_str[i + title_start ..], ":") orelse break;
-            const quote_start = std.mem.indexOf(u8, json_str[i + title_start + colon ..], "\"") orelse break;
-            const val_start = i + title_start + colon + quote_start + 1;
-            const quote_end = std.mem.indexOf(u8, json_str[val_start..], "\"") orelse break;
-            title = try alloc.dupe(u8, json_str[val_start .. val_start + quote_end]);
-            i = val_start + quote_end;
-        } else if (std.mem.indexOf(u8, json_str[i..], "\"description\"") != null) {
-            const desc_start = std.mem.indexOf(u8, json_str[i..], "\"description\"") orelse break;
-            const colon = std.mem.indexOf(u8, json_str[i + desc_start ..], ":") orelse break;
-            const quote_start = std.mem.indexOf(u8, json_str[i + desc_start + colon ..], "\"") orelse break;
-            const val_start = i + desc_start + colon + quote_start + 1;
-            const quote_end = std.mem.indexOf(u8, json_str[val_start..], "\"") orelse break;
-            description = try alloc.dupe(u8, json_str[val_start .. val_start + quote_end]);
-            i = val_start + quote_end;
-        } else if (std.mem.indexOf(u8, json_str[i..], "\"completed\"") != null) {
-            const comp_start = std.mem.indexOf(u8, json_str[i..], "\"completed\"") orelse break;
-            const colon = std.mem.indexOf(u8, json_str[i + comp_start ..], ":") orelse break;
-            const val_start = i + comp_start + colon + 1;
-            if (std.mem.startsWith(u8, json_str[val_start..], "true")) {
-                completed = true;
-                i = val_start + 4;
-            } else if (std.mem.startsWith(u8, json_str[val_start..], "false")) {
-                completed = false;
-                i = val_start + 5;
-            } else {
-                break;
-            }
-        } else if (std.mem.indexOf(u8, json_str[i..], "\"priority\"") != null) {
-            const priority_start = std.mem.indexOf(u8, json_str[i..], "\"priority\"") orelse break;
-            const colon = std.mem.indexOf(u8, json_str[i + priority_start ..], ":") orelse break;
-            const quote_start = std.mem.indexOf(u8, json_str[i + priority_start + colon ..], "\"") orelse break;
-            const val_start = i + priority_start + colon + quote_start + 1;
-            const quote_end = std.mem.indexOf(u8, json_str[val_start..], "\"") orelse break;
-            priority = try alloc.dupe(u8, json_str[val_start .. val_start + quote_end]);
-            i = val_start + quote_end;
-        } else if (std.mem.indexOf(u8, json_str[i..], "\"due_date\"") != null) {
-            const due_start = std.mem.indexOf(u8, json_str[i..], "\"due_date\"") orelse break;
-            const colon = std.mem.indexOf(u8, json_str[i + due_start ..], ":") orelse break;
-            const val_start = i + due_start + colon + 1;
-            // Skip whitespace
-            var j = val_start;
-            while (j < json_str.len and (json_str[j] == ' ' or json_str[j] == '\t')) j += 1;
-            if (std.mem.startsWith(u8, json_str[j..], "null")) {
-                due_date = null;
-                i = j + 4;
-            } else {
-                // Parse number
-                var num_end = j;
-                while (num_end < json_str.len and json_str[num_end] >= '0' and json_str[num_end] <= '9') {
-                    num_end += 1;
-                }
-                if (num_end > j) {
-                    const num_str = json_str[j..num_end];
-                    due_date = try std.fmt.parseInt(i64, num_str, 10);
-                    i = num_end;
-                } else {
-                    break;
+            for (items) |todo| {
+                total += 1;
+                if (todo.completed) {
+                    completed += 1;
+                } else if (todo.due_date) |due_date| {
+                    if (due_date < now) {
+                        overdue += 1;
+                    }
                 }
             }
-        } else if (std.mem.indexOf(u8, json_str[i..], "\"tags\"") != null) {
-            const tags_start = std.mem.indexOf(u8, json_str[i..], "\"tags\"") orelse break;
-            const colon = std.mem.indexOf(u8, json_str[i + tags_start ..], ":") orelse break;
-            const quote_start = std.mem.indexOf(u8, json_str[i + tags_start + colon ..], "\"") orelse break;
-            const val_start = i + tags_start + colon + quote_start + 1;
-            const quote_end = std.mem.indexOf(u8, json_str[val_start..], "\"") orelse break;
-            tags = try alloc.dupe(u8, json_str[val_start .. val_start + quote_end]);
-            i = val_start + quote_end;
-        } else {
-            i += 1;
-        }
-    }
 
-    return .{
-        .title = title orelse "",
-        .description = description orelse "",
-        .completed = completed,
-        .priority = priority,
-        .due_date = due_date,
-        .tags = tags,
-    };
+            const pending = total - completed;
+            const completed_percentage = if (total > 0)
+                (@as(f32, @floatFromInt(completed)) / @as(f32, @floatFromInt(total))) * 100.0
+            else
+                0.0;
+
+            return TodoStats{
+                .total = total,
+                .completed = completed,
+                .pending = pending,
+                .completed_percentage = completed_percentage,
+                .overdue = overdue,
+            };
+        }
+    }.calc);
 }
+
+// JSON utilities are now provided by Model abstraction
+// Use TodoModel.toJson(), TodoModel.toResponse(), etc.
 
 fn handleIndex(request: *Request) Response {
     _ = request;
@@ -601,7 +389,9 @@ fn handleGetTodos(request: *Request) Response {
         return Response.serverError("Database not initialized");
     };
 
-    var todos = getAllTodos(orm) catch {
+    // Use ModelWithORM directly for cleaner code
+    var model = TodoModelORM.init(orm);
+    var todos = model.findAll() catch {
         return Response.serverError("Failed to fetch todos");
     };
     defer {
@@ -614,16 +404,17 @@ fn handleGetTodos(request: *Request) Response {
         todos.deinit(allocator);
     }
 
-    const json = formatTodoListJson(todos, allocator) catch {
-        return Response.serverError("Failed to format todos");
+    // Use Model to create response
+    const response = TodoModel.toResponseList(todos, allocator);
+
+    // Cache the result for 30 seconds - need to serialize for cache
+    const json = TodoModel.toJsonList(todos, allocator) catch {
+        return response;
     };
     defer allocator.free(json);
-
-    // Cache the result for 30 seconds
     request.cacheSet(cache_key, json, 30000, "application/json") catch {};
 
-    return Response.json(json)
-        .withHeader("X-Cache", "MISS");
+    return response.withHeader("X-Cache", "MISS");
 }
 
 fn handleGetTodo(request: *Request) Response {
@@ -635,7 +426,9 @@ fn handleGetTodo(request: *Request) Response {
         return Response.serverError("Database not initialized");
     };
 
-    const todo = findTodoById(orm, id) catch {
+    // Use ModelWithORM directly
+    var model = TodoModelORM.init(orm);
+    const todo = model.find(id) catch {
         return Response.serverError("Failed to fetch todo");
     };
 
@@ -649,33 +442,26 @@ fn handleGetTodo(request: *Request) Response {
         allocator.free(found.tags);
     }
 
-    const json = formatTodoJson(found, allocator) catch {
-        return Response.serverError("Failed to format todo");
-    };
-    defer allocator.free(json);
-    return Response.json(json)
+    return TodoModel.toResponse(found, allocator)
         .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
         .withHeader("Pragma", "no-cache")
         .withHeader("Expires", "0");
 }
 
 fn handleCreateTodo(request: *Request) Response {
-    const parsed = parseTodoFromJson(request.body(), allocator) catch {
+    const parsed = request.jsonBody(TodoInput) catch {
         return Response.errorResponse("Invalid JSON", 400);
     };
-    defer {
-        if (parsed.title.len > 0) allocator.free(parsed.title);
-        if (parsed.description.len > 0) allocator.free(parsed.description);
-        if (parsed.priority) |p| allocator.free(p);
-        if (parsed.tags) |t| allocator.free(t);
-    }
+    // Note: parsed strings are allocated with request.arena.allocator()
+    // They will be automatically freed when the request ends, so no manual cleanup needed
 
     // Use validation framework
     var schema = validation.ValidationSchema.init(request.arena.allocator());
     defer schema.deinit();
 
     // Validate title (required, max 200 chars)
-    const title_validator = schema.field("title", parsed.title) catch {
+    const title_for_validation = parsed.title orelse "";
+    const title_validator = schema.field("title", title_for_validation) catch {
         return Response.serverError("Validation error");
     };
     title_validator.rule(validation.required) catch {
@@ -686,13 +472,15 @@ fn handleCreateTodo(request: *Request) Response {
     };
 
     // Validate description if provided (max 1000 chars)
-    if (parsed.description.len > 0) {
-        const desc_validator = schema.field("description", parsed.description) catch {
-            return Response.serverError("Validation error");
-        };
-        desc_validator.maxLength(1000) catch {
-            return Response.serverError("Validation error");
-        };
+    if (parsed.description) |desc| {
+        if (desc.len > 0) {
+            const desc_validator = schema.field("description", desc) catch {
+                return Response.serverError("Validation error");
+            };
+            desc_validator.maxLength(1000) catch {
+                return Response.serverError("Validation error");
+            };
+        }
     }
 
     // Validate priority if provided
@@ -730,11 +518,65 @@ fn handleCreateTodo(request: *Request) Response {
         return Response.serverError("Database not initialized");
     };
 
+    const title_value = parsed.title orelse return Response.errorResponse("Title is required", 400);
+    const description_value = parsed.description orelse "";
     const priority_value = parsed.priority orelse "medium";
     const tags_value = parsed.tags orelse "";
-    const todo = createTodo(orm, parsed.title, parsed.description, priority_value, parsed.due_date, tags_value) catch {
+
+    // Use ModelWithORM directly for cleaner code
+    var model = TodoModelORM.init(orm);
+    const now = std.time.milliTimestamp();
+
+    // Copy strings from request arena to persistent allocator for database storage
+    const title_copy = allocator.dupe(u8, title_value) catch {
+        return Response.serverError("Failed to allocate memory");
+    };
+    errdefer allocator.free(title_copy);
+    const desc_copy = allocator.dupe(u8, description_value) catch {
+        allocator.free(title_copy);
+        return Response.serverError("Failed to allocate memory");
+    };
+    errdefer allocator.free(desc_copy);
+    const priority_copy = allocator.dupe(u8, priority_value) catch {
+        allocator.free(title_copy);
+        allocator.free(desc_copy);
+        return Response.serverError("Failed to allocate memory");
+    };
+    errdefer allocator.free(priority_copy);
+    const tags_copy = allocator.dupe(u8, tags_value) catch {
+        allocator.free(title_copy);
+        allocator.free(desc_copy);
+        allocator.free(priority_copy);
+        return Response.serverError("Failed to allocate memory");
+    };
+    errdefer allocator.free(tags_copy);
+
+    const new_todo = Todo{
+        .id = 0,
+        .title = title_copy,
+        .description = desc_copy,
+        .completed = false,
+        .priority = priority_copy,
+        .due_date = parsed.due_date,
+        .tags = tags_copy,
+        .created_at = now,
+        .updated_at = now,
+    };
+
+    const todo = model.create(new_todo) catch {
+        allocator.free(title_copy);
+        allocator.free(desc_copy);
+        allocator.free(priority_copy);
+        allocator.free(tags_copy);
         return Response.serverError("Failed to create todo");
     };
+
+    // Free the original string copies - model.create() makes its own copies
+    allocator.free(title_copy);
+    allocator.free(desc_copy);
+    allocator.free(priority_copy);
+    allocator.free(tags_copy);
+
     defer {
         allocator.free(todo.title);
         allocator.free(todo.description);
@@ -742,16 +584,11 @@ fn handleCreateTodo(request: *Request) Response {
         allocator.free(todo.tags);
     }
 
-    const json = formatTodoJson(todo, allocator) catch {
-        return Response.serverError("Failed to format todo");
-    };
-    defer allocator.free(json);
-
     // Invalidate cache when todos change
     request.cacheInvalidate("todos:all");
     request.cacheInvalidate("todos:stats");
 
-    return Response.json(json);
+    return TodoModel.toResponse(todo, allocator);
 }
 
 fn handleUpdateTodo(request: *Request) Response {
@@ -759,39 +596,38 @@ fn handleUpdateTodo(request: *Request) Response {
         return Response.errorResponse("Invalid ID", 400);
     };
 
-    const parsed = parseTodoFromJson(request.body(), allocator) catch {
+    const parsed = request.jsonBody(TodoInput) catch {
         return Response.errorResponse("Invalid JSON", 400);
     };
-
-    defer {
-        if (parsed.title.len > 0) allocator.free(parsed.title);
-        if (parsed.description.len > 0) allocator.free(parsed.description);
-        if (parsed.priority) |p| allocator.free(p);
-        if (parsed.tags) |t| allocator.free(t);
-    }
+    // Note: parsed strings are allocated with request.arena.allocator()
+    // They will be automatically freed when the request ends, so no manual cleanup needed
 
     // Use validation framework
     var schema = validation.ValidationSchema.init(request.arena.allocator());
     defer schema.deinit();
 
     // Validate title if provided
-    if (parsed.title.len > 0) {
-        const title_validator = schema.field("title", parsed.title) catch {
-            return Response.serverError("Validation error");
-        };
-        title_validator.maxLength(200) catch {
-            return Response.serverError("Validation error");
-        };
+    if (parsed.title) |title| {
+        if (title.len > 0) {
+            const title_validator = schema.field("title", title) catch {
+                return Response.serverError("Validation error");
+            };
+            title_validator.maxLength(200) catch {
+                return Response.serverError("Validation error");
+            };
+        }
     }
 
     // Validate description if provided
-    if (parsed.description.len > 0) {
-        const desc_validator = schema.field("description", parsed.description) catch {
-            return Response.serverError("Validation error");
-        };
-        desc_validator.maxLength(1000) catch {
-            return Response.serverError("Validation error");
-        };
+    if (parsed.description) |desc| {
+        if (desc.len > 0) {
+            const desc_validator = schema.field("description", desc) catch {
+                return Response.serverError("Validation error");
+            };
+            desc_validator.maxLength(1000) catch {
+                return Response.serverError("Validation error");
+            };
+        }
     }
 
     // Validate priority if provided
@@ -830,8 +666,8 @@ fn handleUpdateTodo(request: *Request) Response {
     };
 
     const updates = updateTodo(orm, id, .{
-        .title = if (parsed.title.len > 0) parsed.title else null,
-        .description = if (parsed.description.len > 0) parsed.description else null,
+        .title = parsed.title,
+        .description = parsed.description,
         .completed = parsed.completed,
         .priority = parsed.priority,
         .due_date = parsed.due_date,
@@ -850,22 +686,17 @@ fn handleUpdateTodo(request: *Request) Response {
         allocator.free(todo.tags);
     }
 
-    const json = formatTodoJson(todo, allocator) catch {
-        return Response.serverError("Failed to format todo");
-    };
-    defer allocator.free(json);
-
     // Invalidate cache when todos change
     request.cacheInvalidate("todos:all");
     request.cacheInvalidate("todos:stats");
     // Also invalidate specific todo cache if we had one
     const todo_cache_key = std.fmt.allocPrint(request.arena.allocator(), "todo:{d}", .{id}) catch {
         // If allocation fails, just skip individual cache invalidation
-        return Response.json(json);
+        return TodoModel.toResponse(todo, allocator);
     };
     request.cacheInvalidate(todo_cache_key);
 
-    return Response.json(json);
+    return TodoModel.toResponse(todo, allocator);
 }
 
 fn handleDeleteTodo(request: *Request) Response {
@@ -877,7 +708,9 @@ fn handleDeleteTodo(request: *Request) Response {
         return Response.serverError("Database not initialized");
     };
 
-    const deleted = deleteTodo(orm, id) catch {
+    // Use ModelWithORM directly
+    var model = TodoModelORM.init(orm);
+    const deleted = model.delete(id) catch {
         return Response.serverError("Failed to delete todo");
     };
 
@@ -961,11 +794,7 @@ fn handleSearchTodos(request: *Request) Response {
         todos.deinit(allocator);
     }
 
-    const json = formatTodoListJson(todos, allocator) catch {
-        return Response.serverError("Failed to format todos");
-    };
-    defer allocator.free(json);
-    return Response.json(json)
+    return TodoModel.toResponseList(todos, allocator)
         .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
         .withHeader("Pragma", "no-cache")
         .withHeader("Expires", "0");
@@ -1007,16 +836,18 @@ fn handleGetStats(request: *Request) Response {
         return Response.serverError("Failed to fetch stats");
     };
 
-    const json = formatStatsJson(stats, allocator) catch {
-        return Response.serverError("Failed to format stats");
+    // Use ModelStats to create response
+    var stats_model = TodoStatsModel.init(orm);
+    const response = stats_model.toResponse(stats, allocator);
+
+    // Cache stats for 10 seconds - need to serialize for cache
+    const json = stats_model.toJson(stats, allocator) catch {
+        return response;
     };
     defer allocator.free(json);
-
-    // Cache stats for 10 seconds (shorter TTL since stats change frequently)
     request.cacheSet(cache_key, json, 10000, "application/json") catch {};
 
-    return Response.json(json)
-        .withHeader("X-Cache", "MISS");
+    return response.withHeader("X-Cache", "MISS");
 }
 
 // ============================================================================

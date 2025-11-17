@@ -22,6 +22,7 @@ pub const utils = @import("utils.zig");
 pub const cors_middleware = @import("cors_middleware.zig");
 pub const request_id_middleware = @import("request_id_middleware.zig");
 pub const pagination = @import("pagination.zig");
+pub const valve = @import("valve/valve.zig");
 
 // Re-export main types for convenience
 pub const Engine12 = engine12.Engine12;
@@ -52,3 +53,16 @@ pub const CacheEntry = cache.CacheEntry;
 
 // Re-export JSON utilities
 pub const Json = json.Json;
+
+// Re-export valve types
+pub const Valve = valve.Valve;
+pub const ValveMetadata = valve.ValveMetadata;
+pub const ValveCapability = valve.ValveCapability;
+pub const ValveError = valve.ValveError;
+pub const ValveContext = @import("valve/context.zig").ValveContext;
+pub const ValveRegistry = @import("valve/registry.zig").ValveRegistry;
+
+// Re-export builtin valves
+pub const BasicAuthValve = @import("valve/builtin/basic_auth.zig").BasicAuthValve;
+pub const BasicAuthConfig = @import("valve/builtin/basic_auth.zig").BasicAuthConfig;
+pub const User = @import("valve/builtin/basic_auth.zig").User;

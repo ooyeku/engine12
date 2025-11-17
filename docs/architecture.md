@@ -313,6 +313,58 @@ The ORM supports two initialization patterns:
 - Query results allocate strings for text fields
 - Caller must free allocated memory
 
+## Valve System Architecture
+
+The Valve System provides a secure and simple plugin architecture for Engine12. Each valve is an isolated service that integrates deeply with the Engine12 runtime through controlled capabilities.
+
+### Design Philosophy
+
+The valve system is designed around three core principles:
+
+1. **Security through Isolation**: Valves can only access Engine12 features through a controlled `ValveContext`, preventing direct access to internal state
+2. **Simplicity**: The interface is minimal - valves implement a simple `Valve` struct with lifecycle hooks
+3. **Deep Integration**: Valves can register routes, middleware, background tasks, and more, making them first-class citizens in the Engine12 runtime
+
+### Capability Model
+
+Valves declare required capabilities in their metadata. Capabilities are granted at registration time and checked at runtime:
+
+- **Declaration**: Valves declare capabilities in `ValveMetadata.required_capabilities`
+- **Granting**: The registry grants all requested capabilities when a valve is registered
+- **Enforcement**: `ValveContext` methods check capabilities before allowing access
+- **Error Handling**: Attempts to use features without capabilities return `error.CapabilityRequired`
+
+### Valve Lifecycle
+
+1. **Registration**: Valve is registered with `Engine12.registerValve()`
+2. **Initialization**: `valve.init()` is called with a `ValveContext` containing granted capabilities
+3. **App Start**: `valve.onAppStart()` is called when `app.start()` is invoked (if provided)
+4. **Runtime**: Valve operates normally, registering routes, middleware, etc.
+5. **App Stop**: `valve.onAppStop()` is called when `app.stop()` is invoked (if provided)
+6. **Cleanup**: `valve.deinit()` is called when valve is unregistered or app is deinitialized
+
+### Isolation Guarantees
+
+- Valves cannot directly access `Engine12` internals
+- All access goes through `ValveContext`, which enforces capability checks
+- Valves receive their own allocator from Engine12
+- Each valve has its own context, preventing cross-valve interference
+
+### Security Considerations
+
+- **Capability-Based Access Control**: Valves must declare and receive capabilities before accessing features
+- **No Direct Engine12 Access**: Valves cannot access Engine12 fields directly
+- **Controlled Resource Access**: ORM, cache, and metrics access is gated by capabilities
+- **Type Safety**: All valve operations are type-checked at compile time
+
+### Example Use Cases
+
+- **Authentication Valves**: Provide JWT or session-based authentication
+- **WebSocket Valves**: Manage WebSocket connections and real-time communication
+- **Database Valves**: Provide database utilities and health checks
+- **Logging Valves**: Centralized request logging and monitoring
+- **API Gateway Valves**: Route requests to external services
+
 ## Extension Points
 
 ### Custom Middleware

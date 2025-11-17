@@ -5,6 +5,7 @@ Complete reference for Engine12's public APIs.
 ## Table of Contents
 
 - [Engine12 Core](#engine12-core)
+- [Valve System](#valve-system)
 - [Request API](#request-api)
 - [Response API](#response-api)
 - [Middleware System](#middleware-system)
@@ -258,6 +259,388 @@ app.printStatus();
 // Output:
 // Server ready
 //   Status: RUNNING | Health: healthy | Routes: 5 | Tasks: 2
+```
+
+#### `registerValve(valve: *Valve) !void`
+Register a valve with this Engine12 instance. Valves provide isolated services that integrate with Engine12 runtime.
+
+```zig
+var auth_valve = AuthValve.init("secret-key");
+try app.registerValve(&auth_valve.valve);
+```
+
+#### `unregisterValve(name: []const u8) !void`
+Unregister a valve by name.
+
+```zig
+try app.unregisterValve("auth");
+```
+
+#### `getValveRegistry() ?*ValveRegistry`
+Get the valve registry instance. Returns null if no valves are registered.
+
+```zig
+if (app.getValveRegistry()) |registry| {
+    const names = try registry.getValveNames(allocator);
+    defer allocator.free(names);
+}
+```
+
+## Valve System
+
+The Valve System provides a secure and simple plugin architecture for Engine12. Each valve is an isolated service that integrates deeply with the Engine12 runtime through controlled capabilities.
+
+### Valve Interface
+
+#### `Valve`
+The core interface that all valves must implement.
+
+```zig
+pub const Valve = struct {
+    metadata: ValveMetadata,
+    init: *const fn (*Valve, *ValveContext) anyerror!void,
+    deinit: *const fn (*Valve) void,
+    onAppStart: ?*const fn (*Valve, *ValveContext) anyerror!void = null,
+    onAppStop: ?*const fn (*Valve, *ValveContext) void = null,
+};
+```
+
+#### `ValveMetadata`
+Metadata describing a valve, including required capabilities.
+
+```zig
+pub const ValveMetadata = struct {
+    name: []const u8,
+    version: []const u8,
+    description: []const u8,
+    author: []const u8,
+    required_capabilities: []const ValveCapability,
+};
+```
+
+#### `ValveCapability`
+Capabilities that a valve can request. Each capability grants access to specific Engine12 features.
+
+- `.routes` - Register HTTP routes
+- `.middleware` - Register middleware
+- `.background_tasks` - Register background tasks
+- `.health_checks` - Register health check functions
+- `.static_files` - Serve static files from directories
+- `.websockets` - Handle WebSocket connections (future)
+- `.database_access` - Access ORM/database operations
+- `.cache_access` - Access response cache
+- `.metrics_access` - Access metrics collector
+
+### ValveContext
+
+`ValveContext` provides controlled access to Engine12 runtime for valves. All methods check capabilities before allowing access.
+
+#### `hasCapability(cap: ValveCapability) bool`
+Check if valve has a specific capability.
+
+```zig
+if (ctx.hasCapability(.routes)) {
+    try ctx.registerRoute("GET", "/api/users", handleUsers);
+}
+```
+
+#### `registerRoute(method: []const u8, path: []const u8, handler: HttpHandler) !void`
+Register an HTTP route. Requires `.routes` capability.
+
+```zig
+try ctx.registerRoute("GET", "/api/users", handleUsers);
+try ctx.registerRoute("POST", "/api/users", handleCreateUser);
+```
+
+#### `registerMiddleware(mw: PreRequestMiddlewareFn) !void`
+Register pre-request middleware. Requires `.middleware` capability.
+
+```zig
+try ctx.registerMiddleware(&authMiddleware);
+```
+
+#### `registerResponseMiddleware(mw: ResponseMiddlewareFn) !void`
+Register response middleware. Requires `.middleware` capability.
+
+```zig
+try ctx.registerResponseMiddleware(&corsMiddleware);
+```
+
+#### `registerTask(name: []const u8, task: BackgroundTask, interval_ms: ?u32) !void`
+Register a background task. Requires `.background_tasks` capability.
+
+```zig
+// One-time task
+try ctx.registerTask("cleanup", cleanupTask, null);
+
+// Periodic task (every 60 seconds)
+try ctx.registerTask("periodic", periodicTask, 60000);
+```
+
+#### `registerHealthCheck(check: HealthCheckFn) !void`
+Register a health check function. Requires `.health_checks` capability.
+
+```zig
+try ctx.registerHealthCheck(&checkDatabase);
+```
+
+#### `serveStatic(mount_path: []const u8, directory: []const u8) !void`
+Serve static files from a directory. Requires `.static_files` capability.
+
+```zig
+try ctx.serveStatic("/static", "./public");
+```
+
+#### `getORM() !?*ORM`
+Get ORM instance. Requires `.database_access` capability. Returns null if ORM is not initialized.
+
+```zig
+if (try ctx.getORM()) |orm| {
+    const todos = try orm.findAll(Todo);
+}
+```
+
+#### `getCache() ?*ResponseCache`
+Get cache instance. Requires `.cache_access` capability. Returns null if cache is not configured.
+
+```zig
+if (ctx.getCache()) |cache| {
+    try cache.set("key", "value", 60000);
+}
+```
+
+#### `getMetrics() ?*MetricsCollector`
+Get metrics collector. Requires `.metrics_access` capability. Returns null if metrics are not enabled.
+
+```zig
+if (ctx.getMetrics()) |metrics| {
+    metrics.incrementCounter("requests");
+}
+```
+
+### ValveRegistry
+
+`ValveRegistry` manages valve registration and lifecycle.
+
+#### `ValveRegistry.init(allocator: Allocator) ValveRegistry`
+Initialize a new valve registry.
+
+```zig
+var registry = ValveRegistry.init(allocator);
+defer registry.deinit();
+```
+
+#### `register(valve: *Valve, app: *Engine12) !void`
+Register a valve with an Engine12 instance. Creates a context with granted capabilities and calls `valve.init()`.
+
+```zig
+try registry.register(&my_valve, &app);
+```
+
+#### `unregister(name: []const u8) !void`
+Unregister a valve by name. Calls `valve.deinit()` and removes from registry.
+
+```zig
+try registry.unregister("my_valve");
+```
+
+#### `getContext(name: []const u8) ?*ValveContext`
+Get context for a valve by name. Returns null if valve not found.
+
+```zig
+if (registry.getContext("my_valve")) |ctx| {
+    try ctx.registerRoute("GET", "/test", handler);
+}
+```
+
+#### `getValveNames(allocator: Allocator) ![]const []const u8`
+Get all registered valve names. Returns a slice allocated with the provided allocator.
+
+```zig
+const names = try registry.getValveNames(allocator);
+defer allocator.free(names);
+for (names) |name| {
+    std.debug.print("Valve: {s}\n", .{name});
+}
+```
+
+### Valve Errors
+
+#### `ValveError`
+Valve-specific errors.
+
+- `CapabilityRequired` - Valve attempted to use a feature without the required capability
+- `ValveNotFound` - Valve with the specified name was not found
+- `ValveAlreadyRegistered` - Attempted to register a valve with a name that's already in use
+- `InvalidMethod` - Invalid HTTP method passed to `registerRoute`
+
+### Builtin Valves
+
+Engine12 includes production-ready builtin valves that provide common functionality.
+
+#### BasicAuthValve
+
+A production-ready JWT-based authentication valve that provides user registration, login, logout, and authentication middleware. Uses Engine12's built-in ORM for user storage.
+
+**Configuration:**
+
+```zig
+const auth_valve = BasicAuthValve.init(.{
+    .secret_key = "your-secret-key-here",
+    .orm = orm_instance,
+    .token_expiry_seconds = 3600, // Optional, default: 3600
+    .user_table_name = "users",   // Optional, default: "users"
+});
+try app.registerValve(&auth_valve.valve);
+```
+
+**Configuration Options:**
+
+- `secret_key` (required): JWT secret key for token signing
+- `orm` (required): ORM instance for user storage
+- `token_expiry_seconds` (optional): Token expiration time in seconds (default: 3600)
+- `user_table_name` (optional): Database table name for users (default: "users")
+
+**Routes:**
+
+- `POST /auth/register` - Register a new user (requires username, email, password)
+- `POST /auth/login` - Login and receive JWT token (requires username/email and password)
+- `POST /auth/logout` - Logout (returns success)
+- `GET /auth/me` - Get current authenticated user info (requires valid JWT token)
+
+**Authentication Middleware:**
+
+The valve automatically registers authentication middleware that extracts JWT tokens from the `Authorization: Bearer <token>` header and stores them in request context. Routes can check authentication using:
+
+```zig
+// Get current user (returns null if not authenticated)
+if (try BasicAuthValve.getCurrentUser(req)) |user| {
+    defer {
+        allocator.free(user.username);
+        allocator.free(user.email);
+        allocator.free(user.password_hash);
+    }
+    // User is authenticated
+}
+
+// Require authentication (returns error if not authenticated)
+const user = try BasicAuthValve.requireAuth(req);
+defer {
+    allocator.free(user.username);
+    allocator.free(user.email);
+    allocator.free(user.password_hash);
+}
+```
+
+**User Model:**
+
+```zig
+pub const User = struct {
+    id: i64,
+    username: []const u8,
+    email: []const u8,
+    password_hash: []const u8,
+    created_at: i64,
+};
+```
+
+**Example Usage:**
+
+```zig
+const std = @import("std");
+const E12 = @import("Engine12");
+
+// Initialize database and ORM
+const db = try E12.orm.Database.open("app.db", allocator);
+var orm_instance = E12.orm.ORM.init(db, allocator);
+
+// Create auth valve
+var auth_valve = E12.BasicAuthValve.init(.{
+    .secret_key = "my-secret-key-change-in-production",
+    .orm = &orm_instance,
+});
+
+// Register valve
+try app.registerValve(&auth_valve.valve);
+
+// Start app (migration runs automatically on app start)
+try app.start();
+```
+
+**Security Features:**
+
+- Password hashing using Argon2id
+- JWT token signing with HMAC-SHA256
+- Token expiration validation
+- Username and email uniqueness enforcement
+- Password strength validation (minimum 6 characters)
+- Username length validation (3-50 characters)
+
+### Example: Creating a Custom Valve
+
+```zig
+const std = @import("std");
+const E12 = @import("Engine12");
+
+const MyValve = struct {
+    valve: E12.Valve,
+    config: []const u8,
+
+    pub fn init(config: []const u8) MyValve {
+        return MyValve{
+            .valve = E12.Valve{
+                .metadata = E12.ValveMetadata{
+                    .name = "my_valve",
+                    .version = "1.0.0",
+                    .description = "My custom valve",
+                    .author = "My Name",
+                    .required_capabilities = &[_]E12.ValveCapability{ .routes, .middleware },
+                },
+                .init = &MyValve.initValve,
+                .deinit = &MyValve.deinitValve,
+            },
+            .config = config,
+        };
+    }
+
+    pub fn initValve(v: *E12.Valve, ctx: *E12.ValveContext) !void {
+        const self = @as(*MyValve, @ptrFromInt(@intFromPtr(v) - @offsetOf(MyValve, "valve")));
+        
+        // Register routes
+        try ctx.registerRoute("GET", "/api/my-valve", Self.handleRequest);
+        
+        // Register middleware
+        try ctx.registerMiddleware(&Self.myMiddleware);
+        
+        _ = self;
+    }
+
+    pub fn deinitValve(v: *E12.Valve) void {
+        _ = v;
+        // Cleanup resources
+    }
+
+    fn handleRequest(req: *E12.Request) E12.Response {
+        _ = req;
+        return E12.Response.json("{\"status\":\"ok\"}");
+    }
+
+    fn myMiddleware(req: *E12.Request) E12.middleware.MiddlewareResult {
+        _ = req;
+        return .proceed;
+    }
+};
+
+// Usage
+pub fn main() !void {
+    var app = try E12.Engine12.initDevelopment();
+    defer app.deinit();
+
+    var my_valve = MyValve.init("config-value");
+    try app.registerValve(&my_valve.valve);
+
+    try app.start();
+}
 ```
 
 ## Request API

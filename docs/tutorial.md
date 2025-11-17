@@ -642,6 +642,315 @@ const todo = Todo{ .id = 1, .title = "Hello", .completed = false };
 return Response.jsonFrom(Todo, todo, allocator);
 ```
 
+## Step 9: Using Valves
+
+Valves provide a secure and simple plugin architecture for Engine12. Each valve is an isolated service that integrates deeply with the Engine12 runtime through controlled capabilities.
+
+### 9.1 Creating a Simple Valve
+
+Let's create a logging valve that tracks API requests:
+
+```zig
+const std = @import("std");
+const E12 = @import("Engine12");
+
+const LoggingValve = struct {
+    valve: E12.Valve,
+    log_file: []const u8,
+
+    pub fn init(log_file: []const u8) LoggingValve {
+        return LoggingValve{
+            .valve = E12.Valve{
+                .metadata = E12.ValveMetadata{
+                    .name = "logging",
+                    .version = "1.0.0",
+                    .description = "Request logging valve",
+                    .author = "Your Name",
+                    .required_capabilities = &[_]E12.ValveCapability{ .middleware },
+                },
+                .init = &LoggingValve.initValve,
+                .deinit = &LoggingValve.deinitValve,
+            },
+            .log_file = log_file,
+        };
+    }
+
+    pub fn initValve(v: *E12.Valve, ctx: *E12.ValveContext) !void {
+        const self = @as(*LoggingValve, @ptrFromInt(@intFromPtr(v) - @offsetOf(LoggingValve, "valve")));
+        
+        // Register logging middleware
+        try ctx.registerMiddleware(&LoggingValve.logMiddleware);
+        
+        _ = self;
+    }
+
+    pub fn deinitValve(v: *E12.Valve) void {
+        _ = v;
+        // Cleanup if needed
+    }
+
+    fn logMiddleware(req: *E12.Request) E12.middleware.MiddlewareResult {
+        std.debug.print("[LOG] {s} {s}\n", .{ req.method(), req.path() });
+        return .proceed;
+    }
+};
+```
+
+### 9.2 Registering a Valve
+
+Register the valve with your Engine12 app:
+
+```zig
+pub fn main() !void {
+    var app = try E12.Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Register logging valve
+    var logging_valve = LoggingValve.init("app.log");
+    try app.registerValve(&logging_valve.valve);
+
+    // Register your routes
+    try app.get("/", handleRoot);
+
+    try app.start();
+}
+```
+
+### 9.3 Creating a Valve with Routes
+
+Here's an example of a valve that registers its own routes:
+
+```zig
+const ApiValve = struct {
+    valve: E12.Valve,
+
+    pub fn init() ApiValve {
+        return ApiValve{
+            .valve = E12.Valve{
+                .metadata = E12.ValveMetadata{
+                    .name = "api",
+                    .version = "1.0.0",
+                    .description = "API routes valve",
+                    .author = "Your Name",
+                    .required_capabilities = &[_]E12.ValveCapability{ .routes },
+                },
+                .init = &ApiValve.initValve,
+                .deinit = &ApiValve.deinitValve,
+            },
+        };
+    }
+
+    pub fn initValve(v: *E12.Valve, ctx: *E12.ValveContext) !void {
+        // Register API routes
+        try ctx.registerRoute("GET", "/api/status", ApiValve.handleStatus);
+        try ctx.registerRoute("GET", "/api/version", ApiValve.handleVersion);
+    }
+
+    pub fn deinitValve(v: *E12.Valve) void {
+        _ = v;
+    }
+
+    fn handleStatus(req: *E12.Request) E12.Response {
+        _ = req;
+        return E12.Response.json("{\"status\":\"ok\"}");
+    }
+
+    fn handleVersion(req: *E12.Request) E12.Response {
+        _ = req;
+        return E12.Response.json("{\"version\":\"1.0.0\"}");
+    }
+};
+```
+
+### 9.4 Using Multiple Capabilities
+
+A valve can request multiple capabilities:
+
+```zig
+const FullFeatureValve = struct {
+    valve: E12.Valve,
+
+    pub fn init() FullFeatureValve {
+        return FullFeatureValve{
+            .valve = E12.Valve{
+                .metadata = E12.ValveMetadata{
+                    .name = "full_feature",
+                    .version = "1.0.0",
+                    .description = "Full-featured valve",
+                    .author = "Your Name",
+                    .required_capabilities = &[_]E12.ValveCapability{
+                        .routes,
+                        .middleware,
+                        .background_tasks,
+                        .health_checks,
+                    },
+                },
+                .init = &FullFeatureValve.initValve,
+                .deinit = &FullFeatureValve.deinitValve,
+            },
+        };
+    }
+
+    pub fn initValve(v: *E12.Valve, ctx: *E12.ValveContext) !void {
+        // Register routes
+        try ctx.registerRoute("GET", "/api/feature", FullFeatureValve.handleFeature);
+        
+        // Register middleware
+        try ctx.registerMiddleware(&FullFeatureValve.featureMiddleware);
+        
+        // Register background task
+        try ctx.registerTask("feature_cleanup", FullFeatureValve.cleanupTask, 60000);
+        
+        // Register health check
+        try ctx.registerHealthCheck(&FullFeatureValve.healthCheck);
+    }
+
+    pub fn deinitValve(v: *E12.Valve) void {
+        _ = v;
+    }
+
+    fn handleFeature(req: *E12.Request) E12.Response {
+        _ = req;
+        return E12.Response.json("{\"feature\":\"enabled\"}");
+    }
+
+    fn featureMiddleware(req: *E12.Request) E12.middleware.MiddlewareResult {
+        _ = req;
+        return .proceed;
+    }
+
+    fn cleanupTask() void {
+        std.debug.print("[Feature] Running cleanup\n", .{});
+    }
+
+    fn healthCheck() E12.types.HealthStatus {
+        return .healthy;
+    }
+};
+```
+
+### 9.5 Lifecycle Hooks
+
+Valves can hook into app lifecycle events:
+
+```zig
+const LifecycleValve = struct {
+    valve: E12.Valve,
+    initialized: bool = false,
+
+    pub fn init() LifecycleValve {
+        return LifecycleValve{
+            .valve = E12.Valve{
+                .metadata = E12.ValveMetadata{
+                    .name = "lifecycle",
+                    .version = "1.0.0",
+                    .description = "Lifecycle demo valve",
+                    .author = "Your Name",
+                    .required_capabilities = &[_]E12.ValveCapability{},
+                },
+                .init = &LifecycleValve.initValve,
+                .deinit = &LifecycleValve.deinitValve,
+                .onAppStart = &LifecycleValve.onStart,
+                .onAppStop = &LifecycleValve.onStop,
+            },
+        };
+    }
+
+    pub fn initValve(v: *E12.Valve, ctx: *E12.ValveContext) !void {
+        const self = @as(*LifecycleValve, @ptrFromInt(@intFromPtr(v) - @offsetOf(LifecycleValve, "valve")));
+        self.initialized = true;
+        std.debug.print("[Lifecycle] Valve initialized\n", .{});
+        _ = ctx;
+    }
+
+    pub fn deinitValve(v: *E12.Valve) void {
+        const self = @as(*LifecycleValve, @ptrFromInt(@intFromPtr(v) - @offsetOf(LifecycleValve, "valve")));
+        std.debug.print("[Lifecycle] Valve deinitialized\n", .{});
+        _ = self;
+    }
+
+    pub fn onStart(v: *E12.Valve, ctx: *E12.ValveContext) !void {
+        _ = v;
+        _ = ctx;
+        std.debug.print("[Lifecycle] App started\n", .{});
+    }
+
+    pub fn onStop(v: *E12.Valve, ctx: *E12.ValveContext) void {
+        _ = v;
+        _ = ctx;
+        std.debug.print("[Lifecycle] App stopped\n", .{});
+    }
+};
+```
+
+### 9.6 Using Builtin Valves
+
+Engine12 includes production-ready builtin valves. Here's how to use the `BasicAuthValve` for authentication:
+
+```zig
+const std = @import("std");
+const E12 = @import("Engine12");
+
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+    
+    // Initialize database and ORM
+    const db = try E12.orm.Database.open("app.db", allocator);
+    var orm_instance = E12.orm.ORM.init(db, allocator);
+    
+    // Create Engine12 app
+    var app = try E12.Engine12.initDevelopment();
+    defer app.deinit();
+    
+    // Create and register auth valve
+    var auth_valve = E12.BasicAuthValve.init(.{
+        .secret_key = "your-secret-key-change-in-production",
+        .orm = &orm_instance,
+        .token_expiry_seconds = 3600, // 1 hour
+    });
+    try app.registerValve(&auth_valve.valve);
+    
+    // Register protected route
+    try app.get("/protected", handleProtected);
+    
+    // Start app (migration runs automatically)
+    try app.start();
+}
+
+fn handleProtected(req: *E12.Request) E12.Response {
+    // Require authentication
+    const user = E12.BasicAuthValve.requireAuth(req) catch {
+        return E12.Response.errorResponse("Unauthorized", 401);
+    };
+    defer {
+        const allocator = std.heap.page_allocator;
+        allocator.free(user.username);
+        allocator.free(user.email);
+        allocator.free(user.password_hash);
+    }
+    
+    return E12.Response.json("{\"message\":\"Hello, authenticated user!\"}");
+}
+```
+
+The `BasicAuthValve` provides:
+- `POST /auth/register` - User registration
+- `POST /auth/login` - User login (returns JWT token)
+- `POST /auth/logout` - Logout
+- `GET /auth/me` - Get current user info
+- Automatic authentication middleware for JWT validation
+
+See the [API Reference](../api-reference.md#builtin-valves) for complete documentation.
+
+### 9.7 Best Practices
+
+1. **Declare Only Required Capabilities**: Only request capabilities your valve actually needs
+2. **Handle Errors Gracefully**: Check for capability errors and provide clear error messages
+3. **Clean Up Resources**: Implement `deinit` to free any allocated resources
+4. **Use Lifecycle Hooks**: Use `onAppStart` and `onAppStop` for initialization that depends on app state
+5. **Document Your Valve**: Provide clear metadata including description and author
+6. **Use Builtin Valves**: Prefer builtin valves like `BasicAuthValve` when they meet your needs
+
 ## Next Steps
 
 - Add validation for request data

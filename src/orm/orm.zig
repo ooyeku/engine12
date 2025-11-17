@@ -16,6 +16,11 @@ pub const DatabaseSingleton = @import("singleton.zig").DatabaseSingleton;
 pub const MigrationType = Migration;
 pub const MigrationRegistryType = MigrationRegistry;
 
+// Re-export Model wrapper types
+pub const Model = @import("model_wrapper.zig").Model;
+pub const ModelWithORM = @import("model_wrapper.zig").ModelWithORM;
+pub const ModelStats = @import("model_wrapper.zig").ModelStats;
+
 /// Managed ORM result wrapper that automatically frees string fields on deinit
 pub fn Result(comptime T: type) type {
     return struct {
