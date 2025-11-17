@@ -72,19 +72,63 @@
                 </div>
             </div>
 
-            <div class="quick-add-form">
-                <input type="text" id="quick-todo-title" placeholder="Quick add a task..." maxlength="200">
-                <button id="quick-add-btn" class="btn btn-primary">Add Task</button>
-            </div>
-
-            <div class="recent-activity">
-                <h2 class="section-title">Recent Activity</h2>
-                <div id="recent-todos-list"></div>
+            <div class="add-todo-section">
+                <button id="dashboard-toggle-form-btn" class="toggle-form-btn">
+                    <span id="dashboard-toggle-form-icon">+</span>
+                    <span id="dashboard-toggle-form-text">Add New Task</span>
+                </button>
+                
+                <div class="todo-form" id="dashboard-todo-form" style="display: none;">
+                    <div class="form-row">
+                        <input type="text" id="dashboard-todo-title" placeholder="{{ .title_placeholder }}" maxlength="200">
+                        <select id="dashboard-todo-priority" class="priority-select">
+                            <option value="low">Low Priority</option>
+                            <option value="medium" selected>Medium Priority</option>
+                            <option value="high">High Priority</option>
+                        </select>
+                    </div>
+                    <textarea id="dashboard-todo-description" placeholder="{{ .description_placeholder }}" maxlength="1000"></textarea>
+                    <div class="form-row">
+                        <input type="date" id="dashboard-todo-due-date" class="date-input">
+                        <input type="text" id="dashboard-todo-tags" placeholder="Tags (comma separated)" class="tags-input">
+                    </div>
+                    <div class="form-actions">
+                        <button id="dashboard-add-todo-btn" class="btn btn-primary">{{ .add_button_text }}</button>
+                        <button id="dashboard-cancel-form-btn" class="btn btn-secondary">Cancel</button>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- Active Tasks Page -->
         <div class="page-container" data-page="active">
+            <div class="add-todo-section">
+                <button id="toggle-form-btn" class="toggle-form-btn">
+                    <span id="toggle-form-icon">+</span>
+                    <span id="toggle-form-text">Add New Task</span>
+                </button>
+                
+                <div class="todo-form" id="todo-form" style="display: none;">
+                    <div class="form-row">
+                        <input type="text" id="todo-title" placeholder="{{ .title_placeholder }}" maxlength="200">
+                        <select id="todo-priority" class="priority-select">
+                            <option value="low">Low Priority</option>
+                            <option value="medium" selected>Medium Priority</option>
+                            <option value="high">High Priority</option>
+                        </select>
+                    </div>
+                    <textarea id="todo-description" placeholder="{{ .description_placeholder }}" maxlength="1000"></textarea>
+                    <div class="form-row">
+                        <input type="date" id="todo-due-date" class="date-input">
+                        <input type="text" id="todo-tags" placeholder="Tags (comma separated)" class="tags-input">
+                    </div>
+                    <div class="form-actions">
+                        <button id="add-todo-btn" class="btn btn-primary">{{ .add_button_text }}</button>
+                        <button id="cancel-form-btn" class="btn btn-secondary">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
             <div class="toolbar">
                 <div class="search-bar">
                     <input type="text" id="search-input" placeholder="Search todos..." />
@@ -103,23 +147,6 @@
                     </select>
                     <button id="export-btn" class="btn-secondary">Export</button>
                 </div>
-            </div>
-
-            <div class="todo-form">
-                <div class="form-row">
-                    <input type="text" id="todo-title" placeholder="{{ .title_placeholder }}" maxlength="200">
-                    <select id="todo-priority" class="priority-select">
-                        <option value="low">Low Priority</option>
-                        <option value="medium" selected>Medium Priority</option>
-                        <option value="high">High Priority</option>
-                    </select>
-                </div>
-                <textarea id="todo-description" placeholder="{{ .description_placeholder }}" maxlength="1000"></textarea>
-                <div class="form-row">
-                    <input type="date" id="todo-due-date" class="date-input">
-                    <input type="text" id="todo-tags" placeholder="Tags (comma separated)" class="tags-input">
-                </div>
-                <button id="add-todo-btn" class="btn btn-primary">{{ .add_button_text }}</button>
             </div>
 
             <div class="filters">

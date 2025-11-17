@@ -180,20 +180,10 @@ header h1 {
     color: var(--text-primary);
 }
 
-.todo-form {
-    margin-bottom: 2rem;
-    padding: 1.5rem;
-    background-color: var(--bg-secondary);
-    border-radius: 12px;
-    border: 1px solid var(--border);
-    box-shadow: 0 2px 8px var(--shadow);
-}
-
 .todo-form input,
 .todo-form textarea {
     width: 100%;
     padding: 0.875rem;
-    margin-bottom: 1rem;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -460,6 +450,100 @@ header h1 {
     color: var(--text-primary);
 }
 
+/* Add Todo Section */
+.add-todo-section {
+    margin-bottom: 1.5rem;
+}
+
+.toggle-form-btn {
+    width: 100%;
+    padding: 1rem;
+    background-color: var(--bg-secondary);
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    color: var(--text-secondary);
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    font-family: inherit;
+}
+
+.toggle-form-btn:hover {
+    border-color: var(--accent);
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    transform: translateY(-1px);
+}
+
+.toggle-form-btn #toggle-form-icon {
+    font-size: 1.5rem;
+    font-weight: 300;
+    line-height: 1;
+}
+
+.todo-form {
+    margin-top: 1rem;
+    padding: 1.5rem;
+    background-color: var(--bg-secondary);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    box-shadow: 0 2px 8px var(--shadow);
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.form-actions {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: flex-end;
+    margin-top: 0.5rem;
+}
+
+.form-actions .btn {
+    min-width: 100px;
+}
+
+.todo-form input,
+.todo-form textarea {
+    width: 100%;
+    padding: 0.875rem;
+    margin-bottom: 1rem;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 1rem;
+    font-family: inherit;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.todo-form input:focus,
+.todo-form textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(74, 158, 255, 0.1);
+}
+
+.todo-form textarea {
+    min-height: 80px;
+    resize: vertical;
+}
+
 /* Form enhancements */
 .form-row {
     display: flex;
@@ -608,11 +692,6 @@ header h1 {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px rgba(74, 158, 255, 0.1);
-}
-
-/* Recent Activity */
-.recent-activity {
-    margin-bottom: 2rem;
 }
 
 .section-title {

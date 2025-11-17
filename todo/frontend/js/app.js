@@ -520,64 +520,6 @@ function applySort(todos, sortValue = null) {
 // Dashboard Rendering
 function renderDashboard() {
     updateStats();
-    renderRecentActivity();
-}
-
-function renderRecentActivity() {
-    const recentList = document.getElementById('recent-todos-list');
-    const recentTodos = [...todos]
-        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
-        .slice(0, 5);
-    
-    if (recentTodos.length === 0) {
-        recentList.innerHTML = '<div class="empty-state"><p>No tasks yet. Add your first task above!</p></div>';
-        return;
-    }
-    
-    recentList.innerHTML = recentTodos.map(todo => {
-        const isOverdue = todo.due_date && new Date(parseInt(todo.due_date)) < new Date() && !todo.completed;
-        const priorityClass = `priority-${todo.priority || 'medium'}`;
-        const tags = todo.tags ? todo.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
-        
-        return `
-            <div class="todo-item ${todo.completed ? 'completed' : ''} ${priorityClass} ${isOverdue ? 'overdue' : ''}" data-id="${todo.id}">
-                <div class="todo-header">
-                    <input 
-                        type="checkbox" 
-                        class="todo-checkbox" 
-                        ${todo.completed ? 'checked' : ''}
-                        onchange="toggleTodo(${todo.id})"
-                    >
-                    <div class="todo-title-wrapper">
-                        <div class="todo-title">${escapeHtml(todo.title)}</div>
-                        ${todo.priority && todo.priority !== 'medium' ? `
-                            <span class="priority-badge priority-${todo.priority}">${todo.priority}</span>
-                        ` : ''}
-                    </div>
-                </div>
-                ${todo.description ? `<div class="todo-description">${escapeHtml(todo.description)}</div>` : ''}
-                ${tags.length > 0 ? `
-                    <div class="todo-tags">
-                        ${tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
-                    </div>
-                ` : ''}
-                <div class="todo-meta">
-                    <div class="todo-dates">
-                        ${todo.due_date ? `
-                            <span class="due-date ${isOverdue ? 'overdue' : ''}">
-                                Due: ${formatDate(parseInt(todo.due_date))}
-                            </span>
-                        ` : ''}
-                        <span>Created: ${formatDate(todo.created_at)}</span>
-                    </div>
-                    <div class="todo-actions">
-                        <button onclick="editTodo(${todo.id})">Edit</button>
-                        <button class="btn-delete" onclick="confirmDelete(${todo.id})">Delete</button>
-                    </div>
-                </div>
-            </div>
-        `;
-    }).join('');
 }
 
 // Completed Todos Rendering
@@ -1041,39 +983,88 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Hash change listener for back/forward navigation
     window.addEventListener('hashchange', initializePageFromHash);
 
-    // Quick add todo (Dashboard)
-    const quickAddBtn = document.getElementById('quick-add-btn');
-    const quickTitleInput = document.getElementById('quick-todo-title');
-    if (quickAddBtn && quickTitleInput) {
-        quickAddBtn.addEventListener('click', async () => {
-            const title = quickTitleInput.value.trim();
-            if (!title) {
-                showError('Title is required');
-                return;
-            }
-            
-            try {
-                await createTodo(title, '', 'medium', null, []);
-                quickTitleInput.value = '';
-            } catch (error) {
-                // Error already shown
-            }
-        });
 
-        quickTitleInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                quickAddBtn.click();
-            }
-        });
+    // Toggle form functionality - Active Tasks page
+    const toggleFormBtn = document.getElementById('toggle-form-btn');
+    const todoForm = document.getElementById('todo-form');
+    const cancelFormBtn = document.getElementById('cancel-form-btn');
+    const toggleFormIcon = document.getElementById('toggle-form-icon');
+    const toggleFormText = document.getElementById('toggle-form-text');
+
+    function showForm(formId, titleId, iconId, textId) {
+        const form = document.getElementById(formId);
+        const icon = document.getElementById(iconId);
+        const text = document.getElementById(textId);
+        if (form && icon && text) {
+            form.style.display = 'block';
+            icon.textContent = '−';
+            text.textContent = 'Cancel';
+            document.getElementById(titleId).focus();
+        }
     }
 
-    // Add todo button (Active page)
-    document.getElementById('add-todo-btn').addEventListener('click', async () => {
-        const titleInput = document.getElementById('todo-title');
-        const descInput = document.getElementById('todo-description');
-        const prioritySelect = document.getElementById('todo-priority');
-        const dueDateInput = document.getElementById('todo-due-date');
-        const tagsInput = document.getElementById('todo-tags');
+    function hideForm(formId, titleId, descId, dateId, tagsId, priorityId, iconId, textId) {
+        const form = document.getElementById(formId);
+        const icon = document.getElementById(iconId);
+        const text = document.getElementById(textId);
+        if (form && icon && text) {
+            form.style.display = 'none';
+            icon.textContent = '+';
+            text.textContent = 'Add New Task';
+            // Clear form
+            document.getElementById(titleId).value = '';
+            document.getElementById(descId).value = '';
+            document.getElementById(dateId).value = '';
+            document.getElementById(tagsId).value = '';
+            document.getElementById(priorityId).value = 'medium';
+        }
+    }
+
+    // Active Tasks page form
+    if (toggleFormBtn && todoForm) {
+        toggleFormBtn.addEventListener('click', () => {
+            if (todoForm.style.display === 'none' || !todoForm.style.display) {
+                showForm('todo-form', 'todo-title', 'toggle-form-icon', 'toggle-form-text');
+            } else {
+                hideForm('todo-form', 'todo-title', 'todo-description', 'todo-due-date', 'todo-tags', 'todo-priority', 'toggle-form-icon', 'toggle-form-text');
+            }
+        });
+
+        if (cancelFormBtn) {
+            cancelFormBtn.addEventListener('click', () => {
+                hideForm('todo-form', 'todo-title', 'todo-description', 'todo-due-date', 'todo-tags', 'todo-priority', 'toggle-form-icon', 'toggle-form-text');
+            });
+        }
+    }
+
+    // Dashboard page form
+    const dashboardToggleFormBtn = document.getElementById('dashboard-toggle-form-btn');
+    const dashboardTodoForm = document.getElementById('dashboard-todo-form');
+    const dashboardCancelFormBtn = document.getElementById('dashboard-cancel-form-btn');
+
+    if (dashboardToggleFormBtn && dashboardTodoForm) {
+        dashboardToggleFormBtn.addEventListener('click', () => {
+            if (dashboardTodoForm.style.display === 'none' || !dashboardTodoForm.style.display) {
+                showForm('dashboard-todo-form', 'dashboard-todo-title', 'dashboard-toggle-form-icon', 'dashboard-toggle-form-text');
+            } else {
+                hideForm('dashboard-todo-form', 'dashboard-todo-title', 'dashboard-todo-description', 'dashboard-todo-due-date', 'dashboard-todo-tags', 'dashboard-todo-priority', 'dashboard-toggle-form-icon', 'dashboard-toggle-form-text');
+            }
+        });
+
+        if (dashboardCancelFormBtn) {
+            dashboardCancelFormBtn.addEventListener('click', () => {
+                hideForm('dashboard-todo-form', 'dashboard-todo-title', 'dashboard-todo-description', 'dashboard-todo-due-date', 'dashboard-todo-tags', 'dashboard-todo-priority', 'dashboard-toggle-form-icon', 'dashboard-toggle-form-text');
+            });
+        }
+    }
+
+    // Helper function to handle todo creation
+    async function handleCreateTodo(titleId, descId, priorityId, dateId, tagsId, formId, iconId, textId) {
+        const titleInput = document.getElementById(titleId);
+        const descInput = document.getElementById(descId);
+        const prioritySelect = document.getElementById(priorityId);
+        const dueDateInput = document.getElementById(dateId);
+        const tagsInput = document.getElementById(tagsId);
         
         const title = titleInput.value.trim();
         if (!title) {
@@ -1088,15 +1079,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         try {
             await createTodo(title, description, priority, dueDate, tags);
-            titleInput.value = '';
-            descInput.value = '';
-            dueDateInput.value = '';
-            tagsInput.value = '';
-            prioritySelect.value = 'medium';
+            hideForm(formId, titleId, descId, dateId, tagsId, priorityId, iconId, textId);
         } catch (error) {
             // Error already shown
         }
-    });
+    }
+
+    // Add todo button (Active page)
+    const addTodoBtn = document.getElementById('add-todo-btn');
+    if (addTodoBtn) {
+        addTodoBtn.addEventListener('click', async () => {
+            await handleCreateTodo('todo-title', 'todo-description', 'todo-priority', 'todo-due-date', 'todo-tags', 'todo-form', 'toggle-form-icon', 'toggle-form-text');
+        });
+    }
+
+    // Add todo button (Dashboard page)
+    const dashboardAddTodoBtn = document.getElementById('dashboard-add-todo-btn');
+    if (dashboardAddTodoBtn) {
+        dashboardAddTodoBtn.addEventListener('click', async () => {
+            await handleCreateTodo('dashboard-todo-title', 'dashboard-todo-description', 'dashboard-todo-priority', 'dashboard-todo-due-date', 'dashboard-todo-tags', 'dashboard-todo-form', 'dashboard-toggle-form-icon', 'dashboard-toggle-form-text');
+        });
+    }
 
     // Search (Active page)
     const searchInput = document.getElementById('search-input');
@@ -1179,12 +1182,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // Enter key support
-    document.getElementById('todo-title').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            document.getElementById('add-todo-btn').click();
-        }
-    });
+    // Enter key support - Active Tasks page
+    const todoTitleInput = document.getElementById('todo-title');
+    if (todoTitleInput) {
+        todoTitleInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                document.getElementById('add-todo-btn').click();
+            }
+        });
+    }
+
+    // Enter key support - Dashboard page
+    const dashboardTodoTitleInput = document.getElementById('dashboard-todo-title');
+    if (dashboardTodoTitleInput) {
+        dashboardTodoTitleInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                document.getElementById('dashboard-add-todo-btn').click();
+            }
+        });
+    }
 
     // Filter buttons
     document.querySelectorAll('.filter-btn').forEach(btn => {
@@ -1208,10 +1224,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } else if (e.key === 'n') {
                 e.preventDefault();
-                if (currentPage === 'dashboard' && quickTitleInput) {
-                    quickTitleInput.focus();
-                } else if (currentPage === 'active') {
-                    document.getElementById('todo-title').focus();
+                if (currentPage === 'active') {
+                    const form = document.getElementById('todo-form');
+                    if (form && (form.style.display === 'none' || !form.style.display)) {
+                        showForm('todo-form', 'todo-title', 'toggle-form-icon', 'toggle-form-text');
+                    } else {
+                        document.getElementById('todo-title').focus();
+                    }
+                } else if (currentPage === 'dashboard') {
+                    const form = document.getElementById('dashboard-todo-form');
+                    if (form && (form.style.display === 'none' || !form.style.display)) {
+                        showForm('dashboard-todo-form', 'dashboard-todo-title', 'dashboard-toggle-form-icon', 'dashboard-toggle-form-text');
+                    } else {
+                        document.getElementById('dashboard-todo-title').focus();
+                    }
                 }
             } else if (e.key === '1') {
                 e.preventDefault();
