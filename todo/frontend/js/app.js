@@ -214,27 +214,48 @@ async function createTodo(title, description, priority = 'medium', dueDate = nul
         return;
     }
     try {
+        const bodyData = { 
+            title, 
+            description,
+            priority,
+            due_date: dueDate ? new Date(dueDate).getTime() : null,
+            tags: Array.isArray(tags) ? tags.join(',') : tags
+        };
+        const bodyString = JSON.stringify(bodyData);
+        console.log('[createTodo] Sending POST request with body:', bodyString);
+        console.log('[createTodo] Body length:', bodyString.length);
+        console.log('[createTodo] Headers:', getAuthHeaders());
+        
         const response = await fetch(API_BASE, {
             method: 'POST',
             headers: getAuthHeaders(),
-            body: JSON.stringify({ 
-                title, 
-                description,
-                priority,
-                due_date: dueDate ? new Date(dueDate).getTime() : null,
-                tags: Array.isArray(tags) ? tags.join(',') : tags
-            }),
+            body: bodyString,
             cache: 'no-store',
         });
+        
+        const responseText = await response.text();
+        console.log('[createTodo] Response status:', response.status);
+        console.log('[createTodo] Response text:', responseText);
+        
         if (response.status === 401) {
             await logout();
             return;
         }
         if (!response.ok) {
-            const error = await response.json();
+            let error;
+            try {
+                error = JSON.parse(responseText);
+            } catch {
+                error = { error: responseText || 'Failed to create todo' };
+            }
+            console.error('[createTodo] Error response:', error);
             throw new Error(error.error || 'Failed to create todo');
         }
-        await response.json();
+        try {
+            await JSON.parse(responseText);
+        } catch (e) {
+            console.warn('[createTodo] Failed to parse response as JSON:', responseText);
+        }
         await fetchTodos();
         await fetchStats();
         return null;

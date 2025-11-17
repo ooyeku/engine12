@@ -100,7 +100,7 @@ fn initDatabase() !void {
 
     // Add migrations to registry
     try registry.add(E12.orm.MigrationType.init(1, "create_todos",
-        \\CREATE TABLE IF NOT EXISTS Todo (
+        \\CREATE TABLE IF NOT EXISTS todos (
         \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
         \\  title TEXT NOT NULL,
         \\  description TEXT NOT NULL,
@@ -108,17 +108,17 @@ fn initDatabase() !void {
         \\  created_at INTEGER NOT NULL,
         \\  updated_at INTEGER NOT NULL
         \\)
-    , "DROP TABLE IF EXISTS Todo"));
+    , "DROP TABLE IF EXISTS todos"));
 
-    try registry.add(E12.orm.MigrationType.init(2, "add_priority", "ALTER TABLE Todo ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'", "ALTER TABLE Todo DROP COLUMN priority"));
+    try registry.add(E12.orm.MigrationType.init(2, "add_priority", "ALTER TABLE todos ADD COLUMN priority TEXT NOT NULL DEFAULT 'medium'", "ALTER TABLE todos DROP COLUMN priority"));
 
-    try registry.add(E12.orm.MigrationType.init(3, "add_due_date", "ALTER TABLE Todo ADD COLUMN due_date INTEGER", "-- Cannot automatically reverse ALTER TABLE ADD COLUMN"));
+    try registry.add(E12.orm.MigrationType.init(3, "add_due_date", "ALTER TABLE todos ADD COLUMN due_date INTEGER", "-- Cannot automatically reverse ALTER TABLE ADD COLUMN"));
 
-    try registry.add(E12.orm.MigrationType.init(4, "add_tags", "ALTER TABLE Todo ADD COLUMN tags TEXT NOT NULL DEFAULT ''", "ALTER TABLE Todo DROP COLUMN tags"));
+    try registry.add(E12.orm.MigrationType.init(4, "add_tags", "ALTER TABLE todos ADD COLUMN tags TEXT NOT NULL DEFAULT ''", "ALTER TABLE todos DROP COLUMN tags"));
 
     try registry.add(E12.orm.MigrationType.init(5, "add_user_id",
-        \\ALTER TABLE Todo ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1;
-        \\CREATE INDEX IF NOT EXISTS idx_todo_user_id ON Todo(user_id);
+        \\ALTER TABLE todos ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1;
+        \\CREATE INDEX IF NOT EXISTS idx_todo_user_id ON todos(user_id);
     , "-- Cannot automatically reverse ALTER TABLE ADD COLUMN"));
 
     // Run migrations using the registry
@@ -157,29 +157,33 @@ fn createTodo(orm: *ORM, user_id: i64, title: []const u8, description: []const u
         .updated_at = now,
     };
 
+    std.debug.print("[createTodo] Attempting to create todo with title: {s}\n", .{title});
     try orm.create(Todo, todo);
+    std.debug.print("[createTodo] Todo created successfully\n", .{});
 
     // Get the last insert row ID
     const last_id = orm.db.lastInsertRowId() catch {
-        // Fallback: query for the most recently created todo
-        var all_todos_result = try orm.findAllManaged(Todo);
-        defer all_todos_result.deinit();
+        std.debug.print("[createTodo] Failed to get lastInsertRowId, falling back to query\n", .{});
+        // Fallback: query for the most recently created todo with explicit column order
+        const fallback_sql = try std.fmt.allocPrint(orm.allocator, "SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE user_id = {d} ORDER BY id DESC LIMIT 1", .{user_id});
+        defer orm.allocator.free(fallback_sql);
 
-        if (all_todos_result.isEmpty()) {
-            return error.FailedToCreateTodo;
-        }
+        var fallback_result = try orm.db.query(fallback_sql);
+        defer fallback_result.deinit();
 
-        // Find the todo with the highest ID
-        var max_id: i64 = 0;
-        var found_todo: ?Todo = null;
-        for (all_todos_result.getItems()) |t| {
-            if (t.id > max_id) {
-                max_id = t.id;
-                found_todo = t;
+        var todos_list = try fallback_result.toArrayList(Todo);
+        defer {
+            for (todos_list.items) |t| {
+                orm.allocator.free(t.title);
+                orm.allocator.free(t.description);
+                orm.allocator.free(t.priority);
+                orm.allocator.free(t.tags);
             }
+            todos_list.deinit(orm.allocator);
         }
 
-        if (found_todo) |t| {
+        if (todos_list.items.len > 0) {
+            const t = todos_list.items[0];
             return Todo{
                 .id = t.id,
                 .user_id = t.user_id,
@@ -221,22 +225,49 @@ fn createTodo(orm: *ORM, user_id: i64, title: []const u8, description: []const u
 }
 
 fn findTodoById(orm: *ORM, id: i64, user_id: i64) !?Todo {
-    // Use ModelWithORM for automatic memory management
-    var model = TodoModelORM.init(orm);
-    const todo = try model.find(id);
-    if (todo) |t| {
-        // Verify todo belongs to user
-        if (t.user_id != user_id) {
-            return null;
+    // Use raw SQL with explicit column order to match Todo struct field order:
+    // id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at
+    const sql = try std.fmt.allocPrint(orm.allocator, "SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE id = {d} AND user_id = {d}", .{ id, user_id });
+    defer orm.allocator.free(sql);
+
+    var query_result = try orm.db.query(sql);
+    defer query_result.deinit();
+
+    var todos_list = try query_result.toArrayList(Todo);
+    defer {
+        for (todos_list.items) |t| {
+            orm.allocator.free(t.title);
+            orm.allocator.free(t.description);
+            orm.allocator.free(t.priority);
+            orm.allocator.free(t.tags);
         }
-        return t;
+        todos_list.deinit(orm.allocator);
+    }
+
+    if (todos_list.items.len > 0) {
+        const t = todos_list.items[0];
+        // Duplicate strings for the caller to own
+        return Todo{
+            .id = t.id,
+            .user_id = t.user_id,
+            .title = try allocator.dupe(u8, t.title),
+            .description = try allocator.dupe(u8, t.description),
+            .completed = t.completed,
+            .priority = try allocator.dupe(u8, t.priority),
+            .due_date = t.due_date,
+            .tags = try allocator.dupe(u8, t.tags),
+            .created_at = t.created_at,
+            .updated_at = t.updated_at,
+        };
     }
     return null;
 }
 
 fn getAllTodos(orm: *ORM, user_id: i64) !std.ArrayListUnmanaged(Todo) {
     // Filter todos by user_id using raw SQL
-    const sql = try std.fmt.allocPrint(orm.allocator, "SELECT * FROM Todo WHERE user_id = {d}", .{user_id});
+    // IMPORTANT: Column order must match Todo struct field order:
+    // id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at
+    const sql = try std.fmt.allocPrint(orm.allocator, "SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE user_id = {d}", .{user_id});
     defer orm.allocator.free(sql);
 
     var query_result = try orm.db.query(sql);
@@ -253,21 +284,11 @@ fn updateTodo(orm: *ORM, id: i64, user_id: i64, updates: struct {
     due_date: ?i64 = null,
     tags: ?[]const u8 = null,
 }) !?Todo {
-    // Use ModelWithORM to find existing record
-    var model = TodoModelORM.init(orm);
-    const existing = try model.find(id);
+    // Find existing record using findTodoById (which uses explicit column order)
+    const existing = try findTodoById(orm, id, user_id);
     if (existing == null) return null;
 
     var todo = existing.?;
-
-    // Verify todo belongs to user
-    if (todo.user_id != user_id) {
-        allocator.free(todo.title);
-        allocator.free(todo.description);
-        allocator.free(todo.priority);
-        allocator.free(todo.tags);
-        return null;
-    }
     defer {
         allocator.free(todo.title);
         allocator.free(todo.description);
@@ -306,18 +327,36 @@ fn updateTodo(orm: *ORM, id: i64, user_id: i64, updates: struct {
 
     todo.updated_at = std.time.milliTimestamp();
 
-    // Use ModelWithORM.update which handles memory management
-    return try model.update(id, todo);
+    // Use ORM.update directly (returns void) - avoids column order issues
+    try orm.update(Todo, todo);
+
+    // Fetch the updated record using findTodoById (with explicit column order)
+    const updated = try findTodoById(orm, id, user_id);
+    return updated;
 }
 
 fn deleteTodo(orm: *ORM, id: i64, user_id: i64) !bool {
-    // First verify todo belongs to user
-    const todo = try findTodoById(orm, id, user_id);
-    if (todo == null) return false;
+    // First verify todo belongs to user using findTodoById (with explicit column order)
+    const todo_opt = try findTodoById(orm, id, user_id);
+    if (todo_opt == null) {
+        std.debug.print("[deleteTodo] Todo not found or doesn't belong to user\n", .{});
+        return false;
+    }
 
-    // Use ModelWithORM for automatic memory management
-    var model = TodoModelORM.init(orm);
-    return try model.delete(id);
+    const todo = todo_opt.?;
+    // Free the todo strings since we verified ownership
+    defer {
+        allocator.free(todo.title);
+        allocator.free(todo.description);
+        allocator.free(todo.priority);
+        allocator.free(todo.tags);
+    }
+
+    // Use ORM.delete directly (returns void) - avoids column order issues from model.delete()
+    std.debug.print("[deleteTodo] Deleting todo id: {d}\n", .{id});
+    try orm.delete(Todo, id);
+    std.debug.print("[deleteTodo] Delete successful\n", .{});
+    return true;
 }
 
 fn getStats(orm: *ORM, user_id: i64) !TodoStats {
@@ -444,9 +483,12 @@ fn handleGetTodos(request: *Request) Response {
     };
 
     // Get todos filtered by user_id
-    var todos = getAllTodos(orm, user.id) catch {
+    std.debug.print("[handleGetTodos] Fetching todos for user_id: {d}\n", .{user.id});
+    var todos = getAllTodos(orm, user.id) catch |err| {
+        std.debug.print("[handleGetTodos] getAllTodos failed with error: {}\n", .{err});
         return Response.serverError("Failed to fetch todos");
     };
+    std.debug.print("[handleGetTodos] Found {d} todos\n", .{todos.items.len});
     defer {
         for (todos.items) |todo| {
             allocator.free(todo.title);
@@ -513,6 +555,18 @@ fn handleGetTodo(request: *Request) Response {
 }
 
 fn handleCreateTodo(request: *Request) Response {
+    // Debug: Log request details
+    const body = request.body();
+    const content_length_str = request.header("Content-Length");
+    const content_length = if (content_length_str) |cl_str|
+        std.fmt.parseInt(usize, cl_str, 10) catch 0
+    else
+        0;
+
+    std.debug.print("[handleCreateTodo] Method: {s}, Path: {s}\n", .{ request.method(), request.path() });
+    std.debug.print("[handleCreateTodo] Body length: {d}, Content-Length header: {d}\n", .{ body.len, content_length });
+    std.debug.print("[handleCreateTodo] Body content (first 200 chars): {s}\n", .{if (body.len > 200) body[0..200] else body});
+
     // Require authentication
     const user = BasicAuthValve.requireAuth(request) catch {
         return Response.errorResponse("Authentication required", 401);
@@ -523,7 +577,9 @@ fn handleCreateTodo(request: *Request) Response {
         allocator.free(user.password_hash);
     }
 
-    const parsed = request.jsonBody(TodoInput) catch {
+    const parsed = request.jsonBody(TodoInput) catch |err| {
+        std.debug.print("[handleCreateTodo] JSON parsing error: {}\n", .{err});
+        std.debug.print("[handleCreateTodo] Body was: {s}\n", .{body});
         return Response.errorResponse("Invalid JSON", 400);
     };
     // Note: parsed strings are allocated with request.arena.allocator()
@@ -598,9 +654,12 @@ fn handleCreateTodo(request: *Request) Response {
     const tags_value = parsed.tags orelse "";
 
     // Create todo with user_id
-    const todo = createTodo(orm, user.id, title_value, description_value, priority_value, parsed.due_date, tags_value) catch {
+    std.debug.print("[handleCreateTodo] Calling createTodo with user_id: {d}, title: {s}\n", .{ user.id, title_value });
+    const todo = createTodo(orm, user.id, title_value, description_value, priority_value, parsed.due_date, tags_value) catch |err| {
+        std.debug.print("[handleCreateTodo] createTodo failed with error: {}\n", .{err});
         return Response.serverError("Failed to create todo");
     };
+    std.debug.print("[handleCreateTodo] Todo created successfully with id: {d}\n", .{todo.id});
 
     defer {
         allocator.free(todo.title);
@@ -632,6 +691,8 @@ fn handleUpdateTodo(request: *Request) Response {
     const id = request.paramTyped(i64, "id") catch {
         return Response.errorResponse("Invalid ID", 400);
     };
+
+    std.debug.print("[handleUpdateTodo] Updating todo id: {d} for user_id: {d}\n", .{ id, user.id });
 
     const parsed = request.jsonBody(TodoInput) catch {
         return Response.errorResponse("Invalid JSON", 400);
@@ -709,9 +770,12 @@ fn handleUpdateTodo(request: *Request) Response {
         .priority = parsed.priority,
         .due_date = parsed.due_date,
         .tags = parsed.tags,
-    }) catch {
+    }) catch |err| {
+        std.debug.print("[handleUpdateTodo] updateTodo failed with error: {}\n", .{err});
         return Response.serverError("Failed to update todo");
     };
+
+    std.debug.print("[handleUpdateTodo] updateTodo returned, found: {}\n", .{updates != null});
 
     const todo = updates orelse {
         return Response.notFound("Todo not found");
@@ -747,14 +811,19 @@ fn handleDeleteTodo(request: *Request) Response {
         return Response.errorResponse("Invalid ID", 400);
     };
 
+    std.debug.print("[handleDeleteTodo] Deleting todo id: {d} for user_id: {d}\n", .{ id, user.id });
+
     const orm = getORM() catch {
         return Response.serverError("Database not initialized");
     };
 
     // Delete todo (verify ownership inside deleteTodo)
-    const deleted = deleteTodo(orm, id, user.id) catch {
+    const deleted = deleteTodo(orm, id, user.id) catch |err| {
+        std.debug.print("[handleDeleteTodo] deleteTodo failed with error: {}\n", .{err});
         return Response.serverError("Failed to delete todo");
     };
+
+    std.debug.print("[handleDeleteTodo] deleteTodo returned: {}\n", .{deleted});
 
     if (deleted) {
         // Invalidate cache when todos change (include user_id in cache key)
@@ -816,7 +885,7 @@ fn handleSearchTodos(request: *Request) Response {
         return Response.serverError("Failed to format search query");
     };
     const sql = std.fmt.allocPrint(request.arena.allocator(),
-        \\SELECT * FROM Todo WHERE 
+        \\SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE 
         \\  user_id = {d} AND (
         \\    title LIKE '{s}' OR 
         \\    description LIKE '{s}' OR 
@@ -1082,7 +1151,7 @@ fn cleanupOldCompletedTodos() void {
 
     // Use raw SQL to delete old completed todos for all users
     const sql = std.fmt.allocPrint(orm.allocator,
-        \\DELETE FROM Todo WHERE completed = 1 AND ({} - updated_at) > {}
+        \\DELETE FROM todos WHERE completed = 1 AND ({} - updated_at) > {}
     , .{ now, SEVEN_DAYS_MS }) catch {
         if (logger) |l| {
             const entry = l.logError("Failed to build cleanup SQL") catch return;
@@ -1119,7 +1188,7 @@ fn checkOverdueTodos() void {
 
     // Use raw SQL to count overdue todos for all users
     const sql = std.fmt.allocPrint(orm.allocator,
-        \\SELECT COUNT(*) as count FROM Todo WHERE completed = 0 AND due_date IS NOT NULL AND due_date < {}
+        \\SELECT COUNT(*) as count FROM todos WHERE completed = 0 AND due_date IS NOT NULL AND due_date < {}
     , .{now}) catch {
         if (logger) |l| {
             const entry = l.logError("Failed to build overdue check SQL") catch return;
@@ -1162,7 +1231,7 @@ fn validateStoreHealth() void {
     };
 
     // Use raw SQL to count all todos across all users
-    const sql = "SELECT COUNT(*) as count FROM Todo";
+    const sql = "SELECT COUNT(*) as count FROM todos";
     var result = orm.db.query(sql) catch {
         if (logger) |l| {
             const entry = l.logError("Failed to get todo count for health validation") catch return;

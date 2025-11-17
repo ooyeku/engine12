@@ -58,11 +58,8 @@ pub const Request = struct {
     }
 
     /// Get a header value by name (returns null if not found)
-    pub fn header(self: *const Request, _: []const u8) ?[]const u8 {
-        // ziggurat may not expose headers directly, so we'll need to check
-        // For now, return null as a placeholder
-        _ = self;
-        return null;
+    pub fn header(self: *const Request, name: []const u8) ?[]const u8 {
+        return self.inner.headers.get(name);
     }
 
     /// Parse and get query parameters

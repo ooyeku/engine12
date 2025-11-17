@@ -26,42 +26,42 @@ pub fn Result(comptime T: type) type {
     return struct {
         items: std.ArrayListUnmanaged(T),
         allocator: std.mem.Allocator,
-        
+
         const Self = @This();
-        
+
         pub fn init(items: std.ArrayListUnmanaged(T), allocator: std.mem.Allocator) Self {
             return Self{
                 .items = items,
                 .allocator = allocator,
             };
         }
-        
+
         /// Get the items as a slice
         pub fn getItems(self: *const Self) []const T {
             return self.items.items;
         }
-        
+
         /// Get mutable access to items
         pub fn getItemsMut(self: *Self) []T {
             return self.items.items;
         }
-        
+
         /// Get the length
         pub fn len(self: *const Self) usize {
             return self.items.items.len;
         }
-        
+
         /// Check if empty
         pub fn isEmpty(self: *const Self) bool {
             return self.items.items.len == 0;
         }
-        
+
         /// Get first item, or null if empty
         pub fn first(self: *const Self) ?T {
             if (self.items.items.len == 0) return null;
             return self.items.items[0];
         }
-        
+
         /// Deinitialize and free all string fields
         pub fn deinit(self: *Self) void {
             for (self.items.items) |item| {
@@ -134,8 +134,24 @@ pub const ORM = struct {
         return error.NotImplemented;
     }
 
+    /// Helper to get lowercase table name for a type
+    fn getTableName(self: *ORM, comptime T: type) ![]const u8 {
+        const raw_table_name = model.inferTableName(T);
+        const table_name = try model.toLowercaseTableName(self.allocator, raw_table_name);
+
+        // Special case: "todo" -> "todos" (plural)
+        // This handles the mismatch between struct name "Todo" and table name "todos"
+        if (std.mem.eql(u8, table_name, "todo")) {
+            defer self.allocator.free(table_name);
+            return try self.allocator.dupe(u8, "todos");
+        }
+
+        return table_name;
+    }
+
     pub fn create(self: *ORM, comptime T: type, instance: T) !void {
-        const table_name = model.inferTableName(T);
+        const table_name = try self.getTableName(T);
+        defer self.allocator.free(table_name);
         var fields = std.ArrayListUnmanaged([]const u8){};
         defer fields.deinit(self.allocator);
 
@@ -211,7 +227,8 @@ pub const ORM = struct {
     }
 
     pub fn find(self: *ORM, comptime T: type, id: i64) !?T {
-        const table_name = model.inferTableName(T);
+        const table_name = try self.getTableName(T);
+        defer self.allocator.free(table_name);
         const sql = try std.fmt.allocPrint(
             self.allocator,
             "SELECT * FROM {s} WHERE id = {d}",
@@ -294,11 +311,11 @@ pub const ORM = struct {
 
         return null;
     }
-    
+
     /// Find a record by ID with automatic memory management
     /// Returns a Result wrapper that automatically frees string fields on deinit
     /// Returns null if not found
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// if (try orm.findManaged(Todo, 1)) |result| {
@@ -310,7 +327,7 @@ pub const ORM = struct {
     pub fn findManaged(self: *ORM, comptime T: type, id: i64) !?Result(T) {
         const item = try self.find(T, id);
         if (item == null) return null;
-        
+
         // Wrap single item in Result
         var items = std.ArrayListUnmanaged(T){};
         try items.append(self.allocator, item.?);
@@ -318,7 +335,8 @@ pub const ORM = struct {
     }
 
     pub fn findAll(self: *ORM, comptime T: type) !std.ArrayListUnmanaged(T) {
-        const table_name = model.inferTableName(T);
+        const table_name = try self.getTableName(T);
+        defer self.allocator.free(table_name);
         const sql = try std.fmt.allocPrint(
             self.allocator,
             "SELECT * FROM {s}",
@@ -350,10 +368,10 @@ pub const ORM = struct {
 
         return result;
     }
-    
+
     /// Find all records with automatic memory management
     /// Returns a Result wrapper that automatically frees string fields on deinit
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// var result = try orm.findAllManaged(Todo);
@@ -368,7 +386,8 @@ pub const ORM = struct {
     }
 
     pub fn where(self: *ORM, comptime T: type, condition: []const u8) !std.ArrayListUnmanaged(T) {
-        const table_name = model.inferTableName(T);
+        const table_name = try self.getTableName(T);
+        defer self.allocator.free(table_name);
         const sql = try std.fmt.allocPrint(
             self.allocator,
             "SELECT * FROM {s} WHERE {s}",
@@ -403,7 +422,8 @@ pub const ORM = struct {
     }
 
     pub fn update(self: *ORM, comptime T: type, instance: T) !void {
-        const table_name = model.inferTableName(T);
+        const table_name = try self.getTableName(T);
+        defer self.allocator.free(table_name);
         var updates = std.ArrayListUnmanaged([]const u8){};
         defer {
             for (updates.items) |item| {
@@ -483,7 +503,8 @@ pub const ORM = struct {
     }
 
     pub fn delete(self: *ORM, comptime T: type, id: i64) !void {
-        const table_name = model.inferTableName(T);
+        const table_name = try self.getTableName(T);
+        defer self.allocator.free(table_name);
         const sql = try std.fmt.allocPrint(
             self.allocator,
             "DELETE FROM {s} WHERE id = {d}",
@@ -519,9 +540,9 @@ pub const ORM = struct {
         var runner = MigrationRunner.init(&self.db, self.allocator);
         try runner.runMigrations(migrations);
     }
-    
+
     /// Run migrations from a MigrationRegistry
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// var registry = MigrationRegistry.init(allocator);
@@ -542,10 +563,10 @@ pub const ORM = struct {
     pub fn migrate(self: *ORM, migrations: []const Migration) !void {
         try self.runMigrations(migrations);
     }
-    
+
     /// Escape a string for safe use in SQL LIKE patterns
     /// Convenience wrapper around SqlEscape.escapeLikePattern
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// const safe_pattern = try orm.escapeLike("test%_data", allocator);

@@ -155,12 +155,8 @@ pub const BasicAuthValve = struct {
 
         // Execute the SQL directly
         self.config.orm.db.execute(create_table_sql) catch |err| {
-            std.debug.print("[BasicAuthValve] Failed to create users table: {}\n", .{err});
-            std.debug.print("[BasicAuthValve] SQL: {s}\n", .{create_table_sql});
             return err;
         };
-
-        std.debug.print("[BasicAuthValve] Successfully created users table '{s}'\n", .{self.config.user_table_name});
     }
 
     /// Authentication middleware
@@ -175,15 +171,23 @@ pub const BasicAuthValve = struct {
             return .proceed; // Invalid format, but allow through
         }
 
-        const token = auth_header["Bearer ".len..];
-        if (token.len == 0) {
+        const token_slice = auth_header["Bearer ".len..];
+        if (token_slice.len == 0) {
             return .proceed;
         }
 
-        // Get valve instance from global context (stored during init)
-        // For now, we'll validate in route handlers that require auth
+        // Duplicate the token so it persists beyond the header's lifetime
+        // The token is stored in the request arena, which persists for the request duration
+        const token = req.arena.allocator().dupe(u8, token_slice) catch {
+            // If allocation fails, just proceed without storing token
+            return .proceed;
+        };
+
         // Store token in context for later validation
-        req.context.put("auth_token", token) catch {};
+        req.context.put("auth_token", token) catch {
+            return .proceed;
+        };
+
         return .proceed;
     }
 
@@ -318,13 +322,11 @@ pub const BasicAuthValve = struct {
         };
 
         // Get the created user's ID
-        const user_id = self.config.orm.db.lastInsertRowId() catch {
+        _ = self.config.orm.db.lastInsertRowId() catch {
             self.config.orm.allocator.free(username_copy);
             self.config.orm.allocator.free(email_copy);
             return Response.errorResponse("Failed to get created user ID", 500);
         };
-
-        std.debug.print("[BasicAuthValve] User created successfully: {s} (id: {d})\n", .{ username_copy, user_id });
 
         // Return success - user created (frontend will automatically log in)
         return Response.created();
@@ -332,9 +334,7 @@ pub const BasicAuthValve = struct {
 
     /// Handle user login
     pub fn handleLogin(req: *Request) Response {
-        std.debug.print("[BasicAuthValve] Login request received\n", .{});
         const self = Self.getInstance(req) orelse {
-            std.debug.print("[BasicAuthValve] Valve not initialized\n", .{});
             return Response.errorResponse("Authentication valve not initialized", 500);
         };
 
@@ -342,53 +342,36 @@ pub const BasicAuthValve = struct {
 
         // Parse request body
         const body = req.body();
-        std.debug.print("[BasicAuthValve] Login request body: {s}\n", .{body});
-        const input = json_module.Json.deserialize(UserInput, body, allocator) catch |err| {
-            std.debug.print("[BasicAuthValve] Failed to parse login request: {}\n", .{err});
+        const input = json_module.Json.deserialize(UserInput, body, allocator) catch {
             return Response.errorResponse("Invalid request body", 400);
         };
 
-        std.debug.print("[BasicAuthValve] Parsed input - username: {?s}, email: {?s}, password: {?s}\n", .{ input.username, input.email, input.password });
-
         // Get username/email and password
         const username_or_email = input.username orelse input.email orelse {
-            std.debug.print("[BasicAuthValve] Missing username/email\n", .{});
             return Response.errorResponse("Username or email is required", 400);
         };
         const pwd = input.password orelse {
-            std.debug.print("[BasicAuthValve] Missing password - input.password is null\n", .{});
             return Response.errorResponse("Password is required", 400);
         };
-
-        std.debug.print("[BasicAuthValve] Looking up user: {s}\n", .{username_or_email});
 
         // Find user by username or email using raw SQL with configured table name
         const find_sql = std.fmt.allocPrint(
             allocator,
             "SELECT * FROM {s}",
             .{self.config.user_table_name},
-        ) catch |err| {
-            std.debug.print("[BasicAuthValve] Failed to allocate SQL: {}\n", .{err});
+        ) catch {
             return Response.serverError("Failed to allocate memory");
         };
         defer allocator.free(find_sql);
 
-        std.debug.print("[BasicAuthValve] Executing query: {s}\n", .{find_sql});
-
-        var find_result = self.config.orm.db.query(find_sql) catch |err| {
-            std.debug.print("[BasicAuthValve] Query failed: {}\n", .{err});
+        var find_result = self.config.orm.db.query(find_sql) catch {
             return Response.serverError("Failed to query users");
         };
         defer find_result.deinit();
 
-        std.debug.print("[BasicAuthValve] Query executed successfully\n", .{});
-
-        var all_users = find_result.toArrayList(User) catch |err| {
-            std.debug.print("[BasicAuthValve] Failed to parse user data: {}\n", .{err});
+        var all_users = find_result.toArrayList(User) catch {
             return Response.serverError("Failed to parse user data");
         };
-
-        std.debug.print("[BasicAuthValve] Found {d} users in database\n", .{all_users.items.len});
         defer {
             for (all_users.items) |user| {
                 self.config.orm.allocator.free(user.username);
@@ -409,11 +392,8 @@ pub const BasicAuthValve = struct {
         }
 
         const user = found_user orelse {
-            std.debug.print("[BasicAuthValve] User not found: {s}\n", .{username_or_email});
             return Response.errorResponse("Invalid username or password", 401);
         };
-
-        std.debug.print("[BasicAuthValve] User found: {s} (id: {d})\n", .{ user.username, user.id });
 
         // Copy user data we need before all_users is freed
         const user_id = user.id;
@@ -433,11 +413,8 @@ pub const BasicAuthValve = struct {
         // Verify password
         const password_valid = password.verify(pwd, user_password_hash);
         if (!password_valid) {
-            std.debug.print("[BasicAuthValve] Password verification failed for user: {s}\n", .{user_username});
             return Response.errorResponse("Invalid username or password", 401);
         }
-
-        std.debug.print("[BasicAuthValve] Password verified successfully for user: {s}\n", .{user_username});
 
         // Generate JWT token
         const now = std.time.timestamp();
@@ -447,13 +424,10 @@ pub const BasicAuthValve = struct {
             .exp = now + self.config.token_expiry_seconds,
         };
 
-        const token = jwt.encode(claims, self.config.secret_key, allocator) catch |err| {
-            std.debug.print("[BasicAuthValve] Failed to generate token: {}\n", .{err});
+        const token = jwt.encode(claims, self.config.secret_key, allocator) catch {
             return Response.serverError("Failed to generate token");
         };
         defer allocator.free(token);
-
-        std.debug.print("[BasicAuthValve] Generated token successfully for user: {s}\n", .{user_username});
 
         // Copy token to persistent memory for response
         const persistent_token = std.heap.page_allocator.dupe(u8, token) catch {
@@ -483,16 +457,13 @@ pub const BasicAuthValve = struct {
         };
 
         // Serialize to JSON (need to copy to persistent memory)
-        const json_str = json_module.Json.serialize(LoginResponse, login_response, allocator) catch |err| {
-            std.debug.print("[BasicAuthValve] Failed to serialize login response: {}\n", .{err});
+        const json_str = json_module.Json.serialize(LoginResponse, login_response, allocator) catch {
             std.heap.page_allocator.free(persistent_token);
             std.heap.page_allocator.free(persistent_username);
             std.heap.page_allocator.free(persistent_email);
             return Response.serverError("Failed to serialize response");
         };
         defer allocator.free(json_str);
-
-        std.debug.print("[BasicAuthValve] Login response JSON: {s}\n", .{json_str});
 
         const persistent_json = std.heap.page_allocator.dupe(u8, json_str) catch {
             std.heap.page_allocator.free(persistent_token);
@@ -531,19 +502,46 @@ pub const BasicAuthValve = struct {
         };
         defer allocator.free(claims.username);
 
-        // Find user
-        const user_opt = self.user_model.find(claims.user_id) catch {
+        // Find user using raw SQL with configured table name
+        // (ModelWithORM uses inferTableName which returns "user" but table is "users")
+        const sql = std.fmt.allocPrint(
+            allocator,
+            "SELECT * FROM {s} WHERE id = {d}",
+            .{ self.config.user_table_name, claims.user_id },
+        ) catch {
+            return Response.serverError("Failed to allocate SQL");
+        };
+        defer allocator.free(sql);
+
+        var result = self.config.orm.db.query(sql) catch {
             return Response.serverError("Failed to query user");
         };
+        defer result.deinit();
 
-        const user = user_opt orelse {
-            return Response.errorResponse("User not found", 404);
+        var users = result.toArrayList(User) catch {
+            return Response.serverError("Failed to parse user data");
         };
         defer {
-            self.config.orm.allocator.free(user.username);
-            self.config.orm.allocator.free(user.email);
-            self.config.orm.allocator.free(user.password_hash);
+            for (users.items) |u| {
+                self.config.orm.allocator.free(u.username);
+                self.config.orm.allocator.free(u.email);
+                self.config.orm.allocator.free(u.password_hash);
+            }
+            users.deinit(self.config.orm.allocator);
         }
+
+        const user = if (users.items.len > 0) users.items[0] else {
+            return Response.errorResponse("User not found", 404);
+        };
+
+        // Copy strings to persistent allocator for response
+        const user_username = std.heap.page_allocator.dupe(u8, user.username) catch {
+            return Response.serverError("Failed to allocate username");
+        };
+        const user_email = std.heap.page_allocator.dupe(u8, user.email) catch {
+            std.heap.page_allocator.free(user_username);
+            return Response.serverError("Failed to allocate email");
+        };
 
         // Return user info (without password_hash)
         const user_response = struct {
@@ -553,27 +551,72 @@ pub const BasicAuthValve = struct {
             created_at: i64,
         }{
             .id = user.id,
-            .username = user.username,
-            .email = user.email,
+            .username = user_username,
+            .email = user_email,
             .created_at = user.created_at,
         };
 
-        return Response.jsonFrom(@TypeOf(user_response), user_response, allocator);
+        return Response.jsonFrom(@TypeOf(user_response), user_response, std.heap.page_allocator);
     }
 
     /// Get current user from request context
     /// Returns null if not authenticated
     /// Note: User strings are allocated with ORM allocator and must be freed by caller
     pub fn getCurrentUser(req: *Request) !?User {
-        const self = Self.getInstance(req) orelse return null;
+        const self = Self.getInstance(req) orelse {
+            return null;
+        };
 
-        const token = req.context.get("auth_token") orelse return null;
+        const token = req.context.get("auth_token") orelse {
+            return null;
+        };
+
         const allocator = req.arena.allocator();
 
-        const claims = jwt.decode(token, self.config.secret_key, allocator) catch return null;
+        const claims = jwt.decode(token, self.config.secret_key, allocator) catch {
+            return null;
+        };
         defer allocator.free(claims.username);
 
-        return self.user_model.find(claims.user_id) catch null;
+        // Use raw SQL with configured table name instead of ModelWithORM
+        // because ModelWithORM uses inferTableName which returns "user" but table is "users"
+        const sql = try std.fmt.allocPrint(
+            allocator,
+            "SELECT * FROM {s} WHERE id = {d}",
+            .{ self.config.user_table_name, claims.user_id },
+        );
+        defer allocator.free(sql);
+
+        var result = self.config.orm.db.query(sql) catch {
+            return null;
+        };
+        defer result.deinit();
+
+        var users = result.toArrayList(User) catch {
+            return null;
+        };
+        defer {
+            for (users.items) |user| {
+                self.config.orm.allocator.free(user.username);
+                self.config.orm.allocator.free(user.email);
+                self.config.orm.allocator.free(user.password_hash);
+            }
+            users.deinit(self.config.orm.allocator);
+        }
+
+        if (users.items.len > 0) {
+            const user = users.items[0];
+            // Copy strings to ORM allocator (caller will free them)
+            return User{
+                .id = user.id,
+                .username = try self.config.orm.allocator.dupe(u8, user.username),
+                .email = try self.config.orm.allocator.dupe(u8, user.email),
+                .password_hash = try self.config.orm.allocator.dupe(u8, user.password_hash),
+                .created_at = user.created_at,
+            };
+        }
+
+        return null;
     }
 
     /// Require authentication or return error response
