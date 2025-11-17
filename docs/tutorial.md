@@ -910,6 +910,12 @@ pub fn main() !void {
     });
     try app.registerValve(&auth_valve.valve);
     
+    // Manually register auth routes (route registration through valve context not yet implemented)
+    try app.post("/auth/register", E12.BasicAuthValve.handleRegister);
+    try app.post("/auth/login", E12.BasicAuthValve.handleLogin);
+    try app.post("/auth/logout", E12.BasicAuthValve.handleLogout);
+    try app.get("/auth/me", E12.BasicAuthValve.handleGetMe);
+    
     // Register protected route
     try app.get("/protected", handleProtected);
     
@@ -933,12 +939,14 @@ fn handleProtected(req: *E12.Request) E12.Response {
 }
 ```
 
-The `BasicAuthValve` provides:
+The `BasicAuthValve` provides handler functions for:
 - `POST /auth/register` - User registration
 - `POST /auth/login` - User login (returns JWT token)
 - `POST /auth/logout` - Logout
 - `GET /auth/me` - Get current user info
 - Automatic authentication middleware for JWT validation
+
+**Note**: Routes must be manually registered after registering the valve, as shown in the example above.
 
 See the [API Reference](../api-reference.md#builtin-valves) for complete documentation.
 

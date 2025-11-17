@@ -53,9 +53,11 @@ const MetricsValve = struct {
     pub fn initValve(v: *E12.Valve, ctx: *E12.ValveContext) !void {
         const self = @as(*Self, @ptrFromInt(@intFromPtr(v) - @offsetOf(Self, "valve")));
         
-        // Register metrics endpoints
-        try ctx.registerRoute("GET", "/metrics/stats", Self.handleStats);
-        try ctx.registerRoute("GET", "/metrics/reset", Self.handleReset);
+        // Note: Route registration through ctx.registerRoute() is not yet implemented
+        // Routes must be registered directly on the app using app.get(), app.post(), etc.
+        // For this example, routes would need to be registered manually after valve registration:
+        // try app.get("/metrics/stats", Self.handleStats);
+        // try app.get("/metrics/reset", Self.handleReset);
         
         // Register middleware to track requests
         try ctx.registerMiddleware(&Self.trackRequest);
@@ -153,6 +155,11 @@ pub fn main() !void {
     var metrics_valve = MetricsValve.init(allocator);
     try app.registerValve(&metrics_valve.valve);
 
+    // Note: Route registration through valve context is not yet implemented
+    // Register valve routes manually after valve registration:
+    // try app.get("/metrics/stats", MetricsValve.handleStats);
+    // try app.get("/metrics/reset", MetricsValve.handleReset);
+
     // Register your routes
     try app.get("/", handleRoot);
 
@@ -248,9 +255,12 @@ pub fn initValve(v: *E12.Valve, ctx: *E12.ValveContext) !void {
     if (ctx.hasCapability(.database_access)) {
         if (try ctx.getORM()) |orm| {
             // Use ORM
-            const todos = try orm.findAll(Todo);
+            // Note: This is just an example - actual ORM usage would happen in route handlers
+            // const todos = try orm.findAll(Todo);
+            _ = orm;
         }
     }
+    _ = v;
 }
 ```
 

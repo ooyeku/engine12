@@ -97,6 +97,8 @@ Or use a signal handler for graceful shutdown.
    };
    ```
 
+**Note**: `paramTyped()` returns `error.InvalidArgument` if the parameter is missing or type conversion fails.
+
 ### Query Parameter Errors
 
 **Problem**: Query parameter methods return unexpected results.
@@ -133,8 +135,7 @@ Or use a signal handler for graceful shutdown.
    ```
 
 **Common errors:**
-- `error.InvalidArgument` - Type conversion failed when using `queryParamTyped()` or `paramTyped()`
-- `error.ParameterMissing` - Parameter not found when using `paramTyped()`
+- `error.InvalidArgument` - Parameter missing or type conversion failed when using `queryParamTyped()` or `paramTyped()`
 - Solution: Check parameter name spelling, ensure type matches (u32, i64, etc.), or use optional handling with `orelse`
 
 ### Database Connection Errors
@@ -476,8 +477,8 @@ while (result.nextRow()) |row| {
 **"InvalidArgument"**
 - Solution: Type conversion failed for `queryParamTyped()` or `paramTyped()`. Check that the parameter value matches the expected type (e.g., integer for `u32`, valid boolean string for `bool`).
 
-**"ParameterMissing"**
-- Solution: Route parameter is missing when using `paramTyped()`. Check that the route pattern includes the parameter (e.g., `/todos/:id`), and the parameter name matches exactly.
+**"InvalidArgument" (from paramTyped)**
+- Solution: Route parameter is missing or type conversion failed when using `paramTyped()`. Check that the route pattern includes the parameter (e.g., `/todos/:id`), the parameter name matches exactly, and the value can be converted to the requested type.
 
 **ORM Error Messages**
 

@@ -503,10 +503,27 @@ try app.registerValve(&auth_valve.valve);
 
 **Routes:**
 
+The valve provides handler functions that must be manually registered on your Engine12 app. Route registration through the valve context is not yet implemented.
+
 - `POST /auth/register` - Register a new user (requires username, email, password)
 - `POST /auth/login` - Login and receive JWT token (requires username/email and password)
 - `POST /auth/logout` - Logout (returns success)
 - `GET /auth/me` - Get current authenticated user info (requires valid JWT token)
+
+**Route Registration:**
+
+After registering the valve, you must manually register the routes:
+
+```zig
+// Register valve
+try app.registerValve(&auth_valve.valve);
+
+// Manually register auth routes
+try app.post("/auth/register", BasicAuthValve.handleRegister);
+try app.post("/auth/login", BasicAuthValve.handleLogin);
+try app.post("/auth/logout", BasicAuthValve.handleLogout);
+try app.get("/auth/me", BasicAuthValve.handleGetMe);
+```
 
 **Authentication Middleware:**
 
@@ -723,7 +740,7 @@ const slug = try req.paramTyped([]const u8, "slug");
 const enabled = try req.paramTyped(bool, "enabled");
 ```
 
-**Error handling**: Returns `error.ParameterMissing` if parameter is missing, or `error.InvalidArgument` if type conversion fails.
+**Error handling**: Returns `error.InvalidArgument` if parameter is missing or type conversion fails.
 
 ### Query Parameters
 
