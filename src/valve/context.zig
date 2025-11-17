@@ -19,7 +19,7 @@ pub const ValveContext = struct {
     /// Allocator for valve use
     allocator: std.mem.Allocator,
     /// Granted capabilities for this valve
-    capabilities: std.ArrayList(ValveCapability),
+    capabilities: std.ArrayListUnmanaged(ValveCapability),
     /// Name of the owning valve
     valve_name: []const u8,
 
@@ -50,20 +50,15 @@ pub const ValveContext = struct {
             return valve.ValveError.CapabilityRequired;
         }
 
-        // Delegate to Engine12 based on method
-        if (std.mem.eql(u8, method, "GET")) {
-            try self.app.get(path, handler);
-        } else if (std.mem.eql(u8, method, "POST")) {
-            try self.app.post(path, handler);
-        } else if (std.mem.eql(u8, method, "PUT")) {
-            try self.app.put(path, handler);
-        } else if (std.mem.eql(u8, method, "DELETE")) {
-            try self.app.delete(path, handler);
-        } else if (std.mem.eql(u8, method, "PATCH")) {
-            try self.app.patch(path, handler);
-        } else {
-            return valve.ValveError.InvalidMethod;
-        }
+        // For runtime paths, we need to use a different approach
+        // Since Engine12 methods require comptime paths, we'll use a workaround:
+        // Store the handler in a registry and use a generic wrapper
+        // For now, return an error indicating runtime paths aren't fully supported
+        // Valves should use comptime paths when possible
+        _ = method;
+        _ = path;
+        _ = handler;
+        return valve.ValveError.InvalidMethod; // TODO: Implement runtime route registration
     }
 
     /// Register pre-request middleware

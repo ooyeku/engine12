@@ -7,10 +7,10 @@ const middleware_chain = @import("middleware.zig");
 pub const RateLimitConfig = struct {
     /// Maximum number of requests allowed
     max_requests: u64,
-    
+
     /// Time window in milliseconds
     window_ms: u64,
-    
+
     /// Message to return when rate limit is exceeded
     message: []const u8 = "Rate limit exceeded",
 };
@@ -19,18 +19,18 @@ pub const RateLimitConfig = struct {
 pub const RateLimitEntry = struct {
     count: u64 = 0,
     reset_at: i64,
-    
+
     pub fn init(window_ms: u64) RateLimitEntry {
         return RateLimitEntry{
             .count = 0,
             .reset_at = std.time.milliTimestamp() + @as(i64, @intCast(window_ms)),
         };
     }
-    
+
     pub fn isExpired(self: *const RateLimitEntry) bool {
         return std.time.milliTimestamp() >= self.reset_at;
     }
-    
+
     pub fn reset(self: *RateLimitEntry, window_ms: u64) void {
         self.count = 0;
         self.reset_at = std.time.milliTimestamp() + @as(i64, @intCast(window_ms));
@@ -41,18 +41,18 @@ pub const RateLimitEntry = struct {
 pub const RateLimiter = struct {
     /// Per-IP rate limits
     ip_limits: std.StringHashMap(RateLimitEntry),
-    
+
     /// Per-route rate limits
     route_limits: std.StringHashMap(RateLimitEntry),
-    
+
     /// Global rate limit config
     global_config: RateLimitConfig,
-    
+
     /// Route-specific configs
     route_configs: std.StringHashMap(RateLimitConfig),
-    
+
     allocator: std.mem.Allocator,
-    
+
     pub fn init(allocator: std.mem.Allocator, global_config: RateLimitConfig) RateLimiter {
         return RateLimiter{
             .ip_limits = std.StringHashMap(RateLimitEntry).init(allocator),
@@ -62,12 +62,12 @@ pub const RateLimiter = struct {
             .allocator = allocator,
         };
     }
-    
+
     /// Set rate limit config for a specific route
     pub fn setRouteConfig(self: *RateLimiter, route: []const u8, config: RateLimitConfig) !void {
         try self.route_configs.put(route, config);
     }
-    
+
     /// Get client IP from request
     fn getClientIP(self: *const RateLimiter, req: *Request) []const u8 {
         _ = self;
@@ -77,63 +77,63 @@ pub const RateLimiter = struct {
             const comma_pos = std.mem.indexOfScalar(u8, xff, ',') orelse xff.len;
             return xff[0..comma_pos];
         }
-        
+
         // Try X-Real-IP header
         if (req.header("X-Real-IP")) |real_ip| {
             return real_ip;
         }
-        
+
         // Fallback: use a default (in production, this should come from connection)
         return "unknown";
     }
-    
+
     /// Check if request should be rate limited
     /// Returns null if allowed, or an error response if rate limited
     pub fn check(self: *RateLimiter, req: *Request, route: []const u8) !?Response {
         const config = self.route_configs.get(route) orelse self.global_config;
         const client_ip = self.getClientIP(req);
-        
+
         // Check per-IP limit
-        var ip_entry = self.ip_limits.getPtr(client_ip);
+        const ip_entry = self.ip_limits.getPtr(client_ip);
         if (ip_entry) |entry| {
             if (entry.isExpired()) {
                 entry.reset(config.window_ms);
             }
             entry.count += 1;
             if (entry.count > config.max_requests) {
-                return Response.status(429).json(
+                return Response.json(
                     \\{"error":"Rate limit exceeded","message":"Too many requests"}
-                );
+                ).withStatus(429);
             }
         } else {
             const new_entry = RateLimitEntry.init(config.window_ms);
             try self.ip_limits.put(client_ip, new_entry);
-            ip_entry = self.ip_limits.getPtr(client_ip).?;
-            ip_entry.count = 1;
+            const ip_entry_ptr = self.ip_limits.getPtr(client_ip).?;
+            ip_entry_ptr.count = 1;
         }
-        
+
         // Check per-route limit (optional, can be more restrictive)
-        var route_entry = self.route_limits.getPtr(route);
+        const route_entry = self.route_limits.getPtr(route);
         if (route_entry) |entry| {
             if (entry.isExpired()) {
                 entry.reset(config.window_ms);
             }
             entry.count += 1;
             if (entry.count > config.max_requests) {
-                return Response.status(429).json(
+                return Response.json(
                     \\{"error":"Rate limit exceeded","message":"Too many requests for this route"}
-                );
+                ).withStatus(429);
             }
         } else {
             const new_entry = RateLimitEntry.init(config.window_ms);
             try self.route_limits.put(route, new_entry);
-            route_entry = self.route_limits.getPtr(route).?;
-            route_entry.count = 1;
+            const route_entry_ptr = self.route_limits.getPtr(route).?;
+            route_entry_ptr.count = 1;
         }
-        
+
         return null;
     }
-    
+
     /// Clean up expired entries periodically
     pub fn cleanup(self: *RateLimiter) void {
         // Clean up expired IP entries
@@ -148,7 +148,7 @@ pub const RateLimiter = struct {
             _ = self.ip_limits.remove(key);
         }
         keys_to_remove.deinit(self.allocator);
-        
+
         // Clean up expired route entries
         var route_iterator = self.route_limits.iterator();
         keys_to_remove = std.ArrayListUnmanaged([]const u8){};
@@ -162,7 +162,7 @@ pub const RateLimiter = struct {
         }
         keys_to_remove.deinit(self.allocator);
     }
-    
+
     pub fn deinit(self: *RateLimiter) void {
         self.ip_limits.deinit();
         self.route_limits.deinit();
@@ -182,10 +182,10 @@ pub fn createRateLimitMiddleware(limiter: *RateLimiter, route: []const u8) middl
         fn mw(req: *Request) middleware_chain.MiddlewareResult {
             // Access global rate limiter
             const global_limiter = @import("engine12.zig").global_rate_limiter orelse return .proceed;
-            
+
             // Get route from request path
             const route_path = req.path();
-            
+
             // Check rate limit
             if (global_limiter.check(req, route_path) catch null) |_| {
                 // Rate limit exceeded - mark in context and abort
@@ -204,7 +204,7 @@ test "RateLimiter check allows requests within limit" {
         .window_ms = 1000,
     });
     defer limiter.deinit();
-    
+
     var ziggurat_req = @import("ziggurat").request.Request{
         .path = "/test",
         .method = .GET,
@@ -212,7 +212,7 @@ test "RateLimiter check allows requests within limit" {
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
-    
+
     // First request should be allowed
     const result = try limiter.check(&req, "/test");
     try std.testing.expect(result == null);
@@ -230,7 +230,7 @@ test "RateLimiter check rejects requests exceeding limit" {
         .window_ms = 1000,
     });
     defer limiter.deinit();
-    
+
     var ziggurat_req = @import("ziggurat").request.Request{
         .path = "/test",
         .method = .GET,
@@ -238,12 +238,12 @@ test "RateLimiter check rejects requests exceeding limit" {
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
-    
+
     // Make 3 requests (should be allowed)
     _ = try limiter.check(&req, "/test");
     _ = try limiter.check(&req, "/test");
     _ = try limiter.check(&req, "/test");
-    
+
     // 4th request should be rejected
     const result = try limiter.check(&req, "/test");
     try std.testing.expect(result != null);
@@ -255,7 +255,7 @@ test "RateLimiter check resets after window expires" {
         .window_ms = 50,
     });
     defer limiter.deinit();
-    
+
     var ziggurat_req = @import("ziggurat").request.Request{
         .path = "/test",
         .method = .GET,
@@ -263,18 +263,18 @@ test "RateLimiter check resets after window expires" {
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
-    
+
     // Make 2 requests
     _ = try limiter.check(&req, "/test");
     _ = try limiter.check(&req, "/test");
-    
+
     // 3rd should be rejected
     const result1 = try limiter.check(&req, "/test");
     try std.testing.expect(result1 != null);
-    
+
     // Wait for window to expire
     std.time.sleep(60 * std.time.ns_per_ms);
-    
+
     // Should be allowed again
     const result2 = try limiter.check(&req, "/test");
     try std.testing.expect(result2 == null);
@@ -286,12 +286,12 @@ test "RateLimiter setRouteConfig applies route-specific limits" {
         .window_ms = 1000,
     });
     defer limiter.deinit();
-    
+
     try limiter.setRouteConfig("/api/login", RateLimitConfig{
         .max_requests = 2,
         .window_ms = 1000,
     });
-    
+
     var ziggurat_req = @import("ziggurat").request.Request{
         .path = "/test",
         .method = .GET,
@@ -299,14 +299,14 @@ test "RateLimiter setRouteConfig applies route-specific limits" {
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
-    
+
     // Global limit should apply to other routes
     var i: usize = 0;
     while (i < 5) : (i += 1) {
         const result = try limiter.check(&req, "/other");
         try std.testing.expect(result == null);
     }
-    
+
     // Route-specific limit should apply
     _ = try limiter.check(&req, "/api/login");
     _ = try limiter.check(&req, "/api/login");
@@ -320,7 +320,7 @@ test "RateLimiter cleanup removes expired entries" {
         .window_ms = 50,
     });
     defer limiter.deinit();
-    
+
     var ziggurat_req = @import("ziggurat").request.Request{
         .path = "/test",
         .method = .GET,
@@ -328,13 +328,13 @@ test "RateLimiter cleanup removes expired entries" {
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
-    
+
     _ = try limiter.check(&req, "/test");
-    
+
     std.time.sleep(60 * std.time.ns_per_ms);
-    
+
     limiter.cleanup();
-    
+
     // Entry should be cleaned up
     _ = try limiter.check(&req, "/test");
 }
@@ -342,9 +342,9 @@ test "RateLimiter cleanup removes expired entries" {
 test "RateLimitEntry reset clears count" {
     var entry = RateLimitEntry.init(1000);
     entry.count = 5;
-    
+
     entry.reset(1000);
-    
+
     try std.testing.expectEqual(entry.count, 0);
     try std.testing.expect(!entry.isExpired());
 }
@@ -355,20 +355,19 @@ test "RateLimiter multiple IPs tracked separately" {
         .window_ms = 1000,
     });
     defer limiter.deinit();
-    
+
     var req1 = Request.fromZiggurat(&(@import("ziggurat").request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
     }), std.testing.allocator);
     defer req1.deinit();
-    
+
     // Note: getClientIP currently returns "unknown" for all requests
     // This test verifies the structure works, even if IP detection isn't implemented
     _ = try limiter.check(&req1, "/test");
     _ = try limiter.check(&req1, "/test");
-    
+
     const result = try limiter.check(&req1, "/test");
     try std.testing.expect(result != null);
 }
-

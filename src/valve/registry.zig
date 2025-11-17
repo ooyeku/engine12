@@ -17,9 +17,9 @@ pub const MAX_VALVES = 32;
 /// Registry for managing valve registration and lifecycle
 pub const ValveRegistry = struct {
     /// Registered valves
-    valves: std.ArrayList(*Valve),
+    valves: std.ArrayListUnmanaged(*Valve),
     /// Valve contexts (parallel array with valves)
-    contexts: std.ArrayList(ValveContext),
+    contexts: std.ArrayListUnmanaged(ValveContext),
     /// Allocator for registry operations
     allocator: std.mem.Allocator,
 
@@ -28,8 +28,8 @@ pub const ValveRegistry = struct {
     /// Initialize a new valve registry
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
-            .valves = std.ArrayList(*Valve).init(allocator),
-            .contexts = std.ArrayList(ValveContext).init(allocator),
+            .valves = std.ArrayListUnmanaged(*Valve){},
+            .contexts = std.ArrayListUnmanaged(ValveContext){},
             .allocator = allocator,
         };
     }
@@ -56,12 +56,12 @@ pub const ValveRegistry = struct {
         }
 
         // Create context with granted capabilities
-        var capabilities = std.ArrayList(ValveCapability).init(self.allocator);
-        errdefer capabilities.deinit();
+        var capabilities = std.ArrayListUnmanaged(ValveCapability){};
+        errdefer capabilities.deinit(self.allocator);
 
         // Grant all requested capabilities from metadata
         for (valve_ptr.metadata.required_capabilities) |cap| {
-            try capabilities.append(cap);
+            try capabilities.append(self.allocator, cap);
         }
 
         var ctx = ValveContext{
@@ -75,8 +75,8 @@ pub const ValveRegistry = struct {
         try valve_ptr.init(valve_ptr, &ctx);
 
         // Store valve and context
-        try self.valves.append(valve_ptr);
-        try self.contexts.append(ctx);
+        try self.valves.append(self.allocator, valve_ptr);
+        try self.contexts.append(self.allocator, ctx);
     }
 
     /// Unregister a valve by name
@@ -126,11 +126,11 @@ pub const ValveRegistry = struct {
     /// Get all registered valve names
     /// Returns a slice of valve names (allocated with provided allocator)
     pub fn getValveNames(self: *Self, allocator: std.mem.Allocator) ![]const []const u8 {
-        var names = std.ArrayList([]const u8).init(allocator);
+        var names = std.ArrayListUnmanaged([]const u8){};
         for (self.valves.items) |v| {
-            try names.append(v.metadata.name);
+            try names.append(allocator, v.metadata.name);
         }
-        return names.toOwnedSlice();
+        return names.toOwnedSlice(allocator);
     }
 
     /// Call onAppStart for all registered valves
