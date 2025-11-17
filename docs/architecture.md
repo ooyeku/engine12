@@ -173,6 +173,8 @@ The `QueryResult` (`src/orm/row.zig`) handles:
 - **Optional field deserialization**: Correctly handles null values for optional fields
 - **Optional enum deserialization**: Supports optional enum fields with proper type conversion
 
+**Column Order Mapping**: The ORM maps database columns to struct fields by position, not by name. SQLite returns columns in table creation order, but the ORM maps them to struct fields in struct field declaration order. If these orders don't match, you'll get `error.NullValueForNonOptional` errors. When using raw SQL queries with `orm.query()`, ensure the column order in your SELECT statement matches the struct field order. ORM methods like `find()`, `findAll()`, and `where()` use `SELECT *` internally, which may cause column order issues if your table schema order differs from struct field order. For complex schemas, always use raw SQL with explicit column names that match your struct field order.
+
 ### Error Messages
 
 The ORM provides improved error messages with detailed context:
