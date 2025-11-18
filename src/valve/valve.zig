@@ -9,6 +9,20 @@ pub const ValveError = error{
     InvalidMethod,
 };
 
+/// State of a valve in its lifecycle
+pub const ValveState = enum {
+    /// Valve has been registered but not initialized
+    registered,
+    /// Valve has been initialized successfully
+    initialized,
+    /// Valve's onAppStart hook has been called successfully
+    started,
+    /// Valve's onAppStop hook has been called
+    stopped,
+    /// Valve encountered an error during initialization or startup
+    failed,
+};
+
 /// Capabilities that a valve can request
 /// Each capability grants access to specific Engine12 features
 pub const ValveCapability = enum {

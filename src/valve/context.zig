@@ -1,4 +1,5 @@
 const std = @import("std");
+const ziggurat = @import("ziggurat");
 const engine12 = @import("../engine12.zig");
 const Engine12 = engine12.Engine12;
 const Request = @import("../request.zig").Request;
@@ -10,6 +11,9 @@ const metrics = @import("../metrics.zig");
 const orm = @import("../orm/orm.zig");
 const valve = @import("valve.zig");
 const ValveCapability = valve.ValveCapability;
+const handlers = @import("../handlers.zig");
+const wrapHandler = engine12.wrapHandler;
+const createRuntimeRouteWrapper = engine12.createRuntimeRouteWrapper;
 
 /// Controlled access to Engine12 runtime for valves
 /// Provides capability-checked methods for interacting with Engine12
@@ -22,6 +26,8 @@ pub const ValveContext = struct {
     capabilities: std.ArrayListUnmanaged(ValveCapability),
     /// Name of the owning valve
     valve_name: []const u8,
+    /// Current state of the valve
+    state: valve.ValveState = .registered,
 
     const Self = @This();
 
@@ -50,15 +56,70 @@ pub const ValveContext = struct {
             return valve.ValveError.CapabilityRequired;
         }
 
-        // For runtime paths, we need to use a different approach
-        // Since Engine12 methods require comptime paths, we'll use a workaround:
-        // Store the handler in a registry and use a generic wrapper
-        // For now, return an error indicating runtime paths aren't fully supported
-        // Valves should use comptime paths when possible
-        _ = method;
-        _ = path;
-        _ = handler;
-        return valve.ValveError.InvalidMethod; // TODO: Implement runtime route registration
+        // Register route in runtime route registry
+        // Convert handler function to function pointer
+        const handler_ptr: *const fn (*Request) Response = handler;
+        try self.app.runtime_routes.register(method, path, handler_ptr, self.valve_name);
+
+        // Build server if not already built
+        if (self.app.built_server == null) {
+            var builder = ziggurat.ServerBuilder.init(self.app.allocator);
+            var server = try builder
+                .host("127.0.0.1")
+                .port(8080)
+                .readTimeout(5000)
+                .writeTimeout(5000)
+                .build();
+
+            // Set globals for middleware and metrics
+            engine12.global_middleware = &self.app.middleware;
+            engine12.global_metrics = &self.app.metrics_collector;
+            engine12.global_runtime_routes = &self.app.runtime_routes;
+
+            // Register default routes if not already registered
+            if (!self.app.static_root_mounted and !self.app.custom_root_handler) {
+                const default_handler = struct {
+                    fn handle(_: *Request) Response {
+                        return Response.text("Engine12");
+                    }
+                }.handle;
+                try server.get("/", wrapHandler(default_handler, "/"));
+            }
+            try server.get("/health", wrapHandler(handlers.handleHealthEndpoint, "/health"));
+            try server.get("/metrics", wrapHandler(handlers.handleMetricsEndpoint, "/metrics"));
+
+            self.app.built_server = server;
+            self.app.http_server = @ptrCast(&server);
+        }
+
+        // Set globals if not already set
+        engine12.global_middleware = &self.app.middleware;
+        engine12.global_metrics = &self.app.metrics_collector;
+        engine12.global_runtime_routes = &self.app.runtime_routes;
+
+        // Create wrapper function for runtime routes (single wrapper for all routes)
+        const wrapped_handler = createRuntimeRouteWrapper();
+
+        // Register with ziggurat server
+        if (self.app.built_server) |*server| {
+            if (std.mem.eql(u8, method, "GET")) {
+                try server.get(path, wrapped_handler);
+            } else if (std.mem.eql(u8, method, "POST")) {
+                try server.post(path, wrapped_handler);
+            } else if (std.mem.eql(u8, method, "PUT")) {
+                try server.put(path, wrapped_handler);
+            } else if (std.mem.eql(u8, method, "DELETE")) {
+                try server.delete(path, wrapped_handler);
+            } else if (std.mem.eql(u8, method, "PATCH")) {
+                // PATCH is not directly supported by ziggurat Server
+                // Use POST as fallback for ziggurat registration
+                try server.post(path, wrapped_handler);
+            } else {
+                return valve.ValveError.InvalidMethod;
+            }
+        } else {
+            return valve.ValveError.InvalidMethod;
+        }
     }
 
     /// Register pre-request middleware
@@ -157,7 +218,7 @@ pub const ValveContext = struct {
 
     /// Get ORM instance
     /// Requires `.database_access` capability
-    /// Note: Returns null if ORM is not initialized
+    /// Returns error if ORM is not set or capability is missing
     ///
     /// Example:
     /// ```zig
@@ -169,10 +230,7 @@ pub const ValveContext = struct {
         if (!self.hasCapability(.database_access)) {
             return valve.ValveError.CapabilityRequired;
         }
-        // Note: ORM access typically requires app-level initialization
-        // This is a placeholder - actual implementation depends on how apps manage ORM
-        _ = self.app;
-        return null;
+        return self.app.orm_instance;
     }
 
     /// Get cache instance

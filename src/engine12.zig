@@ -16,6 +16,8 @@ const cache = @import("cache.zig");
 const dev_tools = @import("dev_tools.zig");
 const valve_registry_mod = @import("valve/registry.zig");
 const valve_mod = @import("valve/valve.zig");
+const runtime_routes_mod = @import("valve/runtime_routes.zig");
+const orm = @import("orm/orm.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -40,7 +42,7 @@ fn generateRequestId(alloc: std.mem.Allocator) ![]const u8 {
 /// - This pointer is set once per route registration and read-only during request handling
 /// - Each request handler runs in its own thread context
 /// - No mutex needed as the pointer itself is immutable after initialization
-var global_middleware: ?*const middleware_chain.MiddlewareChain = null;
+pub var global_middleware: ?*const middleware_chain.MiddlewareChain = null;
 
 /// Global metrics collector pointer
 /// This is set when routes are registered and accessed at runtime
@@ -74,11 +76,115 @@ pub var global_cache: ?*cache.ResponseCache = null;
 /// - No mutex needed as handlers are immutable function pointers
 pub var global_error_handler: ?*error_handler.ErrorHandlerRegistry = null;
 
+/// Global runtime route registry pointer
+/// This is set when Engine12 is initialized and accessed at runtime
+///
+/// Thread Safety:
+/// - Runtime route registry uses internal mutex for thread-safe access
+/// - Multiple threads can safely register/lookup routes concurrently
+pub var global_runtime_routes: ?*runtime_routes_mod.RuntimeRouteRegistry = null;
+
+/// Create a runtime route wrapper that dispatches to handlers stored in the runtime route registry
+/// This allows valves to register routes dynamically at runtime
+/// Returns a single wrapper function that looks up routes dynamically from the registry
+pub fn createRuntimeRouteWrapper() fn (*ziggurat.request.Request) ziggurat.response.Response {
+    return struct {
+        fn wrapper(ziggurat_request: *ziggurat.request.Request) ziggurat.response.Response {
+            // Access runtime route registry from global
+            const runtime_registry = global_runtime_routes orelse {
+                return Response.text("Runtime routes not available").withStatus(500).toZiggurat();
+            };
+
+            // Access middleware from global
+            const mw_chain = global_middleware orelse {
+                // No middleware, proceed directly
+                var engine12_request = Request.fromZiggurat(ziggurat_request, allocator);
+                defer engine12_request.deinit();
+
+                // Find route in runtime registry - use actual request path for matching
+                const method_str = @tagName(ziggurat_request.method);
+                const request_path = ziggurat_request.path;
+                const route = runtime_registry.findRoute(method_str, request_path, &engine12_request) catch |err| {
+                    std.debug.print("[Runtime Route] Error finding route: {}\n", .{err});
+                    return Response.text("Internal server error").withStatus(500).toZiggurat();
+                };
+
+                if (route) |r| {
+                    const engine12_response = r.handler(&engine12_request);
+                    return engine12_response.toZiggurat();
+                }
+
+                return Response.text("Not Found").withStatus(404).toZiggurat();
+            };
+
+            // Access metrics collector from global
+            const metrics_collector = global_metrics;
+
+            // Start timing - use actual request path
+            const request_path = ziggurat_request.path;
+            var timing = metrics.RequestTiming.start(request_path);
+
+            // Create request with arena allocator
+            var engine12_request = Request.fromZiggurat(ziggurat_request, allocator);
+
+            // Generate request ID
+            const request_id = generateRequestId(engine12_request.arena.allocator()) catch "unknown";
+            engine12_request.set("request_id", request_id) catch {};
+
+            // Ensure cleanup happens even if handler panics
+            defer engine12_request.deinit();
+
+            // Execute pre-request middleware chain
+            if (mw_chain.executePreRequest(&engine12_request)) |abort_response| {
+                // Record error metrics
+                if (metrics_collector) |mc| {
+                    mc.incrementError();
+                    timing.finish(mc) catch {};
+                }
+                return abort_response.toZiggurat();
+            }
+
+            // Find route in runtime registry - use actual request path for matching
+            const method_str = @tagName(ziggurat_request.method);
+            const route = runtime_registry.findRoute(method_str, request_path, &engine12_request) catch |err| {
+                std.debug.print("[Runtime Route] Error finding route: {}\n", .{err});
+                if (metrics_collector) |mc| {
+                    mc.incrementError();
+                    timing.finish(mc) catch {};
+                }
+                return Response.text("Internal server error").withStatus(500).toZiggurat();
+            };
+
+            if (route) |r| {
+                // Call the handler
+                var engine12_response = r.handler(&engine12_request);
+
+                // Execute response middleware chain
+                engine12_response = mw_chain.executeResponse(engine12_response, &engine12_request);
+
+                // Record timing and metrics
+                if (metrics_collector) |mc| {
+                    timing.finish(mc) catch {};
+                }
+
+                return engine12_response.toZiggurat();
+            }
+
+            // Route not found
+            if (metrics_collector) |mc| {
+                mc.incrementError();
+                timing.finish(mc) catch {};
+            }
+            return Response.text("Not Found").withStatus(404).toZiggurat();
+        }
+    }.wrapper;
+}
+
 /// Wrap an Engine12 handler to work with ziggurat
 /// Creates an arena allocator for each request and automatically cleans it up
 /// If route_pattern is provided, extracts route parameters from the request path
 /// Executes middleware chain before and after handler
-fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?[]const u8) fn (*ziggurat.request.Request) ziggurat.response.Response {
+pub fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_pattern: ?[]const u8) fn (*ziggurat.request.Request) ziggurat.response.Response {
     return struct {
         const handler = handler_fn;
         const pattern = route_pattern;
@@ -216,6 +322,12 @@ pub const Engine12 = struct {
     // Valve Registry
     valve_registry: ?valve_registry_mod.ValveRegistry = null,
 
+    // Runtime Route Registry (for valve-registered routes)
+    runtime_routes: runtime_routes_mod.RuntimeRouteRegistry,
+
+    // ORM Instance (optional, set by application)
+    orm_instance: ?*orm.ORM = null,
+
     // Lifecycle
     supervisor: ?*anyopaque = null,
     http_server: ?*anyopaque = null,
@@ -228,6 +340,7 @@ pub const Engine12 = struct {
             .error_handler_registry = error_handler.ErrorHandlerRegistry.init(allocator),
             .metrics_collector = metrics.MetricsCollector.init(allocator),
             .logger = dev_tools.Logger.fromEnvironment(allocator, profile.environment),
+            .runtime_routes = runtime_routes_mod.RuntimeRouteRegistry.init(allocator),
         };
         return app;
     }
@@ -256,6 +369,9 @@ pub const Engine12 = struct {
             registry.deinit();
             self.valve_registry = null;
         }
+
+        // Cleanup runtime routes
+        self.runtime_routes.deinit();
     }
 
     /// Register a valve with this Engine12 instance

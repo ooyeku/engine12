@@ -20,6 +20,8 @@ pub const ValveRegistry = struct {
     valves: std.ArrayListUnmanaged(*Valve),
     /// Valve contexts (parallel array with valves)
     contexts: std.ArrayListUnmanaged(ValveContext),
+    /// Error messages for valves (parallel array with valves)
+    valve_errors: std.ArrayListUnmanaged([]const u8),
     /// Allocator for registry operations
     allocator: std.mem.Allocator,
 
@@ -30,6 +32,7 @@ pub const ValveRegistry = struct {
         return Self{
             .valves = std.ArrayListUnmanaged(*Valve){},
             .contexts = std.ArrayListUnmanaged(ValveContext){},
+            .valve_errors = std.ArrayListUnmanaged([]const u8){},
             .allocator = allocator,
         };
     }
@@ -69,14 +72,24 @@ pub const ValveRegistry = struct {
             .allocator = app.allocator,
             .capabilities = capabilities,
             .valve_name = valve_ptr.metadata.name,
+            .state = .registered,
         };
 
         // Initialize valve
-        try valve_ptr.init(valve_ptr, &ctx);
+        valve_ptr.init(valve_ptr, &ctx) catch |err| {
+            ctx.state = .failed;
+            const err_msg = try std.fmt.allocPrint(self.allocator, "init: {s}", .{@errorName(err)});
+            try self.valves.append(self.allocator, valve_ptr);
+            try self.contexts.append(self.allocator, ctx);
+            try self.valve_errors.append(self.allocator, err_msg);
+            return err;
+        };
+        ctx.state = .initialized;
 
-        // Store valve and context
+        // Store valve and context (no error)
         try self.valves.append(self.allocator, valve_ptr);
         try self.contexts.append(self.allocator, ctx);
+        try self.valve_errors.append(self.allocator, "");
     }
 
     /// Unregister a valve by name
@@ -97,6 +110,10 @@ pub const ValveRegistry = struct {
                 _ = self.valves.swapRemove(i);
                 var ctx = self.contexts.swapRemove(i);
                 ctx.deinit();
+                const err_msg = self.valve_errors.swapRemove(i);
+                if (err_msg.len > 0) {
+                    self.allocator.free(err_msg);
+                }
 
                 return;
             }
@@ -135,13 +152,39 @@ pub const ValveRegistry = struct {
 
     /// Call onAppStart for all registered valves
     /// Called by Engine12 when app starts
+    /// Collects errors and marks valves as failed if errors occur
     pub fn onAppStart(self: *Self) !void {
         var i: usize = 0;
         while (i < self.valves.items.len) : (i += 1) {
+            // Skip valves that failed during initialization
+            if (self.contexts.items[i].state == .failed) continue;
+
             if (self.valves.items[i].onAppStart) |callback| {
                 callback(self.valves.items[i], &self.contexts.items[i]) catch |err| {
+                    self.contexts.items[i].state = .failed;
+                    // Free old error message if exists
+                    if (self.valve_errors.items[i].len > 0) {
+                        self.allocator.free(self.valve_errors.items[i]);
+                    }
+                    // Store new error message
+                    const err_msg = std.fmt.allocPrint(self.allocator, "onAppStart: {s}", .{@errorName(err)}) catch {
+                        self.valve_errors.items[i] = "onAppStart: unknown error";
+                        std.debug.print("[Valve] Error in onAppStart for '{s}': {}\n", .{ self.valves.items[i].metadata.name, err });
+                        continue;
+                    };
+                    self.valve_errors.items[i] = err_msg;
                     std.debug.print("[Valve] Error in onAppStart for '{s}': {}\n", .{ self.valves.items[i].metadata.name, err });
+                    continue;
                 };
+                // Success - mark as started
+                if (self.contexts.items[i].state == .initialized) {
+                    self.contexts.items[i].state = .started;
+                }
+            } else {
+                // No onAppStart callback - mark as started if initialized
+                if (self.contexts.items[i].state == .initialized) {
+                    self.contexts.items[i].state = .started;
+                }
             }
         }
     }
@@ -153,6 +196,10 @@ pub const ValveRegistry = struct {
         while (i < self.valves.items.len) : (i += 1) {
             if (self.valves.items[i].onAppStop) |callback| {
                 callback(self.valves.items[i], &self.contexts.items[i]);
+            }
+            // Mark as stopped
+            if (self.contexts.items[i].state != .failed) {
+                self.contexts.items[i].state = .stopped;
             }
         }
     }
@@ -169,8 +216,59 @@ pub const ValveRegistry = struct {
             ctx.deinit();
         }
 
+        // Cleanup error messages
+        for (self.valve_errors.items) |err_msg| {
+            if (err_msg.len > 0) {
+                self.allocator.free(err_msg);
+            }
+        }
+
         self.valves.deinit(self.allocator);
         self.contexts.deinit(self.allocator);
+        self.valve_errors.deinit(self.allocator);
+    }
+
+    /// Get the state of a valve by name
+    pub fn getValveState(self: *Self, name: []const u8) ?valve.ValveState {
+        var i: usize = 0;
+        while (i < self.valves.items.len) : (i += 1) {
+            if (std.mem.eql(u8, self.valves.items[i].metadata.name, name)) {
+                return self.contexts.items[i].state;
+            }
+        }
+        return null;
+    }
+
+    /// Get error message for a valve by name
+    /// Returns empty string if no error or valve not found
+    pub fn getValveErrors(self: *Self, name: []const u8) []const u8 {
+        var i: usize = 0;
+        while (i < self.valves.items.len) : (i += 1) {
+            if (std.mem.eql(u8, self.valves.items[i].metadata.name, name)) {
+                return self.valve_errors.items[i];
+            }
+        }
+        return "";
+    }
+
+    /// Check if a valve is healthy (not failed)
+    pub fn isValveHealthy(self: *Self, name: []const u8) bool {
+        if (self.getValveState(name)) |state| {
+            return state != .failed;
+        }
+        return false;
+    }
+
+    /// Get all failed valve names
+    pub fn getFailedValves(self: *Self, allocator: std.mem.Allocator) ![]const []const u8 {
+        var failed = std.ArrayListUnmanaged([]const u8){};
+        var i: usize = 0;
+        while (i < self.valves.items.len) : (i += 1) {
+            if (self.contexts.items[i].state == .failed) {
+                try failed.append(allocator, self.valves.items[i].metadata.name);
+            }
+        }
+        return failed.toOwnedSlice(allocator);
     }
 };
 

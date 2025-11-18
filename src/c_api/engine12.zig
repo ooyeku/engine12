@@ -86,11 +86,78 @@ var handler_registry_init = false;
 var handler_registry_mutex: std.Thread.Mutex = std.Thread.Mutex{};
 var handler_counter: usize = 0;
 
+// Route handler data registry for C API valve routes
+// Stores handler_id and user_data for wrapper functions
+// Keyed by method+path for lookup
+const RouteHandlerData = struct {
+    handler_id: usize,
+    user_data: *anyopaque,
+};
+var route_handler_data_registry: std.StringHashMap(RouteHandlerData) = undefined;
+var route_handler_data_init = false;
+var route_handler_data_mutex: std.Thread.Mutex = std.Thread.Mutex{};
+
 fn initHandlerRegistry() void {
     if (!handler_registry_init) {
         handler_registry = std.AutoHashMap(usize, *const fn (*CRequest, *anyopaque) *CResponse).init(allocator);
         handler_registry_init = true;
     }
+}
+
+fn initRouteHandlerDataRegistry() void {
+    if (!route_handler_data_init) {
+        route_handler_data_registry = std.StringHashMap(RouteHandlerData).init(allocator);
+        route_handler_data_init = true;
+    }
+}
+
+fn registerRouteHandlerData(method: []const u8, path: []const u8, handler_id: usize, user_data: *anyopaque) !void {
+    initRouteHandlerDataRegistry();
+    route_handler_data_mutex.lock();
+    defer route_handler_data_mutex.unlock();
+    const key = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ method, path });
+    route_handler_data_registry.put(key, RouteHandlerData{
+        .handler_id = handler_id,
+        .user_data = user_data,
+    }) catch {};
+}
+
+fn getRouteHandlerData(method: []const u8, path: []const u8) ?RouteHandlerData {
+    initRouteHandlerDataRegistry();
+    route_handler_data_mutex.lock();
+    defer route_handler_data_mutex.unlock();
+    const key = std.fmt.allocPrint(allocator, "{s}:{s}", .{ method, path }) catch return null;
+    defer allocator.free(key);
+    return route_handler_data_registry.get(key);
+}
+
+// Single wrapper handler for all C API valve routes
+// Looks up handler data by method+path at runtime
+fn cValveRouteWrapper(req: *Request) Response {
+    const method = req.method();
+    const path = req.path();
+
+    const data = getRouteHandlerData(method, path) orelse {
+        return Response.status(500);
+    };
+
+    const c_req = allocator.create(CRequest) catch {
+        return Response.status(500);
+    };
+    c_req.* = CRequest{
+        .request = req,
+        .persistent_path = null,
+    };
+
+    const handler_fn = getHandler(data.handler_id) orelse {
+        allocator.destroy(c_req);
+        return Response.status(500);
+    };
+
+    const c_resp = handler_fn(c_req, data.user_data);
+    const resp = c_resp.response;
+    allocator.destroy(c_req);
+    return resp;
 }
 
 fn registerHandler(handler: *const fn (*CRequest, *anyopaque) *CResponse) usize {
@@ -2499,28 +2566,14 @@ export fn e12_valve_context_register_route(ctx: ?*CValveContext, method: [*c]con
     const method_slice = std.mem.span(method);
     const path_slice = std.mem.span(path);
 
-    // Create wrapper handler
-    const wrapper_handler = struct {
-        fn handle(req: *Request) Response {
-            const c_req = allocator.create(CRequest) catch {
-                return Response.status(500);
-            };
-            c_req.* = CRequest{
-                .request = req,
-                .persistent_path = null,
-            };
+    // Register handler data keyed by method+path
+    registerRouteHandlerData(method_slice, path_slice, handler_id, user_data) catch |err| {
+        setLastError(@errorName(err));
+        return 99;
+    };
 
-            const handler_fn = getHandler(handler_id) orelse {
-                allocator.destroy(c_req);
-                return Response.status(500);
-            };
-
-            const c_resp = handler_fn(c_req, user_data);
-            const resp = c_resp.response;
-            allocator.destroy(c_req);
-            return resp;
-        }
-    }.handle;
+    // Use the single wrapper function that looks up handler data by method+path
+    const wrapper_handler = cValveRouteWrapper;
 
     ctx.?.context.registerRoute(method_slice, path_slice, wrapper_handler) catch |err| {
         setLastError(@errorName(err));
