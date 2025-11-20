@@ -12,7 +12,8 @@ pub const FileWatcher = struct {
     const WatchEntry = struct {
         path: []const u8,
         last_modified: i64,
-        callback: *const fn ([]const u8) void,
+        callback: *const fn ([]const u8, ?*anyopaque) void,
+        context: ?*anyopaque = null,
     };
 
     const POLL_INTERVAL_NS: u64 = 500_000_000; // 500ms
@@ -27,8 +28,8 @@ pub const FileWatcher = struct {
     }
 
     /// Watch a file path for changes
-    /// The callback will be called when the file is modified
-    pub fn watch(self: *FileWatcher, path: []const u8, callback: *const fn ([]const u8) void) !void {
+    /// The callback will be called when the file is modified with the context
+    pub fn watch(self: *FileWatcher, path: []const u8, callback: *const fn ([]const u8, ?*anyopaque) void, context: ?*anyopaque) !void {
         const path_copy = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(path_copy);
 
@@ -49,6 +50,7 @@ pub const FileWatcher = struct {
             .path = path_copy,
             .last_modified = last_modified,
             .callback = callback,
+            .context = context,
         });
     }
 
@@ -107,7 +109,7 @@ pub const FileWatcher = struct {
                     entry.last_modified = current_modified;
                     // Release mutex before calling callback to avoid deadlock
                     self.mutex.unlock();
-                    entry.callback(entry.path);
+                    entry.callback(entry.path, entry.context);
                     self.mutex.lock();
                 }
 
@@ -148,8 +150,9 @@ test "FileWatcher watch and start" {
     defer watcher.deinit();
 
     const TestCallback = struct {
-        fn callback(path: []const u8) void {
+        fn callback(path: []const u8, context: ?*anyopaque) void {
             _ = path;
+            _ = context;
             // Callback called - template will reload on next access
         }
     };
@@ -162,7 +165,7 @@ test "FileWatcher watch and start" {
     };
     defer std.fs.cwd().deleteFile(test_file) catch {};
 
-    try watcher.watch(test_file, TestCallback.callback);
+    try watcher.watch(test_file, TestCallback.callback, null);
     try watcher.start();
     defer watcher.stop();
 
@@ -180,4 +183,3 @@ test "FileWatcher watch and start" {
     // Note: This test mainly ensures the watcher doesn't crash
     // Actual callback execution is tested indirectly through template reloading
 }
-

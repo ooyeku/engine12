@@ -43,24 +43,67 @@ pub const RuntimeRenderer = struct {
                 }
 
                 if (token.is_block) {
-                    // For now, skip {% blocks %} - they require comptime compilation
-                    // Just output the block as-is
-                    const block_end = std.mem.indexOf(u8, template_content[token.start + 2..], "%}") orelse {
+                    // Parse {% ... %} blocks
+                    const block_end = std.mem.indexOf(u8, template_content[token.start + 2 ..], "%}") orelse {
                         // No closing tag, skip to end
                         i = template_content.len;
                         continue;
                     };
-                    try result.appendSlice(allocator, template_content[token.start..token.start + 2 + block_end + 2]);
-                    i = token.start + 2 + block_end + 2;
+
+                    const block_content = std.mem.trim(u8, template_content[token.start + 2 .. token.start + 2 + block_end], " \t\n");
+
+                    // Handle {% if .field %} ... {% endif %}
+                    if (std.mem.startsWith(u8, block_content, "if ")) {
+                        const condition_str = std.mem.trim(u8, block_content[3..], " \t\n");
+                        const condition_value = getVariableValue(condition_str, Context, ctx, allocator) catch |err| {
+                            // If variable not found, treat as false
+                            if (err == error.InvalidVariablePath) {
+                                // Skip to {% endif %}
+                                const endif_pos = findEndif(template_content, token.start + 2 + block_end + 2) orelse {
+                                    i = template_content.len;
+                                    continue;
+                                };
+                                i = endif_pos;
+                                continue;
+                            }
+                            return err;
+                        };
+                        defer allocator.free(condition_value);
+
+                        // Check if condition is truthy
+                        const is_true = isTruthy(condition_value);
+
+                        // Find {% endif %}
+                        const endif_pos = findEndif(template_content, token.start + 2 + block_end + 2) orelse {
+                            i = token.start + 2 + block_end + 2;
+                            continue;
+                        };
+
+                        if (is_true) {
+                            // Include content between {% if %} and {% endif %}
+                            const content_start = token.start + 2 + block_end + 2;
+                            const content_end = endif_pos;
+                            try result.appendSlice(allocator, template_content[content_start..content_end]);
+                        }
+                        // Skip past {% endif %} (11 characters: {% endif %})
+                        i = endif_pos + 11;
+                    } else if (std.mem.eql(u8, block_content, "endif")) {
+                        // Just skip {% endif %} - it's handled by {% if %}
+                        i = token.start + 2 + block_end + 2;
+                    } else {
+                        // Unknown block type - output as-is
+                        try result.appendSlice(allocator, template_content[token.start .. token.start + 2 + block_end + 2]);
+                        i = token.start + 2 + block_end + 2;
+                    }
                 } else {
                     // Parse {{ ... }} variable
-                    const var_end = std.mem.indexOf(u8, template_content[token.start + 2..], "}}") orelse {
+                    const var_end = std.mem.indexOf(u8, template_content[token.start + 2 ..], "}}") orelse {
                         // No closing tag, skip
                         i = template_content.len;
                         continue;
                     };
 
-                    const var_content = template_content[token.start + 2..token.start + 2 + var_end];
+                    const var_content = template_content[token.start + 2 .. token.start + 2 + var_end];
                     const is_raw = var_content.len > 0 and var_content[0] == '!';
                     const var_str = if (is_raw) std.mem.trim(u8, var_content[1..], " \t\n") else std.mem.trim(u8, var_content, " \t\n");
 
@@ -221,5 +264,20 @@ pub const RuntimeRenderer = struct {
             },
         };
     }
-};
 
+    /// Check if a value is truthy
+    fn isTruthy(value: []const u8) bool {
+        if (value.len == 0) return false;
+        if (std.mem.eql(u8, value, "false")) return false;
+        if (std.mem.eql(u8, value, "0")) return false;
+        if (std.mem.eql(u8, value, "")) return false;
+        return true;
+    }
+
+    /// Find the position of {% endif %} after a given position
+    fn findEndif(content: []const u8, start_pos: usize) ?usize {
+        if (start_pos >= content.len) return null;
+        const endif_start = std.mem.indexOf(u8, content[start_pos..], "{% endif %}") orelse return null;
+        return start_pos + endif_start;
+    }
+};

@@ -2,6 +2,7 @@ const std = @import("std");
 const ws = @import("websocket");
 const connection = @import("connection.zig");
 const WebSocketConnection = connection.WebSocketConnection;
+const websocket_mod = @import("module.zig");
 
 /// WebSocket handler function type for Engine12
 pub const WebSocketHandler = *const fn (*WebSocketConnection) void;
@@ -23,10 +24,10 @@ pub fn createEngine12Handler(
     comptime HandlerFn: type,
 ) type {
     const AppData = createAppData(HandlerFn);
-    
+
     return struct {
         const Self = @This();
-        
+
         /// Engine12 connection wrapper
         engine12_conn: ?*WebSocketConnection = null,
         /// Connection ID (generated per connection)
@@ -37,7 +38,7 @@ pub fn createEngine12Handler(
         allocator: std.mem.Allocator = undefined,
         /// Handler function
         handler: HandlerFn = undefined,
-        
+
         /// websocket.zig Handler.init - called during handshake
         pub fn init(
             h: *ws.Handshake,
@@ -47,19 +48,15 @@ pub fn createEngine12Handler(
             // Generate unique connection ID
             const timestamp = std.time.milliTimestamp();
             const random = @as(u64, @intCast(std.time.nanoTimestamp())) % 1000000;
-            const conn_id = try std.fmt.allocPrint(
-                app.allocator,
-                "ws_{d}_{d}",
-                .{ timestamp, random }
-            );
-            
+            const conn_id = try std.fmt.allocPrint(app.allocator, "ws_{d}_{d}", .{ timestamp, random });
+
             // Use path from app data (set when server is created)
             const path = app.path;
-            
+
             // Create Engine12 connection wrapper
             const engine12_conn = try app.allocator.create(WebSocketConnection);
             errdefer app.allocator.destroy(engine12_conn);
-            
+
             engine12_conn.* = WebSocketConnection{
                 .conn = conn,
                 .id = conn_id,
@@ -68,8 +65,9 @@ pub fn createEngine12Handler(
                 .is_open = std.atomic.Value(bool).init(true),
                 .context = std.StringHashMap([]const u8).init(app.allocator),
                 .allocator = app.allocator,
+                .cleaned_up = std.atomic.Value(bool).init(false),
             };
-            
+
             // Copy headers from handshake if available
             // websocket.zig provides headers via h.headers.get() or iteration
             // Check if headers are available by trying to access them
@@ -80,7 +78,7 @@ pub fn createEngine12Handler(
                     // For now, we'll skip bulk copying and let users access via handshake if needed
                 }
             }
-            
+
             return Self{
                 .engine12_conn = engine12_conn,
                 .conn_id = conn_id,
@@ -89,7 +87,7 @@ pub fn createEngine12Handler(
                 .handler = app.handler,
             };
         }
-        
+
         /// websocket.zig Handler.afterInit - called after handshake
         pub fn afterInit(self: *Self) !void {
             if (self.engine12_conn) |conn| {
@@ -99,7 +97,7 @@ pub fn createEngine12Handler(
                 self.handler(conn);
             }
         }
-        
+
         /// websocket.zig Handler.clientMessage - called on message
         /// This is called automatically by websocket.zig when messages arrive
         /// By default, this does nothing - users should implement message handling
@@ -111,19 +109,41 @@ pub fn createEngine12Handler(
             _ = self;
             _ = data;
         }
-        
+
         /// websocket.zig Handler.close - called on close
         pub fn close(self: *Self) void {
             if (self.engine12_conn) |conn| {
                 conn.is_open.store(false, .monotonic);
+
+                // Remove connection from room if it's in one (for hot reload)
+                // Get room reference BEFORE cleanup (since get() accesses context)
+                var room_ptr: ?*websocket_mod.room.WebSocketRoom = null;
+                if (conn.get("hot_reload_room")) |room_ptr_str| {
+                    // Copy the string since cleanup will free the context
+                    const room_ptr_str_copy = self.allocator.dupe(u8, room_ptr_str) catch null;
+                    defer if (room_ptr_str_copy) |str| self.allocator.free(str);
+
+                    if (room_ptr_str_copy) |str| {
+                        const room_ptr_int = std.fmt.parseInt(usize, str, 10) catch 0;
+                        if (room_ptr_int != 0) {
+                            room_ptr = @as(*websocket_mod.room.WebSocketRoom, @ptrFromInt(room_ptr_int));
+                        }
+                    }
+                }
+
+                // Now cleanup the connection (this will free the context)
                 conn.cleanup();
+
+                // Remove from room after cleanup (room.leave doesn't access connection internals)
+                if (room_ptr) |room| {
+                    room.leave(conn);
+                }
+
                 self.allocator.destroy(conn);
             }
-            
-            // Free connection ID and path
-            self.allocator.free(self.conn_id);
+
+            // Free path (conn_id is already freed by conn.cleanup())
             self.allocator.free(self.path);
         }
     };
 }
-

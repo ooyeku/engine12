@@ -428,6 +428,7 @@ fn handleIndex(request: *Request) Response {
         filter_pending: []const u8,
         filter_completed: []const u8,
         empty_state_message: []const u8,
+        hot_reload_enabled: bool,
     };
 
     // Create context
@@ -441,6 +442,7 @@ fn handleIndex(request: *Request) Response {
         .filter_pending = "Pending",
         .filter_completed = "Completed",
         .empty_state_message = "No todos yet. Add one above to get started!",
+        .hot_reload_enabled = true, // Always true in development mode
     };
 
     // Render template using runtime renderer (supports hot reloading)

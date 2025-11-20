@@ -2,6 +2,7 @@ const std = @import("std");
 const watcher = @import("watcher.zig");
 const runtime_template = @import("runtime_template.zig");
 const fileserver = @import("../fileserver.zig");
+const websocket_room = @import("../websocket/room.zig");
 
 /// Hot reload manager for development mode
 /// Coordinates file watching, template reloading, and static file cache invalidation
@@ -10,17 +11,40 @@ pub const HotReloadManager = struct {
     file_watcher: watcher.FileWatcher,
     template_cache: std.StringHashMap(*runtime_template.RuntimeTemplate),
     static_file_servers: std.ArrayListUnmanaged(*fileserver.FileServer),
+    reload_room: ?*websocket_room.WebSocketRoom = null,
     enabled: bool,
     mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, enabled: bool) HotReloadManager {
+        // Create WebSocket room for hot reload notifications
+        const reload_room = if (enabled) allocator.create(websocket_room.WebSocketRoom) catch null else null;
+        if (reload_room) |room| {
+            room.* = websocket_room.WebSocketRoom.init(allocator, "hot_reload") catch {
+                allocator.destroy(room);
+                return HotReloadManager{
+                    .allocator = allocator,
+                    .file_watcher = watcher.FileWatcher.init(allocator),
+                    .template_cache = std.StringHashMap(*runtime_template.RuntimeTemplate).init(allocator),
+                    .static_file_servers = .{},
+                    .reload_room = null,
+                    .enabled = enabled,
+                };
+            };
+        }
+
         return HotReloadManager{
             .allocator = allocator,
             .file_watcher = watcher.FileWatcher.init(allocator),
             .template_cache = std.StringHashMap(*runtime_template.RuntimeTemplate).init(allocator),
             .static_file_servers = .{},
+            .reload_room = reload_room,
             .enabled = enabled,
         };
+    }
+
+    /// Get the WebSocket room for hot reload notifications
+    pub fn getReloadRoom(self: *HotReloadManager) ?*websocket_room.WebSocketRoom {
+        return self.reload_room;
     }
 
     /// Watch a template file for changes
@@ -47,19 +71,37 @@ pub const HotReloadManager = struct {
         const path_copy = try self.allocator.dupe(u8, template_path);
         try self.template_cache.put(path_copy, rt_ptr);
 
-        // Watch file for changes
-        // The RuntimeTemplate will handle reloading on its own when accessed
-        // We just watch the file to detect changes (the template reloads on next access)
-        try self.file_watcher.watch(template_path, templateReloadCallback);
+        // Watch file for changes with callback that broadcasts reload notification
+        // Pass self as context so callback can access manager
+        try self.file_watcher.watch(template_path, templateReloadCallback, self);
 
         return rt_ptr;
     }
 
     /// Callback for template file changes
-    fn templateReloadCallback(path: []const u8) void {
-        _ = path;
-        // Template reloading is handled by RuntimeTemplate.reload() on access
-        // This callback can be used for logging or other side effects
+    /// This is called by the file watcher when a template file changes
+    fn templateReloadCallback(path: []const u8, context: ?*anyopaque) void {
+        if (context) |ctx| {
+            const manager = @as(*HotReloadManager, @ptrCast(@alignCast(ctx)));
+            manager.notifyReload(path);
+        }
+    }
+
+    /// Notify all connected clients that a file has changed
+    /// This is called from the file watcher thread, so we need to be thread-safe
+    fn notifyReload(self: *HotReloadManager, file_path: []const u8) void {
+        // Lock mutex to ensure thread-safe access to reload_room
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.reload_room) |room| {
+            const json = std.fmt.allocPrint(self.allocator, "{{\"type\":\"reload\",\"file\":\"{s}\"}}", .{file_path}) catch return;
+            defer self.allocator.free(json);
+
+            room.broadcast(json) catch |err| {
+                std.debug.print("[HotReload] Error broadcasting reload: {}\n", .{err});
+            };
+        }
     }
 
     /// Watch static file server for changes
@@ -141,4 +183,3 @@ test "HotReloadManager disabled" {
     const result = manager.watchTemplate("test.zt.html");
     try std.testing.expectError(error.HotReloadNotEnabled, result);
 }
-

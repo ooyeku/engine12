@@ -54,6 +54,30 @@ pub var global_middleware: ?*const middleware_chain.MiddlewareChain = null;
 /// - Multiple threads can safely increment counters concurrently
 pub var global_metrics: ?*metrics.MetricsCollector = null;
 
+/// Global hot reload manager pointer for WebSocket handler
+/// This is set when hot reload manager starts and accessed by WebSocket handler
+var hot_reload_manager_for_ws: ?*hot_reload_mod.HotReloadManager = null;
+
+/// WebSocket handler for hot reload notifications
+fn hotReloadWebSocketHandler(conn: *websocket_mod.connection.WebSocketConnection) void {
+    if (hot_reload_manager_for_ws) |mgr| {
+        if (mgr.getReloadRoom()) |room| {
+            room.join(conn) catch |err| {
+                std.debug.print("[HotReload] Error joining room: {}\n", .{err});
+                return;
+            };
+
+            // Store room reference in connection context so we can remove it on close
+            // Note: conn.set() will duplicate the string, so we can free it here
+            const room_ptr_str = std.fmt.allocPrint(allocator, "{d}", .{@intFromPtr(room)}) catch return;
+            defer allocator.free(room_ptr_str);
+            conn.set("hot_reload_room", room_ptr_str) catch {};
+
+            std.debug.print("[HotReload] Client connected for hot reload\n", .{});
+        }
+    }
+}
+
 /// Global rate limiter pointer
 /// This is set when routes are registered and accessed at runtime
 ///
@@ -360,12 +384,12 @@ pub const Engine12 = struct {
     /// Hot reloading is automatically enabled in development mode
     pub fn initDevelopment() !Engine12 {
         var app = try Engine12.initWithProfile(types.ServerProfile_Development);
-        
+
         // Initialize hot reload manager for development
         const hr_manager = try allocator.create(hot_reload_mod.HotReloadManager);
         hr_manager.* = hot_reload_mod.HotReloadManager.init(allocator, true);
         app.hot_reload_manager = hr_manager;
-        
+
         return app;
     }
 
@@ -1043,8 +1067,8 @@ pub const Engine12 = struct {
 
         try self.startHttpServer();
         try self.startBackgroundTasks();
-        try self.startWebSocketManager();
-        try self.startHotReloadManager();
+        try self.startHotReloadManager(); // Register hot reload WebSocket route first
+        try self.startWebSocketManager(); // Then start all WebSocket servers
 
         // Call onAppStart for all registered valves
         if (self.valve_registry) |*registry| {
@@ -1144,6 +1168,32 @@ pub const Engine12 = struct {
     fn startHotReloadManager(self: *Engine12) !void {
         if (self.hot_reload_manager) |manager| {
             try manager.start();
+
+            // Register WebSocket endpoint for hot reload notifications
+            // Initialize WebSocket manager if not already initialized
+            if (self.ws_manager == null) {
+                self.ws_manager = try websocket_mod.manager.WebSocketManager.init(self.allocator);
+            }
+
+            // Store manager pointer in a way the handler can access it
+            // Use a module-level variable (thread-safe since we're single-threaded during startup)
+            hot_reload_manager_for_ws = manager;
+
+            // Register WebSocket route
+            if (self.ws_routes_count < MAX_WS_ROUTES) {
+                const handler_fn: types.WebSocketHandler = hotReloadWebSocketHandler;
+                self.ws_routes[self.ws_routes_count] = types.WebSocketRoute{
+                    .path = "/ws/hot-reload",
+                    .handler_ptr = &handler_fn,
+                };
+                self.ws_routes_count += 1;
+
+                // Register with WebSocket manager
+                if (self.ws_manager) |*ws_mgr| {
+                    try ws_mgr.registerServer("/ws/hot-reload", hotReloadWebSocketHandler);
+                }
+            }
+
             std.debug.print("[HotReload] Started hot reload manager\n", .{});
         }
     }
