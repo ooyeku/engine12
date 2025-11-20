@@ -345,7 +345,7 @@ pub const Json = struct {
             }
         }
 
-        fn parseString(self: *Parser) ![]const u8 {
+        fn parseString(self: *Parser) ![]u8 {
             self.skipWhitespace();
             if (self.pos >= self.input.len or self.input[self.pos] != '"') {
                 std.debug.print("[JSON Parser Error] Expected '\\\"' at start of string\n", .{});

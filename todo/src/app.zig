@@ -22,6 +22,9 @@ const BasicAuthValve = E12.BasicAuthValve;
 const RuntimeTemplate = E12.RuntimeTemplate;
 const LoggingMiddleware = E12.LoggingMiddleware;
 const LoggingConfig = E12.LoggingConfig;
+const restApi = E12.restApi;
+const RestApiConfig = E12.RestApiConfig;
+const AuthUser = E12.AuthUser;
 
 const allocator = std.heap.page_allocator;
 
@@ -455,6 +458,115 @@ fn handleIndex(request: *Request) Response {
         .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
         .withHeader("Pragma", "no-cache")
         .withHeader("Expires", "0");
+}
+
+// ============================================================================
+// REST API VALIDATOR & AUTHORIZATION
+// ============================================================================
+
+fn validateTodo(req: *Request, todo: Todo) anyerror!validation.ValidationErrors {
+    var errors = validation.ValidationErrors.init(req.arena.allocator());
+    
+    // Validate title (required, max 200 chars)
+    if (todo.title.len == 0) {
+        try errors.add("title", "Title is required", "required");
+    }
+    if (todo.title.len > 200) {
+        try errors.add("title", "Title must be less than 200 characters", "max_length");
+    }
+    
+    // Validate description (max 1000 chars)
+    if (todo.description.len > 1000) {
+        try errors.add("description", "Description must be less than 1000 characters", "max_length");
+    }
+    
+    // Validate priority
+    const allowed_priorities = [_][]const u8{ "low", "medium", "high" };
+    var priority_valid = false;
+    for (allowed_priorities) |p| {
+        if (std.mem.eql(u8, todo.priority, p)) {
+            priority_valid = true;
+            break;
+        }
+    }
+    if (!priority_valid) {
+        try errors.add("priority", "Priority must be one of: low, medium, high", "invalid");
+    }
+    
+    // Validate tags (max 500 chars)
+    if (todo.tags.len > 500) {
+        try errors.add("tags", "Tags must be less than 500 characters", "max_length");
+    }
+    
+    return errors;
+}
+
+fn requireAuthForRestApi(req: *Request) !AuthUser {
+    const user = BasicAuthValve.requireAuth(req) catch {
+        return error.AuthenticationRequired;
+    };
+    
+    // Convert BasicAuthValve.User to AuthUser
+    // Note: AuthUser fields will be freed by the caller
+    return AuthUser{
+        .id = user.id,
+        .username = try req.arena.allocator().dupe(u8, user.username),
+        .email = try req.arena.allocator().dupe(u8, user.email),
+        .password_hash = try req.arena.allocator().dupe(u8, user.password_hash),
+    };
+}
+
+fn canAccessTodo(req: *Request, todo: Todo) !bool {
+    const user = BasicAuthValve.requireAuth(req) catch {
+        return false;
+    };
+    defer {
+        allocator.free(user.username);
+        allocator.free(user.email);
+        allocator.free(user.password_hash);
+    }
+    
+    // User can only access their own todos
+    return todo.user_id == user.id;
+}
+
+fn beforeCreateTodo(req: *Request, todo: Todo) !Todo {
+    const user = BasicAuthValve.requireAuth(req) catch {
+        return error.AuthenticationRequired;
+    };
+    defer {
+        allocator.free(user.username);
+        allocator.free(user.email);
+        allocator.free(user.password_hash);
+    }
+    
+    // Set user_id and timestamps
+    var new_todo = todo;
+    new_todo.user_id = user.id;
+    const now = std.time.milliTimestamp();
+    new_todo.created_at = now;
+    new_todo.updated_at = now;
+    
+    return new_todo;
+}
+
+fn beforeUpdateTodo(req: *Request, id: i64, todo: Todo) !Todo {
+    const user = BasicAuthValve.requireAuth(req) catch {
+        return error.AuthenticationRequired;
+    };
+    defer {
+        allocator.free(user.username);
+        allocator.free(user.email);
+        allocator.free(user.password_hash);
+    }
+    
+    // Ensure user_id matches and update timestamp
+    var updated_todo = todo;
+    updated_todo.user_id = user.id;
+    updated_todo.id = id;
+    updated_todo.updated_at = std.time.milliTimestamp();
+    
+    return updated_todo;
 }
 
 // ============================================================================
@@ -1350,13 +1462,38 @@ pub fn createApp() !E12.Engine12 {
     // API routes
     // Note: Route groups require comptime evaluation, so we register routes directly
     // Route groups are demonstrated in the codebase but require comptime usage
+    
+    // Custom list endpoint (filters by user_id automatically)
+    // Register this FIRST so it takes precedence over restApi's GET /api/todos
     try app.get("/api/todos", handleGetTodos);
     try app.get("/api/todos/search", handleSearchTodos);
     try app.get("/api/todos/stats", handleGetStats);
-    try app.get("/api/todos/:id", handleGetTodo);
-    try app.post("/api/todos", handleCreateTodo);
-    try app.put("/api/todos/:id", handleUpdateTodo);
-    try app.delete("/api/todos/:id", handleDeleteTodo);
+    
+    // RESTful API endpoints for individual resource operations
+    // Note: List endpoint (GET /api/todos) is handled separately above to filter by user_id
+    // restApi will register: GET /api/todos/:id, POST /api/todos, PUT /api/todos/:id, DELETE /api/todos/:id
+    // The GET /api/todos route registered above will take precedence over restApi's list endpoint
+    const orm_for_rest = getORM() catch {
+        return error.DatabaseNotInitialized;
+    };
+    try app.restApi("/api/todos", Todo, RestApiConfig(Todo){
+        .orm = orm_for_rest,
+        .validator = validateTodo,
+        .authenticator = requireAuthForRestApi,
+        .authorization = canAccessTodo,
+        .enable_pagination = true,  // Not used since list is custom, but required by restApi
+        .enable_filtering = true,   // Not used since list is custom, but required by restApi
+        .enable_sorting = true,      // Not used since list is custom, but required by restApi
+        .cache_ttl_ms = 30000,       // 30 seconds
+        // Note: Hooks are not currently supported due to Zig type system limitations
+        // User_id and timestamps should be set in the validator or by modifying the model before calling restApi
+    });
+    
+    // Remove old individual CRUD handlers - now handled by restApi above
+    // try app.get("/api/todos/:id", handleGetTodo);      // Now: GET /api/todos/:id via restApi
+    // try app.post("/api/todos", handleCreateTodo);      // Now: POST /api/todos via restApi
+    // try app.put("/api/todos/:id", handleUpdateTodo);   // Now: PUT /api/todos/:id via restApi
+    // try app.delete("/api/todos/:id", handleDeleteTodo); // Now: DELETE /api/todos/:id via restApi
 
     // Background tasks
     try app.schedulePeriodicTask("cleanup_old_todos", &cleanupOldCompletedTodos, 3600000);

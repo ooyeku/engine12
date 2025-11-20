@@ -3,13 +3,13 @@ const std = @import("std");
 pub const QueryBuilder = struct {
     allocator: std.mem.Allocator,
     table_name: []const u8,
-    select_fields: std.ArrayList([]const u8),
-    where_clauses: std.ArrayList(WhereClause),
+    select_fields: std.ArrayListUnmanaged([]const u8),
+    where_clauses: std.ArrayListUnmanaged(WhereClause),
     limit_val: ?usize = null,
     offset_val: ?usize = null,
     order_by_field: ?[]const u8 = null,
     order_ascending: bool = true,
-    join_clauses: std.ArrayList(JoinClause),
+    join_clauses: std.ArrayListUnmanaged(JoinClause),
     
     pub const WhereClause = struct {
         field: []const u8,
@@ -27,27 +27,27 @@ pub const QueryBuilder = struct {
         return QueryBuilder{
             .allocator = allocator,
             .table_name = table_name,
-            .select_fields = std.ArrayList([]const u8).init(allocator),
-            .where_clauses = std.ArrayList(WhereClause).init(allocator),
-            .join_clauses = std.ArrayList(JoinClause).init(allocator),
+            .select_fields = .{},
+            .where_clauses = .{},
+            .join_clauses = .{},
         };
     }
     
     pub fn deinit(self: *QueryBuilder) void {
-        self.select_fields.deinit();
-        self.where_clauses.deinit();
-        self.join_clauses.deinit();
+        self.select_fields.deinit(self.allocator);
+        self.where_clauses.deinit(self.allocator);
+        self.join_clauses.deinit(self.allocator);
     }
     
     pub fn select(self: *QueryBuilder, fields: []const []const u8) *QueryBuilder {
         for (fields) |field| {
-            self.select_fields.append(field) catch {};
+            self.select_fields.append(self.allocator, field) catch {};
         }
         return self;
     }
     
     pub fn where(self: *QueryBuilder, field: []const u8, operator: []const u8, value: []const u8) *QueryBuilder {
-        self.where_clauses.append(.{
+        self.where_clauses.append(self.allocator, .{
             .field = field,
             .operator = operator,
             .value = value,
@@ -96,7 +96,7 @@ pub const QueryBuilder = struct {
     }
     
     pub fn join(self: *QueryBuilder, join_type: []const u8, table: []const u8, on: []const u8) *QueryBuilder {
-        self.join_clauses.append(.{
+        self.join_clauses.append(self.allocator, .{
             .join_type = join_type,
             .table = table,
             .on = on,
@@ -105,65 +105,65 @@ pub const QueryBuilder = struct {
     }
     
     pub fn build(self: *QueryBuilder) ![]const u8 {
-        var sql = std.ArrayList(u8).init(self.allocator);
-        errdefer sql.deinit();
+        var sql = std.ArrayListUnmanaged(u8){};
+        errdefer sql.deinit(self.allocator);
         
         // SELECT clause
-        try sql.writer().print("SELECT ", .{});
+        try sql.writer(self.allocator).print("SELECT ", .{});
         if (self.select_fields.items.len > 0) {
             for (self.select_fields.items, 0..) |field, i| {
-                if (i > 0) try sql.writer().print(", ", .{});
-                try sql.writer().print("{s}", .{field});
+                if (i > 0) try sql.writer(self.allocator).print(", ", .{});
+                try sql.writer(self.allocator).print("{s}", .{field});
             }
         } else {
-            try sql.writer().print("*", .{});
+            try sql.writer(self.allocator).print("*", .{});
         }
         
         // FROM clause
-        try sql.writer().print(" FROM {s}", .{self.table_name});
+        try sql.writer(self.allocator).print(" FROM {s}", .{self.table_name});
         
         // JOIN clauses
         for (self.join_clauses.items) |join_clause| {
-            try sql.writer().print(" {s} JOIN {s} ON {s}", .{ join_clause.join_type, join_clause.table, join_clause.on });
+            try sql.writer(self.allocator).print(" {s} JOIN {s} ON {s}", .{ join_clause.join_type, join_clause.table, join_clause.on });
         }
         
         // WHERE clause
         if (self.where_clauses.items.len > 0) {
-            try sql.writer().print(" WHERE ", .{});
+            try sql.writer(self.allocator).print(" WHERE ", .{});
             for (self.where_clauses.items, 0..) |clause, i| {
-                if (i > 0) try sql.writer().print(" AND ", .{});
+                if (i > 0) try sql.writer(self.allocator).print(" AND ", .{});
                 // Escape single quotes in value
-                var escaped_value = std.ArrayList(u8).init(self.allocator);
-                defer escaped_value.deinit();
+                var escaped_value = std.ArrayListUnmanaged(u8){};
+                defer escaped_value.deinit(self.allocator);
                 for (clause.value) |char| {
                     if (char == '\'') {
-                        try escaped_value.append('\'');
-                        try escaped_value.append('\'');
+                        try escaped_value.append(self.allocator, '\'');
+                        try escaped_value.append(self.allocator, '\'');
                     } else {
-                        try escaped_value.append(char);
+                        try escaped_value.append(self.allocator, char);
                     }
                 }
-                try sql.writer().print("{s} {s} '{s}'", .{ clause.field, clause.operator, escaped_value.items });
+                try sql.writer(self.allocator).print("{s} {s} '{s}'", .{ clause.field, clause.operator, escaped_value.items });
             }
         }
         
         // ORDER BY clause
         if (self.order_by_field) |field| {
-            try sql.writer().print(" ORDER BY {s}", .{field});
-            if (!self.order_ascending) try sql.writer().print(" DESC", .{});
+            try sql.writer(self.allocator).print(" ORDER BY {s}", .{field});
+            if (!self.order_ascending) try sql.writer(self.allocator).print(" DESC", .{});
         }
         
         // LIMIT clause
         if (self.limit_val) |limit_val| {
-            try sql.writer().print(" LIMIT {d}", .{limit_val});
+            try sql.writer(self.allocator).print(" LIMIT {d}", .{limit_val});
         }
         
         // OFFSET clause
         if (self.offset_val) |offset_val| {
-            try sql.writer().print(" OFFSET {d}", .{offset_val});
+            try sql.writer(self.allocator).print(" OFFSET {d}", .{offset_val});
         }
         
-        return sql.toOwnedSlice();
+        return sql.toOwnedSlice(self.allocator);
     }
 };
 
@@ -355,4 +355,3 @@ test "QueryBuilder whereNe" {
     
     try std.testing.expect(std.mem.indexOf(u8, sql, "name != 'Alice'") != null);
 }
-

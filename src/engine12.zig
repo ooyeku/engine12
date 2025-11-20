@@ -21,6 +21,7 @@ const orm = @import("orm/orm.zig");
 const websocket_mod = @import("websocket/module.zig");
 const hot_reload_mod = @import("hot_reload/module.zig");
 const script_injector_mod = @import("hot_reload/script_injector.zig");
+const rest_api_mod = @import("rest_api.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -745,6 +746,26 @@ pub const Engine12 = struct {
             .register_put = put_wrapper,
             .register_delete = delete_wrapper,
         };
+    }
+
+    /// Register RESTful API endpoints for a model
+    /// Generates: GET /prefix, GET /prefix/:id, POST /prefix, PUT /prefix/:id, DELETE /prefix/:id
+    ///
+    /// Example:
+    /// ```zig
+    /// try app.restApi("/api/todos", Todo, .{
+    ///     .orm = &my_orm,
+    ///     .validator = validateTodo,
+    ///     .authenticator = requireAuth,
+    ///     .authorization = canAccessTodo,
+    ///     .enable_pagination = true,
+    ///     .enable_filtering = true,
+    ///     .enable_sorting = true,
+    ///     .cache_ttl_ms = 30000,
+    /// });
+    /// ```
+    pub fn restApi(self: *Engine12, comptime prefix: []const u8, comptime Model: type, config: rest_api_mod.RestApiConfig(Model)) !void {
+        return rest_api_mod.restApi(self, prefix, Model, config);
     }
 
     /// Register a custom error handler

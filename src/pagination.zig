@@ -25,8 +25,8 @@ pub const Pagination = struct {
     /// const todos = try orm.findAllWithLimit(Todo, pagination.limit, pagination.offset);
     /// ```
     pub fn fromRequest(req: *Request) !Pagination {
-        const page = req.queryParamTyped(u32, "page") orelse 1;
-        const limit = req.queryParamTyped(u32, "limit") orelse 20;
+        const page = (req.queryParamTyped(u32, "page") catch null) orelse 1;
+        const limit = (req.queryParamTyped(u32, "limit") catch null) orelse 20;
         
         // Validate page
         if (page < 1) {

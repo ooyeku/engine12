@@ -85,3 +85,9 @@ pub const FileWatcher = hot_reload.FileWatcher;
 // Re-export logging middleware types
 pub const LoggingMiddleware = logging_middleware.LoggingMiddleware;
 pub const LoggingConfig = logging_middleware.LoggingConfig;
+
+// Re-export RESTful API types
+pub const rest_api = @import("rest_api.zig");
+pub const restApi = rest_api.restApi;
+pub const RestApiConfig = rest_api.RestApiConfig; // Generic function: RestApiConfig(Model)
+pub const AuthUser = rest_api.AuthUser;

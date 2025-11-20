@@ -5,6 +5,7 @@ Complete reference for Engine12's public APIs.
 ## Table of Contents
 
 - [Engine12 Core](#engine12-core)
+- [RESTful API Resource](#restful-api-resource)
 - [Valve System](#valve-system)
 - [Request API](#request-api)
 - [Response API](#response-api)
@@ -127,6 +128,142 @@ api.usePreRequest(authMiddleware);
 api.get("/todos", handleTodos);  // Registers at /api/todos
 api.post("/todos", handleCreate); // Registers at /api/todos
 ```
+
+### RESTful API Resource
+
+#### `restApi(prefix: []const u8, comptime Model: type, config: RestApiConfig) !void`
+Generate complete RESTful CRUD endpoints for a model with built-in support for filtering, sorting, pagination, authentication, authorization, validation, and caching.
+
+This function automatically generates 5 endpoints:
+- `GET {prefix}` - List all resources (with filtering, sorting, pagination)
+- `GET {prefix}/:id` - Get a single resource by ID
+- `POST {prefix}` - Create a new resource
+- `PUT {prefix}/:id` - Update a resource by ID
+- `DELETE {prefix}/:id` - Delete a resource by ID
+
+**RestApiConfig**:
+```zig
+pub const RestApiConfig = struct {
+    /// ORM instance (required)
+    orm: *ORM,
+    /// Validator function that validates a model instance from request
+    validator: *const fn (*Request, anytype) !ValidationErrors,
+    /// Optional authentication function
+    authenticator: ?*const fn (*Request) !AuthUser = null,
+    /// Optional authorization function for GET/PUT/DELETE by ID
+    authorization: ?*const fn (*Request, anytype) !bool = null,
+    /// Optional cache TTL in milliseconds
+    cache_ttl_ms: ?u32 = null,
+    /// Enable pagination (default: true)
+    enable_pagination: bool = true,
+    /// Enable filtering via ?filter=field:value (default: true)
+    enable_filtering: bool = true,
+    /// Enable sorting via ?sort=field:asc|desc (default: true)
+    enable_sorting: bool = true,
+    /// Optional hook called before creating a record
+    before_create: ?*const fn (*Request, anytype) !anytype = null,
+    /// Optional hook called after creating a record
+    after_create: ?*const fn (*Request, anytype) void = null,
+    /// Optional hook called before updating a record
+    before_update: ?*const fn (*Request, i64, anytype) !anytype = null,
+    /// Optional hook called after updating a record
+    after_update: ?*const fn (*Request, anytype) void = null,
+    /// Optional hook called before deleting a record
+    before_delete: ?*const fn (*Request, i64) !void = null,
+};
+```
+
+**Example: Basic Usage**
+```zig
+const Todo = struct {
+    id: i64,
+    title: []const u8,
+    description: []const u8,
+    completed: bool,
+    created_at: i64,
+};
+
+fn validateTodo(req: *Request, todo: Todo) !ValidationErrors {
+    var errors = ValidationErrors.init(req.arena.allocator());
+    if (todo.title.len == 0) {
+        try errors.add("title", "Title is required", "required");
+    }
+    if (todo.title.len > 200) {
+        try errors.add("title", "Title must be less than 200 characters", "max_length");
+    }
+    return errors;
+}
+
+fn requireAuth(req: *Request) !AuthUser {
+    // Your authentication logic here
+    // Return AuthUser or error
+}
+
+fn canAccessTodo(req: *Request, todo: Todo) !bool {
+    // Your authorization logic here
+    // Return true if user can access, false otherwise
+}
+
+try app.restApi("/api/todos", Todo, .{
+    .orm = &my_orm,
+    .validator = validateTodo,
+    .authenticator = requireAuth,
+    .authorization = canAccessTodo,
+    .enable_pagination = true,
+    .enable_filtering = true,
+    .enable_sorting = true,
+    .cache_ttl_ms = 30000, // 30 seconds
+});
+```
+
+**Query Parameters**:
+
+**Filtering** (`?filter=field:value`):
+- Multiple filters are combined with AND logic
+- Example: `GET /api/todos?filter=completed:true&filter=priority:high`
+- Field names are validated against the model struct fields
+
+**Sorting** (`?sort=field:asc` or `?sort=field:desc`):
+- Example: `GET /api/todos?sort=created_at:desc`
+- Field names are validated against the model struct fields
+- Direction must be either "asc" or "desc"
+
+**Pagination** (`?page=1&limit=20`):
+- Default: page=1, limit=20
+- Validates: page >= 1, limit between 1 and 100
+- Response includes pagination metadata:
+```json
+{
+  "data": [...],
+  "meta": {
+    "page": 1,
+    "limit": 20,
+    "total": 100,
+    "total_pages": 5
+  }
+}
+```
+
+**Response Formats**:
+
+- **GET /prefix** (List): Returns `{data: [...], meta: {...}}` with pagination metadata
+- **GET /prefix/:id** (Show): Returns single resource JSON
+- **POST /prefix** (Create): Returns created resource with status 201
+- **PUT /prefix/:id** (Update): Returns updated resource
+- **DELETE /prefix/:id** (Delete): Returns 204 No Content
+
+**Caching**:
+- When `cache_ttl_ms` is provided, responses are cached
+- Cache keys include user ID (if authenticated), filters, sort, and pagination
+- Cache is automatically invalidated on create/update/delete operations
+- Cache hit/miss is indicated by `X-Cache` header
+
+**Hooks**:
+- `before_create`: Called before creating a record, can modify the model
+- `after_create`: Called after creating a record
+- `before_update`: Called before updating a record, can modify the model
+- `after_update`: Called after updating a record
+- `before_delete`: Called before deleting a record, can prevent deletion by returning an error
 
 ### Server Lifecycle
 
