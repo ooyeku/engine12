@@ -65,6 +65,9 @@ pub const PreRequestMiddleware = fn (*Request) bool;
 // Response transformer middleware
 pub const ResponseTransformMiddleware = fn (Response) Response;
 
+// WebSocket handler type
+pub const WebSocketHandler = *const fn (*@import("websocket/connection.zig").WebSocketConnection) void;
+
 // Internal route and task storage
 pub const Route = struct {
     path: []const u8,
@@ -78,6 +81,19 @@ pub const BackgroundWorker = struct {
     task: BackgroundTask,
     interval_ms: ?u32,
 };
+
+// WebSocket route storage
+pub const WebSocketRoute = struct {
+    path: []const u8,
+    handler_ptr: *const WebSocketHandler,
+};
+
+// Hot reload error types
+// Note: These errors are defined here for documentation purposes
+// Actual error definitions are in the hot_reload module files
+// HotReloadNotEnabled - Hot reload operation attempted when disabled
+// TemplateReloadFailed - Failed to reload template
+// FileWatchFailed - Failed to watch file
 
 // Tests
 test "Environment enum values" {

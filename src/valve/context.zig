@@ -14,6 +14,7 @@ const ValveCapability = valve.ValveCapability;
 const handlers = @import("../handlers.zig");
 const wrapHandler = engine12.wrapHandler;
 const createRuntimeRouteWrapper = engine12.createRuntimeRouteWrapper;
+const websocket_mod = @import("../websocket/module.zig");
 
 /// Controlled access to Engine12 runtime for valves
 /// Provides capability-checked methods for interacting with Engine12
@@ -137,6 +138,27 @@ pub const ValveContext = struct {
             return valve.ValveError.CapabilityRequired;
         }
         try self.app.usePreRequest(mw);
+    }
+
+    /// Register a WebSocket endpoint
+    /// Requires `.websockets` capability
+    ///
+    /// Example:
+    /// ```zig
+    /// fn handleChat(conn: *websocket.WebSocketConnection) void {
+    ///     // Connection established
+    /// }
+    /// try ctx.registerWebSocket("/ws/chat", handleChat);
+    /// ```
+    pub fn registerWebSocket(
+        self: *Self,
+        path: []const u8,
+        handler: websocket_mod.WebSocketHandler,
+    ) !void {
+        if (!self.hasCapability(.websockets)) {
+            return valve.ValveError.CapabilityRequired;
+        }
+        try self.app.websocket(path, handler);
     }
 
     /// Register response middleware

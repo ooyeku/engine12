@@ -21,6 +21,7 @@ Complete reference for Engine12's public APIs.
 - [Pagination Helper](#pagination-helper)
 - [Metrics & Health Checks](#metrics--health-checks)
 - [Background Tasks](#background-tasks)
+- [WebSocket API](#websocket-api)
 - [Error Handling](#error-handling)
 - [C API](#c-api)
 
@@ -326,7 +327,7 @@ Capabilities that a valve can request. Each capability grants access to specific
 - `.background_tasks` - Register background tasks
 - `.health_checks` - Register health check functions
 - `.static_files` - Serve static files from directories
-- `.websockets` - Handle WebSocket connections (future)
+- `.websockets` - Handle WebSocket connections
 - `.database_access` - Access ORM/database operations
 - `.cache_access` - Access response cache
 - `.metrics_access` - Access metrics collector
@@ -384,11 +385,31 @@ Register a health check function. Requires `.health_checks` capability.
 try ctx.registerHealthCheck(&checkDatabase);
 ```
 
+#### `loadTemplate(template_path: []const u8) !*RuntimeTemplate`
+Load a template file for hot reloading (development mode only). Returns a `RuntimeTemplate` that automatically reloads when the file changes.
+
+```zig
+const template = try app.loadTemplate("templates/index.zt.html");
+const content = try template.getContentString();
+```
+
+**Note:** Hot reloading is only available in development mode. In production, use comptime templates with `@embedFile` for type safety.
+
 #### `serveStatic(mount_path: []const u8, directory: []const u8) !void`
-Serve static files from a directory. Requires `.static_files` capability.
+Serve static files from a directory. In development mode, cache is automatically disabled for hot reloading. Requires `.static_files` capability.
 
 ```zig
 try ctx.serveStatic("/static", "./public");
+```
+
+#### `registerWebSocket(path: []const u8, handler: WebSocketHandler) !void`
+Register a WebSocket endpoint. Requires `.websockets` capability.
+
+```zig
+fn handleChat(conn: *websocket.WebSocketConnection) void {
+    // Connection established
+}
+try ctx.registerWebSocket("/ws/chat", handleChat);
 ```
 
 #### `getORM() !?*ORM`
@@ -2199,6 +2220,371 @@ fn syncTask() void {
 }
 
 try app.schedulePeriodicTask("sync", syncTask, 60000); // Every minute
+```
+
+## Hot Reloading API
+
+Engine12 provides hot reloading support for development mode, enabling automatic reloading of templates and static files without server restart. Hot reloading is automatically enabled when using `initDevelopment()` and disabled in production.
+
+### Loading Templates for Hot Reloading
+
+#### `loadTemplate(template_path: []const u8) !*RuntimeTemplate`
+
+Load a template file for hot reloading. Returns a `RuntimeTemplate` that automatically reloads when the file changes.
+
+```zig
+const template = try app.loadTemplate("templates/index.zt.html");
+const content = try template.getContentString();
+// Use content with Template.compile() or a runtime template engine
+```
+
+**Note:** Since Engine12 templates use comptime compilation, runtime templates provide the content string. For full type safety, use comptime templates with `@embedFile` in production.
+
+### RuntimeTemplate
+
+The `RuntimeTemplate` struct provides methods for working with hot-reloadable templates.
+
+#### `getContentString() ![]const u8`
+
+Get the current template content as a string. Automatically reloads if the file has changed.
+
+```zig
+const content = try template.getContentString();
+```
+
+#### `reload() !void`
+
+Manually check for file changes and reload if necessary.
+
+```zig
+try template.reload();
+```
+
+#### `deinit() void`
+
+Clean up template resources.
+
+```zig
+template.deinit();
+```
+
+### Hot Reload Manager
+
+The `HotReloadManager` coordinates all hot reload functionality. It's automatically initialized in development mode.
+
+#### `watchTemplate(template_path: []const u8) !*RuntimeTemplate`
+
+Watch a template file for changes and return a `RuntimeTemplate` instance.
+
+```zig
+const template = try hot_reload_manager.watchTemplate("templates/index.zt.html");
+```
+
+#### `watchStaticFiles(file_server: *FileServer) !void`
+
+Register a static file server for hot reloading. Static files are automatically served without cache headers in development mode.
+
+```zig
+try hot_reload_manager.watchStaticFiles(&file_server);
+```
+
+### Static File Cache Control
+
+In development mode, static files are automatically served without cache headers to ensure changes are immediately visible. The `FileServer` provides methods to control caching:
+
+#### `disableCache() void`
+
+Disable caching for this file server (automatically called in development mode).
+
+```zig
+file_server.disableCache();
+```
+
+#### `enableCache() void`
+
+Enable caching for this file server.
+
+```zig
+file_server.enableCache();
+```
+
+### Complete Example
+
+```zig
+const std = @import("std");
+const Engine12 = @import("Engine12");
+
+pub fn main() !void {
+    // Initialize in development mode (hot reloading enabled)
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Load template for hot reloading
+    const template = try app.loadTemplate("templates/index.zt.html");
+
+    // Register route that uses the template
+    try app.get("/", handleIndex);
+
+    // Serve static files (cache disabled in dev mode)
+    try app.serveStatic("/", "./frontend");
+
+    try app.start();
+}
+
+fn handleIndex(req: *Engine12.Request) Engine12.Response {
+    _ = req;
+    
+    // Get template content (automatically reloads if changed)
+    const template_content = template.getContentString() catch {
+        return Engine12.Response.text("Template error").withStatus(500);
+    };
+    
+    // Use template content with Template.compile() or runtime engine
+    // For now, just return the content as example
+    return Engine12.Response.html(template_content);
+}
+```
+
+### Limitations
+
+- **Code Changes**: Hot reloading only applies to templates and static files. Code changes still require server restart (Zig limitation).
+- **Comptime Templates**: Runtime templates provide content strings but don't support full comptime type checking. Use comptime templates (`@embedFile`) for production.
+- **File Watching**: Uses polling-based file watching (500ms interval) for cross-platform compatibility.
+
+## WebSocket API
+
+Engine12 provides WebSocket support for real-time bidirectional communication. Each WebSocket route runs on its own port (starting from 9000) and uses thread-based execution for concurrency.
+
+### Registering WebSocket Routes
+
+#### `websocket(path_pattern: []const u8, handler: WebSocketHandler) !void`
+
+Register a WebSocket endpoint. The handler function is called when a connection is established.
+
+```zig
+const websocket = @import("Engine12").websocket;
+
+fn handleChat(conn: *websocket.WebSocketConnection) void {
+    std.debug.print("New connection: {s}\n", .{conn.id});
+    
+    // Set up message handling
+    // Messages are handled automatically by websocket.zig
+}
+
+try app.websocket("/ws/chat", handleChat);
+```
+
+### WebSocketConnection
+
+The `WebSocketConnection` struct provides methods for interacting with WebSocket connections.
+
+#### `sendText(text: []const u8) !void`
+
+Send a text message to the client.
+
+```zig
+try conn.sendText("Hello, client!");
+```
+
+#### `sendBinary(data: []const u8) !void`
+
+Send a binary message to the client.
+
+```zig
+try conn.sendBinary(&[4]u8{ 0x01, 0x02, 0x03, 0x04 });
+```
+
+#### `sendJson(comptime T: type, value: T) !void`
+
+Send a JSON message by serializing a struct.
+
+```zig
+const Message = struct {
+    type: []const u8,
+    content: []const u8,
+};
+
+try conn.sendJson(Message, .{
+    .type = "chat",
+    .content = "Hello!",
+});
+```
+
+#### `close(code: ?u16, reason: ?[]const u8) !void`
+
+Close the connection gracefully.
+
+```zig
+try conn.close(1000, "Normal closure");
+```
+
+#### `get(key: []const u8) ?[]const u8`
+
+Get a value from the connection's context storage.
+
+```zig
+if (conn.get("user_id")) |user_id| {
+    std.debug.print("User ID: {s}\n", .{user_id});
+}
+```
+
+#### `set(key: []const u8, value: []const u8) !void`
+
+Set a value in the connection's context storage.
+
+```zig
+try conn.set("user_id", "12345");
+```
+
+### Connection Properties
+
+- `id: []const u8` - Unique connection identifier
+- `path: []const u8` - WebSocket path pattern
+- `headers: std.StringHashMap([]const u8)` - HTTP headers from handshake
+- `is_open: std.atomic.Value(bool)` - Connection state
+
+### WebSocket Rooms
+
+Rooms allow broadcasting messages to groups of connections.
+
+#### `WebSocketRoom.init(allocator: std.mem.Allocator, name: []const u8) !WebSocketRoom`
+
+Create a new room.
+
+```zig
+var chatRoom = try websocket.WebSocketRoom.init(allocator, "general");
+defer chatRoom.deinit();
+```
+
+#### `join(conn: *WebSocketConnection) !void`
+
+Add a connection to the room.
+
+```zig
+try chatRoom.join(conn);
+```
+
+#### `leave(conn: *WebSocketConnection) void`
+
+Remove a connection from the room.
+
+```zig
+chatRoom.leave(conn);
+```
+
+#### `broadcast(message: []const u8) !void`
+
+Broadcast a text message to all connections in the room.
+
+```zig
+try chatRoom.broadcast("Hello everyone!");
+```
+
+#### `broadcastBinary(data: []const u8) !void`
+
+Broadcast a binary message to all connections in the room.
+
+```zig
+try chatRoom.broadcastBinary(&[4]u8{ 0x01, 0x02, 0x03, 0x04 });
+```
+
+#### `broadcastJson(comptime T: type, value: T) !void`
+
+Broadcast a JSON message to all connections in the room.
+
+```zig
+const Message = struct {
+    type: []const u8,
+    content: []const u8,
+};
+
+try chatRoom.broadcastJson(Message, .{
+    .type = "notification",
+    .content = "New message!",
+});
+```
+
+#### `count() usize`
+
+Get the number of connections in the room.
+
+```zig
+const count = chatRoom.count();
+std.debug.print("Room has {d} connections\n", .{count});
+```
+
+#### `isEmpty() bool`
+
+Check if the room is empty.
+
+```zig
+if (chatRoom.isEmpty()) {
+    std.debug.print("Room is empty\n", .{});
+}
+```
+
+### Complete Example
+
+```zig
+const std = @import("std");
+const Engine12 = @import("Engine12");
+const websocket = Engine12.websocket;
+
+var chatRoom: websocket.WebSocketRoom = undefined;
+
+fn handleChat(conn: *websocket.WebSocketConnection) void {
+    std.debug.print("New chat connection: {s}\n", .{conn.id});
+    
+    // Join the chat room
+    chatRoom.join(conn) catch |err| {
+        std.debug.print("Error joining room: {}\n", .{err});
+        return;
+    };
+    
+    // Broadcast welcome message
+    chatRoom.broadcast("User joined the chat") catch {};
+    
+    // Store user info in connection context
+    conn.set("user_id", "12345") catch {};
+    
+    // Messages are handled automatically by websocket.zig
+    // You can set up custom message handling in your handler
+}
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+    
+    // Initialize chat room
+    chatRoom = try websocket.WebSocketRoom.init(allocator, "general");
+    defer chatRoom.deinit();
+    
+    // Register WebSocket route
+    try app.websocket("/ws/chat", handleChat);
+    
+    // Register HTTP routes
+    try app.get("/", handleRoot);
+    
+    try app.start();
+}
+```
+
+### Valve Integration
+
+Valves can register WebSocket routes using the ValveContext API.
+
+```zig
+pub fn init(ctx: *valve.ValveContext) !void {
+    if (!ctx.hasCapability(.websockets)) {
+        return error.CapabilityRequired;
+    }
+    
+    try ctx.registerWebSocket("/ws/chat", handleChat);
+}
 ```
 
 ## Error Handling

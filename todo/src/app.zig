@@ -19,6 +19,7 @@ const cors_middleware = E12.cors_middleware;
 const request_id_middleware = E12.request_id_middleware;
 const pagination = E12.pagination;
 const BasicAuthValve = E12.BasicAuthValve;
+const RuntimeTemplate = E12.RuntimeTemplate;
 
 const allocator = std.heap.page_allocator;
 
@@ -56,6 +57,7 @@ const TodoInput = struct {
 
 var global_db: ?Database = null;
 var global_orm: ?ORM = null;
+var global_index_template: ?*RuntimeTemplate = null;
 var db_mutex: std.Thread.Mutex = .{};
 var global_logger: ?*Logger = null;
 var logger_mutex: std.Thread.Mutex = .{};
@@ -409,10 +411,11 @@ fn getStats(orm: *ORM, user_id: i64) !TodoStats {
 fn handleIndex(request: *Request) Response {
     _ = request;
 
-    // Compile template at comptime - embed template content directly
-    // Template is in the same directory structure (todo/src/templates/)
-    const template_content = @embedFile("templates/index.zt.html");
-    const IndexTemplate = templates.Template.compile(template_content);
+    // Use runtime template for hot reloading (development mode)
+    // Template content is automatically reloaded when file changes
+    const template = global_index_template orelse {
+        return Response.text("Template not loaded").withStatus(500);
+    };
 
     // Define context type
     const IndexContext = struct {
@@ -440,9 +443,9 @@ fn handleIndex(request: *Request) Response {
         .empty_state_message = "No todos yet. Add one above to get started!",
     };
 
-    // Render template - use page allocator for persistent memory
-    // Response.html() expects memory that persists beyond the request
-    const html = IndexTemplate.render(IndexContext, context, allocator) catch {
+    // Render template using runtime renderer (supports hot reloading)
+    // Template automatically reloads if file changes
+    const html = template.render(IndexContext, context, allocator) catch {
         return Response.text("Internal server error: template rendering failed").withStatus(500);
     };
 
@@ -1274,7 +1277,8 @@ pub fn createApp() !E12.Engine12 {
     // Initialize database
     try initDatabase();
 
-    var app = try E12.Engine12.initProduction();
+    // Use initDevelopment() to enable hot reloading for templates and static files
+    var app = try E12.Engine12.initDevelopment();
 
     // Initialize and register authentication valve
     const orm = getORM() catch {
@@ -1287,6 +1291,12 @@ pub fn createApp() !E12.Engine12 {
         .user_table_name = "users",
     });
     try app.registerValve(&auth_valve.valve);
+
+    // Load template for hot reloading (development mode only)
+    // Template will automatically reload when file changes
+    // Path is relative to the Engine12 root directory (where the app is run from)
+    const template_path = "todo/src/templates/index.zt.html";
+    global_index_template = try app.loadTemplate(template_path);
 
     // Register root route FIRST to prevent default handler from being registered
     // This must be done before any POST routes that might build the server

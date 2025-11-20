@@ -362,7 +362,7 @@ Valves declare required capabilities in their metadata. Capabilities are granted
 ### Example Use Cases
 
 - **Authentication Valves**: Provide JWT or session-based authentication
-- **WebSocket Valves**: Manage WebSocket connections and real-time communication
+- **WebSocket Valves**: Manage WebSocket connections and real-time communication (now supported)
 - **Database Valves**: Provide database utilities and health checks
 - **Logging Valves**: Centralized request logging and monitoring
 - **API Gateway Valves**: Route requests to external services
@@ -429,11 +429,60 @@ Route groups allow:
 - Compile-time errors for invalid templates
 - Better performance
 
+## WebSocket Architecture
+
+Engine12 provides WebSocket support using the `karlseguin/websocket.zig` library. Each WebSocket route runs on its own port (starting from 9000) and uses thread-based execution for concurrency, similar to the HTTP server.
+
+### Key Components
+
+- **WebSocketConnection**: Wraps `websocket.zig`'s `Conn` type with an Engine12-friendly API
+- **WebSocketManager**: Manages multiple WebSocket servers and their lifecycle
+- **WebSocketRoom**: Provides room-based broadcasting to groups of connections
+- **Handler Bridge**: Bridges `websocket.zig`'s Handler interface to Engine12 handlers
+
+### Design Decisions
+
+- **Thread-based Execution**: Each WebSocket server runs in its own thread, similar to Engine12's HTTP server
+- **Port-per-Route**: Each WebSocket route gets its own port for isolation and simplicity
+- **Room Management**: Built-in room system for broadcasting to groups of connections
+- **Type Safety**: WebSocket handlers are type-checked at compile time
+
+## Hot Reloading Architecture
+
+Engine12 provides hot reloading support for development mode, enabling automatic reloading of templates and static files without server restart. Hot reloading is automatically enabled when using `initDevelopment()` and disabled in production.
+
+### Key Components
+
+- **FileWatcher**: Polling-based file watcher that monitors file changes (500ms interval)
+- **RuntimeTemplate**: Runtime template loader that tracks file modifications and reloads content
+- **HotReloadManager**: Central coordinator that manages file watching and template/static file reloading
+- **FileServer Cache Control**: Automatic cache disabling in development mode
+
+### Design Decisions
+
+- **Development Only**: Hot reloading is automatically enabled only in `initDevelopment()`, ensuring zero performance impact in production
+- **Polling-based Watching**: Uses 500ms polling interval for cross-platform compatibility (can be optimized per-platform later)
+- **Comptime Compatibility**: Runtime templates complement comptime templates - users can choose based on their needs
+- **Thread Safety**: All hot reload operations use proper synchronization with mutexes
+- **Graceful Degradation**: Hot reload failures don't crash the server - errors are logged but operations continue
+
+### How It Works
+
+1. **Template Hot Reloading**: When a template file is loaded via `loadTemplate()`, it's watched for changes. On each access, the file modification time is checked and content is reloaded if changed.
+
+2. **Static File Hot Reloading**: Static file servers registered in development mode automatically disable caching, ensuring browsers always fetch the latest version.
+
+3. **File Watching**: A background thread polls watched files every 500ms, detecting changes by comparing modification times.
+
+### Limitations
+
+- **Code Changes**: Hot reloading only applies to templates and static files. Code changes still require server restart (Zig's comptime limitation).
+- **Comptime Templates**: Runtime templates provide content strings but don't support full comptime type checking. Use comptime templates (`@embedFile`) for production type safety.
+- **Performance**: Polling adds minimal overhead (500ms intervals), but is acceptable for development mode.
+
 ## Future Considerations
 
 - Async/await support when Zig adds it
-- WebSocket support
 - More database backends (PostgreSQL, MySQL)
 - Plugin system for extensions
-- Hot reloading for development
 

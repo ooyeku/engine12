@@ -27,6 +27,16 @@ pub const FileServer = struct {
         };
     }
 
+    /// Disable cache for this file server (useful in development mode)
+    pub fn disableCache(self: *FileServer) void {
+        self.enable_cache = false;
+    }
+
+    /// Enable cache for this file server
+    pub fn enableCache(self: *FileServer) void {
+        self.enable_cache = true;
+    }
+
     /// Create a handler function that serves files from this FileServer
     /// The handler uses the route path to determine which file to serve
     pub fn createHandler(self: *const FileServer) fn (*ziggurat.request.Request) ziggurat.response.Response {
@@ -110,7 +120,7 @@ pub const FileServer = struct {
         
         // Create response with correct Content-Type
         // Response stores a reference to the body string, so contents must persist
-        const response = if (std.mem.eql(u8, mime_type, "text/html"))
+        var response = if (std.mem.eql(u8, mime_type, "text/html"))
             Response.html(contents)
         else if (std.mem.eql(u8, mime_type, "text/css"))
             Response.text(contents).withContentType("text/css")
@@ -118,6 +128,14 @@ pub const FileServer = struct {
             Response.text(contents).withContentType("application/javascript")
         else
             Response.text(contents).withContentType(mime_type);
+        
+        // In development mode (when cache is disabled), add no-cache headers
+        if (!self.enable_cache) {
+            response = response
+                .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                .withHeader("Pragma", "no-cache")
+                .withHeader("Expires", "0");
+        }
         
         return response;
     }

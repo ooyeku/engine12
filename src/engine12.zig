@@ -18,6 +18,8 @@ const valve_registry_mod = @import("valve/registry.zig");
 const valve_mod = @import("valve/valve.zig");
 const runtime_routes_mod = @import("valve/runtime_routes.zig");
 const orm = @import("orm/orm.zig");
+const websocket_mod = @import("websocket/module.zig");
+const hot_reload_mod = @import("hot_reload/module.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -279,6 +281,7 @@ pub const Engine12 = struct {
     const MAX_WORKERS = 16;
     const MAX_HEALTH_CHECKS = 8;
     const MAX_STATIC_ROUTES = 4;
+    const MAX_WS_ROUTES = 100;
 
     allocator: std.mem.Allocator,
     profile: types.ServerProfile,
@@ -328,6 +331,14 @@ pub const Engine12 = struct {
     // ORM Instance (optional, set by application)
     orm_instance: ?*orm.ORM = null,
 
+    // WebSocket Manager
+    ws_manager: ?websocket_mod.manager.WebSocketManager = null,
+    ws_routes: [MAX_WS_ROUTES]?types.WebSocketRoute = [_]?types.WebSocketRoute{null} ** MAX_WS_ROUTES,
+    ws_routes_count: usize = 0,
+
+    // Hot Reload Manager (development only)
+    hot_reload_manager: ?*hot_reload_mod.HotReloadManager = null,
+
     // Lifecycle
     supervisor: ?*anyopaque = null,
     http_server: ?*anyopaque = null,
@@ -346,8 +357,16 @@ pub const Engine12 = struct {
     }
 
     /// Initialize Engine12 for development
+    /// Hot reloading is automatically enabled in development mode
     pub fn initDevelopment() !Engine12 {
-        return Engine12.initWithProfile(types.ServerProfile_Development);
+        var app = try Engine12.initWithProfile(types.ServerProfile_Development);
+        
+        // Initialize hot reload manager for development
+        const hr_manager = try allocator.create(hot_reload_mod.HotReloadManager);
+        hr_manager.* = hot_reload_mod.HotReloadManager.init(allocator, true);
+        app.hot_reload_manager = hr_manager;
+        
+        return app;
     }
 
     /// Initialize Engine12 for production
@@ -363,6 +382,13 @@ pub const Engine12 = struct {
     /// Clean up server resources
     pub fn deinit(self: *Engine12) void {
         self.is_running = false;
+
+        // Cleanup hot reload manager
+        if (self.hot_reload_manager) |manager| {
+            manager.deinit();
+            allocator.destroy(manager);
+            self.hot_reload_manager = null;
+        }
 
         // Cleanup valve registry
         if (self.valve_registry) |*registry| {
@@ -732,6 +758,56 @@ pub const Engine12 = struct {
         try self.middleware.addResponse(middleware);
     }
 
+    /// Load a template file for hot reloading (development mode only)
+    /// Returns a RuntimeTemplate that automatically reloads when the file changes
+    ///
+    /// Example:
+    /// ```zig
+    /// const template = try app.loadTemplate("templates/index.zt.html");
+    /// const content = try template.getContentString();
+    /// // Use content with Template.compile() or a runtime template engine
+    /// ```
+    pub fn loadTemplate(self: *Engine12, template_path: []const u8) !*hot_reload_mod.RuntimeTemplate {
+        if (self.hot_reload_manager) |manager| {
+            return try manager.watchTemplate(template_path);
+        }
+        return error.HotReloadNotEnabled;
+    }
+
+    /// Register a WebSocket endpoint
+    /// Each WebSocket route runs on its own port (starting from 9000)
+    /// The handler function is called when a connection is established
+    ///
+    /// Example:
+    /// ```zig
+    /// fn handleChat(conn: *websocket.WebSocketConnection) void {
+    ///     // Connection established - set up message handling
+    /// }
+    /// try app.websocket("/ws/chat", handleChat);
+    /// ```
+    pub fn websocket(self: *Engine12, comptime path_pattern: []const u8, handler: types.WebSocketHandler) !void {
+        if (self.ws_routes_count >= MAX_WS_ROUTES) {
+            return error.TooManyWebSocketRoutes;
+        }
+
+        // Initialize WebSocket manager lazily
+        if (self.ws_manager == null) {
+            self.ws_manager = try websocket_mod.manager.WebSocketManager.init(self.allocator);
+        }
+
+        // Store route
+        self.ws_routes[self.ws_routes_count] = types.WebSocketRoute{
+            .path = path_pattern,
+            .handler_ptr = &handler,
+        };
+        self.ws_routes_count += 1;
+
+        // Register WebSocket server (will be started in start())
+        if (self.ws_manager) |*manager| {
+            try manager.registerServer(path_pattern, handler);
+        }
+    }
+
     /// Register static file serving from a directory
     pub fn serveStatic(self: *Engine12, mount_path: []const u8, directory: []const u8) !void {
         if (self.static_routes_count >= MAX_STATIC_ROUTES) {
@@ -741,7 +817,12 @@ pub const Engine12 = struct {
             return error.ServerAlreadyBuilt;
         }
 
-        const file_server = fileserver.FileServer.init(self.allocator, mount_path, directory);
+        var file_server = fileserver.FileServer.init(self.allocator, mount_path, directory);
+
+        // Disable cache in development mode (hot reload enabled)
+        if (self.hot_reload_manager != null) {
+            file_server.disableCache();
+        }
 
         // Track if static files are mounted at root
         if (std.mem.eql(u8, mount_path, "/")) {
@@ -751,6 +832,15 @@ pub const Engine12 = struct {
         // Store a copy of the FileServer
         self.static_routes[self.static_routes_count] = file_server;
         self.static_routes_count += 1;
+
+        // Register with hot reload manager if enabled (development mode)
+        if (self.hot_reload_manager) |hr_manager| {
+            // Get a pointer to the stored FileServer
+            hr_manager.watchStaticFiles(&self.static_routes[self.static_routes_count - 1].?) catch |err| {
+                // Log error but don't fail - hot reload is optional
+                std.debug.print("[HotReload] Warning: Failed to watch static files: {}\n", .{err});
+            };
+        }
 
         // Build server if not already built
         if (self.built_server == null) {
@@ -946,13 +1036,15 @@ pub const Engine12 = struct {
         return self.request_count;
     }
 
-    /// Start the entire system (HTTP server + background tasks)
+    /// Start the entire system (HTTP server + background tasks + WebSocket servers)
     pub fn start(self: *Engine12) !void {
         self.start_time = std.time.milliTimestamp();
         self.is_running = true;
 
         try self.startHttpServer();
         try self.startBackgroundTasks();
+        try self.startWebSocketManager();
+        try self.startHotReloadManager();
 
         // Call onAppStart for all registered valves
         if (self.valve_registry) |*registry| {
@@ -971,6 +1063,8 @@ pub const Engine12 = struct {
             registry.onAppStop();
         }
 
+        self.stopHotReloadManager();
+        self.stopWebSocketManager();
         try self.stopHttpServer();
         try self.stopBackgroundTasks();
 
@@ -1030,6 +1124,34 @@ pub const Engine12 = struct {
     fn stopBackgroundTasks(self: *Engine12) !void {
         if (self.supervisor != null) {
             std.debug.print("[Tasks] Stopping all background tasks...\n", .{});
+        }
+    }
+
+    fn startWebSocketManager(self: *Engine12) !void {
+        if (self.ws_manager) |*manager| {
+            try manager.start();
+            std.debug.print("[WebSocket] Started {d} WebSocket server(s)\n", .{self.ws_routes_count});
+        }
+    }
+
+    fn stopWebSocketManager(self: *Engine12) void {
+        if (self.ws_manager) |*manager| {
+            manager.stop();
+            std.debug.print("[WebSocket] Stopped all WebSocket servers\n", .{});
+        }
+    }
+
+    fn startHotReloadManager(self: *Engine12) !void {
+        if (self.hot_reload_manager) |manager| {
+            try manager.start();
+            std.debug.print("[HotReload] Started hot reload manager\n", .{});
+        }
+    }
+
+    fn stopHotReloadManager(self: *Engine12) void {
+        if (self.hot_reload_manager) |manager| {
+            manager.stop();
+            std.debug.print("[HotReload] Stopped hot reload manager\n", .{});
         }
     }
 

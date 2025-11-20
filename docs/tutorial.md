@@ -464,6 +464,67 @@ fn handleIndex(req: *Request) Response {
 </ul>
 ```
 
+## Step 5.5: Hot Reloading (Development Mode)
+
+In development mode, Engine12 automatically enables hot reloading for templates and static files. This means you can edit templates and static assets without restarting the server.
+
+### Using Runtime Templates
+
+Instead of using `@embedFile` for templates, you can use `loadTemplate()` for hot reloading:
+
+```zig
+const std = @import("std");
+const E12 = @import("Engine12");
+
+pub fn main() !void {
+    var app = try E12.Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Load template for hot reloading
+    const template = try app.loadTemplate("templates/index.zt.html");
+
+    try app.get("/", handleIndex);
+    try app.start();
+}
+
+fn handleIndex(req: *E12.Request) E12.Response {
+    _ = req;
+    
+    // Get template content (automatically reloads if changed)
+    const template_content = template.getContentString() catch {
+        return E12.Response.text("Template error").withStatus(500);
+    };
+    
+    // Use template content with Template.compile() or runtime engine
+    // For production, use comptime templates for type safety
+    const TemplateType = E12.templates.Template.compile(template_content);
+    const html = TemplateType.render(IndexContext, context, allocator) catch {
+        return E12.Response.text("Render error").withStatus(500);
+    };
+    
+    return E12.Response.html(html);
+}
+```
+
+### Static File Hot Reloading
+
+Static files are automatically served without cache headers in development mode:
+
+```zig
+// In development mode, cache is automatically disabled
+try app.serveStatic("/", "./frontend");
+
+// Changes to CSS, JS, or HTML files are immediately visible
+// No need to hard refresh or clear browser cache
+```
+
+### When to Use Hot Reloading
+
+- **Development**: Use `loadTemplate()` for rapid iteration during development
+- **Production**: Use `@embedFile` with comptime templates for type safety and performance
+
+**Note**: Hot reloading only works for templates and static files. Code changes still require server restart.
+
 ## Step 6: Middleware
 
 Add logging and authentication middleware.

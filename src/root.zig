@@ -23,6 +23,8 @@ pub const cors_middleware = @import("cors_middleware.zig");
 pub const request_id_middleware = @import("request_id_middleware.zig");
 pub const pagination = @import("pagination.zig");
 pub const valve = @import("valve/valve.zig");
+pub const websocket = @import("websocket/module.zig");
+pub const hot_reload = @import("hot_reload/module.zig");
 
 // Re-export main types for convenience
 pub const Engine12 = engine12.Engine12;
@@ -67,3 +69,14 @@ pub const RegistryError = @import("valve/registry.zig").RegistryError;
 pub const BasicAuthValve = @import("valve/builtin/basic_auth.zig").BasicAuthValve;
 pub const BasicAuthConfig = @import("valve/builtin/basic_auth.zig").BasicAuthConfig;
 pub const User = @import("valve/builtin/basic_auth.zig").User;
+
+// Re-export websocket types
+pub const WebSocketConnection = websocket.WebSocketConnection;
+pub const WebSocketHandler = websocket.WebSocketHandler;
+pub const WebSocketManager = websocket.WebSocketManager;
+pub const WebSocketRoom = websocket.WebSocketRoom;
+
+// Re-export hot reload types
+pub const RuntimeTemplate = hot_reload.RuntimeTemplate;
+pub const HotReloadManager = hot_reload.HotReloadManager;
+pub const FileWatcher = hot_reload.FileWatcher;

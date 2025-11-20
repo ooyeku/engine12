@@ -18,6 +18,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const websocket_dep = b.dependency("websocket", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Create ziggurat module from its root source
     const ziggurat_mod = b.createModule(.{
         .root_source_file = ziggurat.path("src/root.zig"),
@@ -25,9 +30,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Add vigil and ziggurat to the Engine12 module's imports
+    // Add vigil, ziggurat, and websocket to the Engine12 module's imports
     mod.addImport("vigil", vigil.module("vigil"));
     mod.addImport("ziggurat", ziggurat_mod);
+    mod.addImport("websocket", websocket_dep.module("websocket"));
 
     // Compile SQLite C sources as a static library to avoid duplicate symbols
     const sqlite_lib = b.addLibrary(.{
