@@ -158,6 +158,13 @@ pub const HotReloadManager = struct {
         // Clean up static file servers list (servers themselves are managed elsewhere)
         self.static_file_servers.deinit(self.allocator);
 
+        // Clean up reload room
+        if (self.reload_room) |room| {
+            room.deinit();
+            self.allocator.destroy(room);
+            self.reload_room = null;
+        }
+
         self.file_watcher.deinit();
     }
 };

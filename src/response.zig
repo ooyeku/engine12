@@ -46,6 +46,10 @@ pub const Response = struct {
     /// This is used when body data comes from request arena and needs to be copied
     _persistent_body: ?[]const u8 = null,
 
+    /// Custom headers to be applied (stored separately since ziggurat may not support all headers)
+    /// Headers are stored as key-value pairs in persistent memory
+    _custom_headers: ?std.StringHashMap([]const u8) = null,
+
     /// Create a JSON response
     /// The body string will be copied to persistent memory automatically
     ///
@@ -437,6 +441,7 @@ pub const Response = struct {
     /// Add a custom header
     /// The header value will be copied to persistent memory
     /// Note: For Content-Type, use withContentType() instead for proper handling
+    /// Headers are stored and will be applied when ziggurat supports custom headers
     ///
     /// Example:
     /// ```zig
@@ -448,12 +453,32 @@ pub const Response = struct {
             return self.withContentType(value);
         }
 
-        // For other headers, ziggurat may not support custom headers directly
-        // This is a placeholder for future implementation
-        // TODO: Implement custom header support in ziggurat or store headers separately
-        // Both name and value are used above (name in condition, value in if branch),
-        // so we don't need to discard them here
-        return self;
+        // Store header in custom headers map
+        // Copy name and value to persistent memory
+        // Note: persistent_allocator is page_allocator which doesn't support free()
+        const persistent_name = persistent_allocator.dupe(u8, name) catch return self;
+        const persistent_value = persistent_allocator.dupe(u8, value) catch return self;
+
+        if (self._custom_headers) |headers| {
+            // Add to existing headers map
+            // Note: We need to create a mutable copy since headers is optional
+            var headers_mut = headers;
+            headers_mut.put(persistent_name, persistent_value) catch return self;
+            return Response{
+                .inner = self.inner,
+                ._persistent_body = self._persistent_body,
+                ._custom_headers = headers_mut,
+            };
+        } else {
+            // Create new headers map
+            var new_headers = std.StringHashMap([]const u8).init(persistent_allocator);
+            new_headers.put(persistent_name, persistent_value) catch return self;
+            return Response{
+                .inner = self.inner,
+                ._persistent_body = self._persistent_body,
+                ._custom_headers = new_headers,
+            };
+        }
     }
 
     /// Set a cookie
@@ -560,6 +585,8 @@ pub const Response = struct {
 
     /// Convert to ziggurat response (internal use)
     /// The response data is already in persistent memory
+    /// Note: Custom headers stored in _custom_headers are not yet applied to the ziggurat response
+    /// as ziggurat may not support custom headers directly. They are stored for future use.
     pub fn toZiggurat(self: Response) ziggurat.response.Response {
         return self.inner;
     }
@@ -569,6 +596,7 @@ pub const Response = struct {
         return Response{
             .inner = ziggurat_response,
             ._persistent_body = null,
+            ._custom_headers = null,
         };
     }
 };

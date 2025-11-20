@@ -109,6 +109,48 @@ pub const OutputFormat = enum {
     human,
 };
 
+/// Log destination types
+pub const LogDestination = enum {
+    stdout,
+    file,
+    syslog,
+};
+
+/// File handle wrapper for thread-safe file logging
+const FileHandle = struct {
+    file: std.fs.File,
+    mutex: std.Thread.Mutex,
+    path: []const u8,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, file_path: []const u8) !FileHandle {
+        const path_copy = try allocator.dupe(u8, file_path);
+        errdefer allocator.free(path_copy);
+
+        const file = try std.fs.cwd().createFile(file_path, .{ .truncate = false, .read = true });
+        errdefer file.close();
+
+        return FileHandle{
+            .file = file,
+            .mutex = .{},
+            .path = path_copy,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *FileHandle) void {
+        self.file.close();
+        self.allocator.free(self.path);
+    }
+
+    pub fn write(self: *FileHandle, data: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        _ = try self.file.write(data);
+        try self.file.sync();
+    }
+};
+
 /// Structured log entry with builder pattern support
 pub const LogEntry = struct {
     level: LogLevel,
@@ -180,6 +222,29 @@ pub const LogEntry = struct {
             _ = try self.field("ip", xff[0..comma_pos]);
         } else if (req.header("X-Real-IP")) |real_ip| {
             _ = try self.field("ip", real_ip);
+        }
+
+        return self;
+    }
+
+    /// Add response context to the log entry
+    /// Note: status_code should be passed separately as Response doesn't expose it directly
+    pub fn withResponse(self: *LogEntry, status_code: ?u16, req: ?*Request) !*LogEntry {
+        // Capture status code if provided
+        if (status_code) |code| {
+            _ = try self.fieldInt("status_code", code);
+        }
+
+        // Calculate duration if request start time is available
+        if (req) |r| {
+            if (r.get("request_start_time")) |start_time_str| {
+                const start_time = std.fmt.parseInt(i64, start_time_str, 10) catch {
+                    return self;
+                };
+                const end_time = std.time.milliTimestamp();
+                const duration_ms = end_time - start_time;
+                _ = try self.fieldInt("duration_ms", duration_ms);
+            }
         }
 
         return self;
@@ -261,10 +326,28 @@ pub const LogEntry = struct {
         var output = std.ArrayListUnmanaged(u8){};
         const writer = output.writer(allocator);
 
-        // Format timestamp
-        const timestamp_ms = self.timestamp;
+        // Format timestamp as human-readable ISO 8601 string
+        const Time = @import("utils/time.zig").Time;
+        const formatted_timestamp = Time.formatTimestamp(self.timestamp, allocator) catch {
+            // Fallback to raw timestamp if formatting fails
+            try writer.print("[{d}] ", .{self.timestamp});
+            const level_str = switch (self.level) {
+                .debug => "DEBUG",
+                .info => "INFO",
+                .warn => "WARN",
+                .err => "ERROR",
+            };
+            try writer.print("{s} {s}", .{ level_str, self.message });
+            if (self.fields.count() > 0) {
+                var iterator = self.fields.iterator();
+                while (iterator.next()) |entry| {
+                    try writer.print(" {s}={s}", .{ entry.key_ptr.*, entry.value_ptr.* });
+                }
+            }
+            return output.toOwnedSlice(allocator);
+        };
+        defer allocator.free(formatted_timestamp);
 
-        // Simple timestamp formatting (for now, just use epoch milliseconds)
         const level_str = switch (self.level) {
             .debug => "DEBUG",
             .info => "INFO",
@@ -272,7 +355,7 @@ pub const LogEntry = struct {
             .err => "ERROR",
         };
 
-        try writer.print("[{d}] {s} {s}", .{ timestamp_ms, level_str, self.message });
+        try writer.print("[{s}] {s} {s}", .{ formatted_timestamp, level_str, self.message });
 
         if (self.fields.count() > 0) {
             var iterator = self.fields.iterator();
@@ -314,13 +397,59 @@ pub const Logger = struct {
     allocator: std.mem.Allocator,
     min_level: LogLevel,
     format: OutputFormat,
+    destinations: std.ArrayListUnmanaged(LogDestination),
+    file_handle: ?*FileHandle = null,
+    syslog_facility: ?u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, min_level: LogLevel) Logger {
-        return Logger{
+        var logger = Logger{
             .allocator = allocator,
             .min_level = min_level,
             .format = .json,
+            .destinations = .{},
         };
+        // Default to stdout
+        logger.destinations.append(allocator, .stdout) catch {};
+        return logger;
+    }
+
+    /// Add a log destination
+    pub fn addDestination(self: *Logger, destination: LogDestination) !void {
+        // Check if already added
+        for (self.destinations.items) |dest| {
+            if (dest == destination) {
+                return; // Already added
+            }
+        }
+        try self.destinations.append(self.allocator, destination);
+    }
+
+    /// Set file destination (creates file handle)
+    pub fn setFileDestination(self: *Logger, file_path: []const u8) !void {
+        if (self.file_handle) |handle| {
+            handle.deinit();
+            self.allocator.destroy(handle);
+        }
+        const handle = try self.allocator.create(FileHandle);
+        errdefer self.allocator.destroy(handle);
+        handle.* = try FileHandle.init(self.allocator, file_path);
+        self.file_handle = handle;
+        try self.addDestination(.file);
+    }
+
+    /// Set syslog facility (0-23, see syslog.h)
+    pub fn setSyslogFacility(self: *Logger, facility: u8) !void {
+        self.syslog_facility = facility;
+        try self.addDestination(.syslog);
+    }
+
+    /// Cleanup logger resources
+    pub fn deinit(self: *Logger) void {
+        if (self.file_handle) |handle| {
+            handle.deinit();
+            self.allocator.destroy(handle);
+        }
+        self.destinations.deinit(self.allocator);
     }
 
     /// Create logger from environment (auto-selects format)
@@ -337,11 +466,15 @@ pub const Logger = struct {
             .production => .json,
         };
 
-        return Logger{
+        var logger = Logger{
             .allocator = allocator,
             .min_level = min_level,
             .format = format,
+            .destinations = .{},
         };
+        // Default to stdout
+        logger.destinations.append(allocator, .stdout) catch {};
+        return logger;
     }
 
     /// Set output format
@@ -400,19 +533,84 @@ pub const Logger = struct {
         return entry;
     }
 
-    /// Print a log entry using the logger's format
+    /// Log a request (convenience method)
+    pub fn logRequest(self: *Logger, req: *Request, level: LogLevel, message: []const u8) !void {
+        var entry = try self.fromRequest(req, level, message);
+        entry.log();
+    }
+
+    /// Log a response (convenience method)
+    /// Note: status_code should be passed as Response doesn't expose it directly
+    pub fn logResponse(self: *Logger, req: *Request, status_code: ?u16, level: LogLevel, message: []const u8) !void {
+        var entry = try self.log(level, message);
+        _ = try entry.withRequest(req);
+        _ = try entry.withResponse(status_code, req);
+        entry.log();
+    }
+
+    /// Log an error with error context (convenience method)
+    pub fn logErrorWithContext(self: *Logger, message: []const u8, err: anytype) !void {
+        var entry = try self.logError(message);
+        const err_name = @errorName(err);
+        _ = try entry.field("error", err_name);
+        entry.log();
+    }
+
+    /// Create a child logger with additional context fields
+    /// Useful for creating loggers scoped to a user, request, etc.
+    /// Note: Context fields are not automatically added to log entries,
+    /// but can be used to create contextual loggers for specific components
+    pub fn childLogger(self: *Logger, context_fields: struct {
+        user_id: ?[]const u8 = null,
+        request_id: ?[]const u8 = null,
+        component: ?[]const u8 = null,
+    }) Logger {
+        _ = context_fields; // Reserved for future use
+        var child = Logger{
+            .allocator = self.allocator,
+            .min_level = self.min_level,
+            .format = self.format,
+            .destinations = .{},
+            .file_handle = self.file_handle,
+            .syslog_facility = self.syslog_facility,
+        };
+        // Copy destinations
+        child.destinations.appendSlice(self.allocator, self.destinations.items) catch {};
+        return child;
+    }
+
+    /// Print a log entry using the logger's format to all configured destinations
     pub fn printEntry(self: *Logger, entry: *LogEntry) void {
-        switch (self.format) {
-            .json => {
-                const json = entry.toJson(self.allocator) catch return;
-                defer self.allocator.free(json);
-                std.debug.print("{s}\n", .{json});
-            },
-            .human => {
-                const human = entry.toHumanReadable(self.allocator) catch return;
-                defer self.allocator.free(human);
-                std.debug.print("{s}\n", .{human});
-            },
+        const formatted = switch (self.format) {
+            .json => entry.toJson(self.allocator) catch return,
+            .human => entry.toHumanReadable(self.allocator) catch return,
+        };
+        defer self.allocator.free(formatted);
+
+        const formatted_with_newline = std.fmt.allocPrint(self.allocator, "{s}\n", .{formatted}) catch return;
+        defer self.allocator.free(formatted_with_newline);
+
+        // Write to all configured destinations
+        for (self.destinations.items) |dest| {
+            switch (dest) {
+                .stdout => {
+                    std.debug.print("{s}", .{formatted_with_newline});
+                },
+                .file => {
+                    if (self.file_handle) |handle| {
+                        handle.write(formatted_with_newline) catch {
+                            // Logging failure shouldn't crash - just continue
+                            continue;
+                        };
+                    }
+                },
+                .syslog => {
+                    // Syslog support - for now, just write to stdout
+                    // Full syslog implementation would require platform-specific code
+                    // This is a placeholder that can be enhanced later
+                    std.debug.print("[SYSLOG] {s}", .{formatted_with_newline});
+                },
+            }
         }
     }
 

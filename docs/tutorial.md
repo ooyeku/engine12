@@ -529,20 +529,84 @@ try app.serveStatic("/", "./frontend");
 
 Add logging and authentication middleware.
 
-### 6.1 Logging Middleware
+### 6.1 Structured Logging
+
+Engine12 provides built-in structured logging with automatic request/response logging:
 
 ```zig
-fn loggingMiddleware(req: *Request) MiddlewareResult {
-    std.debug.print("[{s}] {s} {s}\n", .{
-        @tagName(std.time.timestamp()),
-        req.method(),
-        req.path(),
+const std = @import("std");
+const E12 = @import("engine12");
+
+pub fn main() !void {
+    var app = try E12.Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Configure logger
+    const logger = app.getLogger();
+    logger.setFormat(.human); // Human-readable for development
+    // For production, use JSON format:
+    // logger.setFormat(.json);
+    // try logger.setFileDestination("logs/app.log");
+
+    // Enable automatic request/response logging
+    // Exclude health check endpoints
+    try app.enableRequestLogging(.{
+        .exclude_paths = &[_][]const u8{ "/health", "/metrics" },
     });
-    return .proceed;
+
+    try app.get("/", handleRoot);
+    try app.start();
 }
 
-// In main():
-try app.usePreRequest(loggingMiddleware);
+// Store app reference globally or pass logger to handler
+var global_app: ?*E12.Engine12 = null;
+
+fn handleRoot(req: *E12.Request) E12.Response {
+    // Custom logging in handlers
+    if (global_app) |app| {
+        const logger = app.getLogger();
+        try logger.info("Root endpoint accessed")
+            .field("ip", req.header("X-Real-IP") orelse "unknown")
+            .log();
+    }
+    
+    return E12.Response.text("Hello, World!");
+}
+
+// In main(), before starting:
+global_app = &app;
+```
+
+#### Manual Logging
+
+You can also log manually without middleware:
+
+```zig
+// Simple logging
+try logger.info("Server started").log();
+
+// Logging with fields
+try logger.warn("High memory usage")
+    .fieldInt("memory_mb", 1024)
+    .fieldBool("is_critical", true)
+    .log();
+
+// Logging with request context
+try logger.fromRequest(req, .info, "Request processed").log();
+
+// Logging errors
+try logger.logError("Database connection failed").log();
+```
+
+#### Multiple Log Destinations
+
+Log to multiple destinations simultaneously:
+
+```zig
+const logger = app.getLogger();
+try logger.addDestination(.stdout); // Console
+try logger.setFileDestination("logs/app.log"); // File
+try logger.setSyslogFacility(1); // Syslog (LOG_USER)
 ```
 
 ### 6.2 Authentication Middleware

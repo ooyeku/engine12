@@ -20,6 +20,8 @@ const request_id_middleware = E12.request_id_middleware;
 const pagination = E12.pagination;
 const BasicAuthValve = E12.BasicAuthValve;
 const RuntimeTemplate = E12.RuntimeTemplate;
+const LoggingMiddleware = E12.LoggingMiddleware;
+const LoggingConfig = E12.LoggingConfig;
 
 const allocator = std.heap.page_allocator;
 
@@ -59,15 +61,15 @@ var global_db: ?Database = null;
 var global_orm: ?ORM = null;
 var global_index_template: ?*RuntimeTemplate = null;
 var db_mutex: std.Thread.Mutex = .{};
-var global_logger: ?*Logger = null;
-var logger_mutex: std.Thread.Mutex = .{};
+var global_app: ?*E12.Engine12 = null;
 var global_cache: ?*ResponseCache = null;
 var cache_mutex: std.Thread.Mutex = .{};
 
 fn getLogger() ?*Logger {
-    logger_mutex.lock();
-    defer logger_mutex.unlock();
-    return global_logger;
+    if (global_app) |app| {
+        return app.getLogger();
+    }
+    return null;
 }
 
 fn getORM() !*ORM {
@@ -1096,39 +1098,7 @@ fn csrfMiddleware(req: *Request) middleware_chain.MiddlewareResult {
     return .proceed;
 }
 
-fn requestTrackingMiddleware(req: *Request) middleware_chain.MiddlewareResult {
-    // Store request start time in context
-    const start_time = std.time.milliTimestamp();
-    const start_time_str = std.fmt.allocPrint(req.arena.allocator(), "{d}", .{start_time}) catch {
-        // If allocation fails, just proceed without tracking
-        return .proceed;
-    };
-    req.set("request_start_time", start_time_str) catch {};
-
-    return .proceed;
-}
-
-fn loggingMiddleware(req: *Request) middleware_chain.MiddlewareResult {
-    if (getLogger()) |logger| {
-        const entry = logger.fromRequest(req, .info, "Request received") catch {
-            // If logging fails, just proceed
-            return .proceed;
-        };
-
-        // Add request timing if available
-        if (req.get("request_start_time")) |start_time_str| {
-            _ = entry.field("start_time", start_time_str) catch {};
-        }
-
-        // Add request ID if available
-        if (req.get("request_id")) |request_id| {
-            _ = entry.field("request_id", request_id) catch {};
-        }
-
-        entry.log();
-    }
-    return .proceed;
-}
+// Custom logging middleware removed - using built-in LoggingMiddleware instead
 
 // CORS middleware is now handled by the built-in CorsMiddleware
 // This function is kept for backward compatibility but is replaced in createApp()
@@ -1310,10 +1280,8 @@ pub fn createApp() !E12.Engine12 {
     try app.post("/auth/logout", BasicAuthValve.handleLogout);
     try app.get("/auth/me", BasicAuthValve.handleGetMe);
 
-    // Store logger globally for background tasks
-    logger_mutex.lock();
-    global_logger = &app.logger;
-    logger_mutex.unlock();
+    // Store app globally for background tasks to access logger
+    global_app = &app;
 
     // Initialize cache with 60 second default TTL
     // Allocate on heap so it persists beyond createApp() scope
@@ -1327,7 +1295,7 @@ pub fn createApp() !E12.Engine12 {
     cache_mutex.unlock();
 
     // Middleware
-    // Order matters: body size limit -> CSRF -> CORS -> request ID -> request tracking -> logging
+    // Order matters: body size limit -> CSRF -> CORS -> request ID -> logging
     try app.usePreRequest(&bodySizeLimitMiddleware);
     try app.usePreRequest(&csrfMiddleware);
 
@@ -1348,8 +1316,14 @@ pub fn createApp() !E12.Engine12 {
     const req_id_mw_fn = req_id_mw.preRequestMwFn();
     try app.usePreRequest(req_id_mw_fn);
 
-    try app.usePreRequest(&requestTrackingMiddleware);
-    try app.usePreRequest(&loggingMiddleware);
+    // Enable built-in request/response logging middleware
+    // Exclude health check endpoints from logging
+    const logging_config = LoggingConfig{
+        .log_requests = true,
+        .log_responses = true,
+        .exclude_paths = &[_][]const u8{ "/metrics", "/health" },
+    };
+    try app.enableRequestLogging(logging_config);
 
     // Custom error handler
     app.useErrorHandler(customErrorHandler);

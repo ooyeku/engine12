@@ -22,6 +22,7 @@ pub const utils = @import("utils.zig");
 pub const cors_middleware = @import("cors_middleware.zig");
 pub const request_id_middleware = @import("request_id_middleware.zig");
 pub const pagination = @import("pagination.zig");
+pub const logging_middleware = @import("logging_middleware.zig");
 pub const valve = @import("valve/valve.zig");
 pub const websocket = @import("websocket/module.zig");
 pub const hot_reload = @import("hot_reload/module.zig");
@@ -80,3 +81,7 @@ pub const WebSocketRoom = websocket.WebSocketRoom;
 pub const RuntimeTemplate = hot_reload.RuntimeTemplate;
 pub const HotReloadManager = hot_reload.HotReloadManager;
 pub const FileWatcher = hot_reload.FileWatcher;
+
+// Re-export logging middleware types
+pub const LoggingMiddleware = logging_middleware.LoggingMiddleware;
+pub const LoggingConfig = logging_middleware.LoggingConfig;

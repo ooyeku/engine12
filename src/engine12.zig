@@ -94,6 +94,14 @@ pub var global_rate_limiter: ?*rate_limit.RateLimiter = null;
 /// - Multiple threads can safely read/write cache entries concurrently
 pub var global_cache: ?*cache.ResponseCache = null;
 
+/// Global logger pointer
+/// This is set when Engine12 is initialized and accessed at runtime
+///
+/// Thread Safety:
+/// - Logger uses internal mutex for thread-safe file writing
+/// - Multiple threads can safely log concurrently
+pub var global_logger: ?*dev_tools.Logger = null;
+
 /// Global error handler registry pointer
 /// This is set when Engine12 is initialized and accessed at runtime
 ///
@@ -368,7 +376,7 @@ pub const Engine12 = struct {
     http_server: ?*anyopaque = null,
 
     pub fn initWithProfile(profile: types.ServerProfile) !Engine12 {
-        const app = Engine12{
+        var app = Engine12{
             .allocator = allocator,
             .profile = profile,
             .middleware = middleware_chain.MiddlewareChain{},
@@ -377,6 +385,8 @@ pub const Engine12 = struct {
             .logger = dev_tools.Logger.fromEnvironment(allocator, profile.environment),
             .runtime_routes = runtime_routes_mod.RuntimeRouteRegistry.init(allocator),
         };
+        // Set global logger reference
+        global_logger = &app.logger;
         return app;
     }
 
@@ -406,6 +416,9 @@ pub const Engine12 = struct {
     /// Clean up server resources
     pub fn deinit(self: *Engine12) void {
         self.is_running = false;
+
+        // Cleanup logger (file handles and destinations)
+        self.logger.deinit();
 
         // Cleanup hot reload manager
         if (self.hot_reload_manager) |manager| {
@@ -755,6 +768,32 @@ pub const Engine12 = struct {
     pub fn getCache(self: *Engine12) ?*cache.ResponseCache {
         _ = self;
         return global_cache;
+    }
+
+    /// Get the logger instance
+    pub fn getLogger(self: *Engine12) *dev_tools.Logger {
+        return &self.logger;
+    }
+
+    /// Set a custom logger (replaces the default logger)
+    pub fn setLogger(self: *Engine12, logger: dev_tools.Logger) void {
+        self.logger.deinit();
+        self.logger = logger;
+    }
+
+    /// Enable request/response logging with default configuration
+    /// This registers the logging middleware automatically
+    pub fn enableRequestLogging(self: *Engine12, config: ?@import("logging_middleware.zig").LoggingConfig) !void {
+        const logging_middleware_mod = @import("logging_middleware.zig");
+        const default_config = logging_middleware_mod.LoggingConfig{};
+        const logging_config = config orelse default_config;
+
+        var logging_mw = logging_middleware_mod.LoggingMiddleware.init(logging_config);
+        logging_middleware_mod.LoggingMiddleware.setGlobalLogger(&self.logger);
+        logging_mw.setGlobalConfig();
+
+        try self.usePreRequest(logging_mw.preRequestMwFn());
+        try self.useResponse(logging_mw.responseMwFn());
     }
 
     /// Add a pre-request middleware to the chain

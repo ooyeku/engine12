@@ -2599,6 +2599,253 @@ fn customErrorHandler(err: anyerror) Response {
 app.useErrorHandler(customErrorHandler);
 ```
 
+## Structured Logging
+
+Engine12 provides structured logging with support for multiple output destinations, log levels, and formats.
+
+### Logger
+
+The `Logger` struct provides structured logging capabilities with support for multiple destinations (stdout, file, syslog), log levels, and output formats (JSON, human-readable).
+
+#### `Logger.init(allocator: Allocator, min_level: LogLevel) Logger`
+
+Create a new logger with a minimum log level.
+
+```zig
+var logger = Logger.init(allocator, .info);
+```
+
+#### `Logger.fromEnvironment(allocator: Allocator, environment: Environment) Logger`
+
+Create a logger configured for a specific environment (development, staging, production).
+
+```zig
+var logger = Logger.fromEnvironment(allocator, .production);
+// Production: JSON format, info level
+// Development: Human-readable format, debug level
+```
+
+#### `logger.addDestination(destination: LogDestination) !void`
+
+Add a log destination (stdout, file, or syslog).
+
+```zig
+try logger.addDestination(.stdout);
+try logger.addDestination(.file);
+```
+
+#### `logger.setFileDestination(file_path: []const u8) !void`
+
+Configure file logging destination.
+
+```zig
+try logger.setFileDestination("logs/app.log");
+```
+
+#### `logger.setSyslogFacility(facility: u8) !void`
+
+Configure syslog facility (0-23, see syslog.h).
+
+```zig
+try logger.setSyslogFacility(1); // LOG_USER
+```
+
+#### `logger.setFormat(format: OutputFormat) void`
+
+Set the output format (JSON or human-readable).
+
+```zig
+logger.setFormat(.json); // For production
+logger.setFormat(.human); // For development
+```
+
+#### `logger.log(level: LogLevel, message: []const u8) !*LogEntry`
+
+Create a log entry builder.
+
+```zig
+var entry = try logger.log(.info, "User logged in");
+try entry.field("user_id", "123");
+try entry.fieldInt("login_count", 5);
+entry.log();
+```
+
+#### `logger.debug(message: []const u8) !*LogEntry`
+#### `logger.info(message: []const u8) !*LogEntry`
+#### `logger.warn(message: []const u8) !*LogEntry`
+#### `logger.logError(message: []const u8) !*LogEntry`
+
+Convenience methods for logging at specific levels.
+
+```zig
+try logger.info("Server started").log();
+try logger.warn("High memory usage").fieldInt("memory_mb", 1024).log();
+try logger.logError("Database connection failed").log();
+```
+
+#### `logger.fromRequest(req: *Request, level: LogLevel, message: []const u8) !*LogEntry`
+
+Create a log entry with request context pre-populated.
+
+```zig
+var entry = try logger.fromRequest(req, .info, "Request handled");
+entry.log(); // Automatically includes request_id, method, path, IP, etc.
+```
+
+#### `logger.logRequest(req: *Request, level: LogLevel, message: []const u8) !void`
+
+Convenience method to log a request.
+
+```zig
+try logger.logRequest(req, .info, "Request received");
+```
+
+#### `logger.logResponse(req: *Request, status_code: ?u16, level: LogLevel, message: []const u8) !void`
+
+Convenience method to log a response with duration.
+
+```zig
+try logger.logResponse(req, 200, .info, "Request completed");
+```
+
+### LogEntry
+
+The `LogEntry` struct provides a builder pattern for creating structured log entries.
+
+#### `entry.field(key: []const u8, value: []const u8) !*LogEntry`
+#### `entry.fieldInt(key: []const u8, value: anytype) !*LogEntry`
+#### `entry.fieldBool(key: []const u8, value: bool) !*LogEntry`
+
+Add fields to a log entry.
+
+```zig
+var entry = try logger.info("User action");
+try entry.field("user_id", "123");
+try entry.fieldInt("action_count", 42);
+try entry.fieldBool("is_premium", true);
+entry.log();
+```
+
+#### `entry.withRequest(req: *Request) !*LogEntry`
+
+Add request context to a log entry (request_id, method, path, IP, user_agent).
+
+```zig
+var entry = try logger.info("Request processed");
+try entry.withRequest(req);
+entry.log();
+```
+
+#### `entry.withResponse(status_code: ?u16, req: ?*Request) !*LogEntry`
+
+Add response context to a log entry (status_code, duration_ms).
+
+```zig
+var entry = try logger.info("Response sent");
+try entry.withRequest(req);
+try entry.withResponse(200, req);
+entry.log();
+```
+
+### Logging Middleware
+
+The `LoggingMiddleware` provides automatic request/response logging.
+
+#### `LoggingMiddleware.init(config: LoggingConfig) LoggingMiddleware`
+
+Initialize logging middleware with configuration.
+
+```zig
+const logging_config = LoggingConfig{
+    .log_requests = true,
+    .log_responses = true,
+    .exclude_paths = &[_][]const u8{ "/health", "/metrics" },
+};
+var logging_mw = LoggingMiddleware.init(logging_config);
+logging_mw.setGlobalLogger(&app.logger);
+logging_mw.setGlobalConfig();
+try app.usePreRequest(logging_mw.preRequestMwFn());
+try app.useResponse(logging_mw.responseMwFn());
+```
+
+#### `app.enableRequestLogging(config: ?LoggingConfig) !void`
+
+Convenience method to enable request/response logging.
+
+```zig
+// Use default configuration
+try app.enableRequestLogging(null);
+
+// Or with custom configuration
+const config = LoggingConfig{
+    .log_requests = true,
+    .log_responses = true,
+    .exclude_paths = &[_][]const u8{ "/health" },
+};
+try app.enableRequestLogging(config);
+```
+
+#### `app.getLogger() *Logger`
+
+Get the logger instance from the app.
+
+```zig
+const logger = app.getLogger();
+try logger.info("Custom log message").log();
+```
+
+### Log Levels
+
+- `.debug` - Debug messages (development only)
+- `.info` - Informational messages
+- `.warn` - Warning messages
+- `.err` - Error messages
+
+### Output Formats
+
+- `.json` - JSON format (production)
+- `.human` - Human-readable format (development)
+
+### Example Usage
+
+```zig
+const std = @import("std");
+const E12 = @import("engine12");
+
+pub fn main() !void {
+    var app = try E12.Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Configure logger
+    const logger = app.getLogger();
+    logger.setFormat(.human); // Human-readable for development
+    try logger.setFileDestination("logs/app.log"); // Also log to file
+
+    // Enable automatic request/response logging
+    try app.enableRequestLogging(.{
+        .exclude_paths = &[_][]const u8{ "/health" },
+    });
+
+    // Custom logging in handlers
+    try app.get("/", handleRoot);
+    try app.start();
+}
+
+// Store app reference globally or pass logger to handler
+var global_app: ?*E12.Engine12 = null;
+
+fn handleRoot(req: *E12.Request) E12.Response {
+    if (global_app) |app| {
+        const logger = app.getLogger();
+        try logger.info("Root endpoint accessed")
+            .field("ip", req.header("X-Real-IP") orelse "unknown")
+            .log();
+    }
+    
+    return E12.Response.text("Hello, World!");
+}
+```
+
 ## C API
 
 Engine12 provides a C API for use from other languages.

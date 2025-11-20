@@ -33,7 +33,7 @@ pub const Time = struct {
     /// ```
     pub fn formatTimestamp(timestamp: i64, allocator: std.mem.Allocator) ![]const u8 {
         // Convert milliseconds to seconds if needed
-        const seconds = if (timestamp > 1000000000000) timestamp / 1000 else timestamp;
+        const seconds = if (timestamp > 1000000000000) @divTrunc(timestamp, 1000) else timestamp;
         
         const epoch = std.time.epoch.EpochSeconds{ .secs = @as(u64, @intCast(seconds)) };
         const epoch_day = epoch.getEpochDay();
@@ -120,7 +120,7 @@ pub const Time = struct {
     /// ```
     pub fn formatDate(timestamp: i64, allocator: std.mem.Allocator) ![]const u8 {
         // Convert milliseconds to seconds if needed
-        const seconds = if (timestamp > 1000000000000) timestamp / 1000 else timestamp;
+        const seconds = if (timestamp > 1000000000000) @divTrunc(timestamp, 1000) else timestamp;
         
         const epoch = std.time.epoch.EpochSeconds{ .secs = @as(u64, @intCast(seconds)) };
         const epoch_day = epoch.getEpochDay();

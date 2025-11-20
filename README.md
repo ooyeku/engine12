@@ -70,6 +70,7 @@ exe.linkLibC();
 - **HTTP Routing** - GET, POST, PUT, DELETE, PATCH with route parameters
 - **WebSocket Support** - Real-time bidirectional communication with room management
 - **Hot Reloading** - Automatic template and static file reloading in development mode
+- **Structured Logging** - JSON and human-readable logging with multiple destinations (stdout, file, syslog)
 - **Middleware System** - Pre-request and response middleware chains
 - **SQLite ORM** - Type-safe database operations with migrations
 - **Template Engine** - Server-side HTML rendering
