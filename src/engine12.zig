@@ -20,6 +20,7 @@ const runtime_routes_mod = @import("valve/runtime_routes.zig");
 const orm = @import("orm/orm.zig");
 const websocket_mod = @import("websocket/module.zig");
 const hot_reload_mod = @import("hot_reload/module.zig");
+const script_injector_mod = @import("hot_reload/script_injector.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -72,8 +73,6 @@ fn hotReloadWebSocketHandler(conn: *websocket_mod.connection.WebSocketConnection
             const room_ptr_str = std.fmt.allocPrint(allocator, "{d}", .{@intFromPtr(room)}) catch return;
             defer allocator.free(room_ptr_str);
             conn.set("hot_reload_room", room_ptr_str) catch {};
-
-            std.debug.print("[HotReload] Client connected for hot reload\n", .{});
         }
     }
 }
@@ -399,6 +398,13 @@ pub const Engine12 = struct {
         const hr_manager = try allocator.create(hot_reload_mod.HotReloadManager);
         hr_manager.* = hot_reload_mod.HotReloadManager.init(allocator, true);
         app.hot_reload_manager = hr_manager;
+
+        // Set manager reference for script injector middleware (register early so it's available)
+        script_injector_mod.setHotReloadManager(hr_manager);
+
+        // Register script injector middleware early (before server starts)
+        // This ensures it's in the middleware chain when requests are handled
+        try app.useResponse(script_injector_mod.injectHotReloadScript);
 
         return app;
     }
@@ -1217,6 +1223,10 @@ pub const Engine12 = struct {
             // Store manager pointer in a way the handler can access it
             // Use a module-level variable (thread-safe since we're single-threaded during startup)
             hot_reload_manager_for_ws = manager;
+
+            // Note: Script injector middleware is already registered in initDevelopment()
+            // Just ensure manager reference is set (it should already be set, but double-check)
+            script_injector_mod.setHotReloadManager(manager);
 
             // Register WebSocket route
             if (self.ws_routes_count < MAX_WS_ROUTES) {

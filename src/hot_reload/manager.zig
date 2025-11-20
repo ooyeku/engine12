@@ -106,19 +106,56 @@ pub const HotReloadManager = struct {
 
     /// Watch static file server for changes
     /// In development mode, static files are served without cache headers
+    /// Also watches the directory for file changes and sends reload notifications
     pub fn watchStaticFiles(self: *HotReloadManager, file_server: *fileserver.FileServer) !void {
         if (!self.enabled) {
             return;
         }
 
         self.mutex.lock();
-        defer self.mutex.unlock();
-
         try self.static_file_servers.append(self.allocator, file_server);
+        const directory = file_server.directory;
+        self.mutex.unlock();
 
-        // Disable cache for this file server in development
-        // Note: FileServer doesn't have a setter for enable_cache, so we'll handle this
-        // in the FileServer.serveFile() method by checking if hot reload is enabled
+        // Watch the static file directory for changes (without holding mutex)
+        // When any file in the directory changes, send a reload notification
+        try self.watchDirectory(directory, staticFileReloadCallback, self);
+    }
+
+    /// Watch a directory recursively for file changes
+    /// When any file changes, the callback is called with the file path
+    fn watchDirectory(self: *HotReloadManager, directory_path: []const u8, callback: *const fn ([]const u8, ?*anyopaque) void, context: ?*anyopaque) !void {
+        var dir = std.fs.cwd().openDir(directory_path, .{ .iterate = true }) catch {
+            // Directory doesn't exist or can't be opened, skip
+            return;
+        };
+        defer dir.close();
+
+        var iterator = dir.iterate();
+        while (try iterator.next()) |entry| {
+            const full_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ directory_path, entry.name });
+            defer self.allocator.free(full_path);
+
+            if (entry.kind == .directory) {
+                // Recursively watch subdirectories
+                try self.watchDirectory(full_path, callback, context);
+            } else {
+                // Watch individual files
+                self.file_watcher.watch(full_path, callback, context) catch |err| {
+                    // Log but don't fail - some files might not be readable
+                    std.debug.print("[HotReload] Warning: Failed to watch file {s}: {}\n", .{ full_path, err });
+                };
+            }
+        }
+    }
+
+    /// Callback for static file changes
+    /// This is called by the file watcher when a static file changes
+    fn staticFileReloadCallback(path: []const u8, context: ?*anyopaque) void {
+        if (context) |ctx| {
+            const manager = @as(*HotReloadManager, @ptrCast(@alignCast(ctx)));
+            manager.notifyReload(path);
+        }
     }
 
     /// Start the hot reload manager

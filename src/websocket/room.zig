@@ -163,7 +163,7 @@ pub const WebSocketRoom = struct {
     }
 
     /// Get the number of connections in the room
-    pub fn count(self: *const WebSocketRoom) usize {
+    pub fn count(self: *WebSocketRoom) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
 

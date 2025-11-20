@@ -583,6 +583,25 @@ pub const Response = struct {
         return resp.withContentType(content_type);
     }
 
+    /// Get the response body content
+    /// Returns the body string if available
+    ///
+    /// Example:
+    /// ```zig
+    /// const body = resp.getBody();
+    /// ```
+    pub fn getBody(self: Response) []const u8 {
+        // Prefer persistent body if available
+        if (self._persistent_body) |body| {
+            return body;
+        }
+        // Fallback to accessing ziggurat response body
+        // Note: ziggurat responses store body internally, we need to access it
+        // For now, return empty if persistent body is not set
+        // This is safe because all Response constructors copy to persistent_body
+        return "";
+    }
+
     /// Convert to ziggurat response (internal use)
     /// The response data is already in persistent memory
     /// Note: Custom headers stored in _custom_headers are not yet applied to the ziggurat response
