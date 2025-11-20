@@ -2,7 +2,7 @@ const std = @import("std");
 const ws = @import("websocket");
 const json = @import("../json.zig");
 
-/// WebSocket connection wrapper for Engine12
+/// WebSocket connection wrapper for engine12
 /// Provides a clean API that wraps websocket.zig's Conn type
 pub const WebSocketConnection = struct {
     /// Underlying websocket.zig connection

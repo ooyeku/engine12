@@ -50,7 +50,7 @@ pub const ServerProfile_Testing = ServerProfile{
     .max_concurrent_tasks = 2,
 };
 
-// HTTP Handler type - uses Engine12 Request/Response types
+// HTTP Handler type - uses engine12 Request/Response types
 pub const HttpHandler = fn (*Request) Response;
 
 // Background task type

@@ -1,5 +1,5 @@
 const std = @import("std");
-const E12 = @import("Engine12");
+const E12 = @import("engine12");
 
 pub fn main() !void {
     var app = try E12.Engine12.initProduction();

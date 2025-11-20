@@ -37,7 +37,7 @@ pub const ValveRegistry = struct {
         };
     }
 
-    /// Register a valve with an Engine12 instance
+    /// Register a valve with an engine12 instance
     /// Creates a context with granted capabilities and calls valve.init()
     ///
     /// Example:
@@ -151,7 +151,7 @@ pub const ValveRegistry = struct {
     }
 
     /// Call onAppStart for all registered valves
-    /// Called by Engine12 when app starts
+    /// Called by engine12 when app starts
     /// Collects errors and marks valves as failed if errors occur
     pub fn onAppStart(self: *Self) !void {
         var i: usize = 0;
@@ -190,7 +190,7 @@ pub const ValveRegistry = struct {
     }
 
     /// Call onAppStop for all registered valves
-    /// Called by Engine12 when app stops
+    /// Called by engine12 when app stops
     pub fn onAppStop(self: *Self) void {
         var i: usize = 0;
         while (i < self.valves.items.len) : (i += 1) {

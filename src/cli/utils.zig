@@ -68,7 +68,7 @@ pub fn fetchEngine12Hash(
                 \\pub fn build(b: *std.Build) void {
                 \\    const target = b.standardTargetOptions(.{});
                 \\    const optimize = b.standardOptimizeOption(.{});
-                \\    _ = b.dependency("Engine12", .{
+                \\    _ = b.dependency("engine12", .{
                 \\        .target = target,
                 \\        .optimize = optimize,
                 \\    });
@@ -132,15 +132,15 @@ pub fn fetchEngine12Hash(
     // Note: page_allocator doesn't support free(), so we don't defer it
 
     // Find and extract the hash value
-    const engine12_prefix = ".Engine12 =";
+    const engine12_prefix = ".engine12 =";
     const engine12_start = std.mem.indexOf(u8, build_zon_content, engine12_prefix) orelse {
-        std.debug.print("Error: Could not find Engine12 dependency in build.zig.zon\n", .{});
+        std.debug.print("Error: Could not find engine12 dependency in build.zig.zon\n", .{});
         return error.HashNotFound;
     };
 
     const hash_prefix = ".hash = \"";
     const hash_start = std.mem.indexOfPos(u8, build_zon_content, engine12_start, hash_prefix) orelse {
-        std.debug.print("Error: Could not find hash field in Engine12 dependency\n", .{});
+        std.debug.print("Error: Could not find hash field in engine12 dependency\n", .{});
         return error.HashNotFound;
     };
 

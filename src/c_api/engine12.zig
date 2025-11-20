@@ -4,26 +4,26 @@ const c = @cImport({
     @cInclude("stdbool.h");
     @cInclude("string.h");
 });
-const Engine12 = @import("Engine12").Engine12;
-const Request = @import("Engine12").Request;
-const Response = @import("Engine12").Response;
-const types = @import("Engine12").types;
-const router = @import("Engine12").router;
-const middleware = @import("Engine12").middleware;
+const Engine12 = @import("engine12").Engine12;
+const Request = @import("engine12").Request;
+const Response = @import("engine12").Response;
+const types = @import("engine12").types;
+const router = @import("engine12").router;
+const middleware = @import("engine12").middleware;
 const ziggurat = @import("ziggurat");
-const cache = @import("Engine12").cache;
-const metrics = @import("Engine12").metrics;
-const rate_limit = @import("Engine12").rate_limit;
-const csrf = @import("Engine12").csrf;
-const cors_middleware = @import("Engine12").cors_middleware;
-const body_size_limit = @import("Engine12").body_size_limit;
-const json_module = @import("Engine12").json;
-const validation = @import("Engine12").validation;
-const valve_mod = @import("Engine12").valve;
-const valve_context = @import("Engine12").ValveContext;
-const valve_registry_type = @import("Engine12").ValveRegistry;
-const RegistryError = @import("Engine12").RegistryError;
-const error_handler = @import("Engine12").error_handler;
+const cache = @import("engine12").cache;
+const metrics = @import("engine12").metrics;
+const rate_limit = @import("engine12").rate_limit;
+const csrf = @import("engine12").csrf;
+const cors_middleware = @import("engine12").cors_middleware;
+const body_size_limit = @import("engine12").body_size_limit;
+const json_module = @import("engine12").json;
+const validation = @import("engine12").validation;
+const valve_mod = @import("engine12").valve;
+const valve_context = @import("engine12").ValveContext;
+const valve_registry_type = @import("engine12").ValveRegistry;
+const RegistryError = @import("engine12").RegistryError;
+const error_handler = @import("engine12").error_handler;
 
 const allocator = std.heap.page_allocator;
 
@@ -430,9 +430,9 @@ fn createAppPtrWrapper() middleware.PreRequestMiddlewareFn {
 }
 
 // Pre-request middleware that intercepts requests and routes them to C handlers
-// This runs before Engine12's routing, so it can handle C API routes
+// This runs before engine12's routing, so it can handle C API routes
 fn createCRouterMiddleware(app_ptr: *CEngine12) middleware.PreRequestMiddlewareFn {
-    // Store app pointer in registry keyed by Engine12 instance
+    // Store app pointer in registry keyed by engine12 instance
     setAppPtrForEngine(&app_ptr.engine, app_ptr);
 
     // Create middleware function that gets app from registry
@@ -444,7 +444,7 @@ fn createCRouterMiddleware(app_ptr: *CEngine12) middleware.PreRequestMiddlewareF
 
             var iterator = app_ptr_registry.iterator();
             const app_entry = iterator.next() orelse {
-                // No app found in registry - let Engine12 handle it
+                // No app found in registry - let engine12 handle it
                 return .proceed;
             };
             const c_app = app_entry.value_ptr.*;
@@ -490,7 +490,7 @@ fn createCRouterMiddleware(app_ptr: *CEngine12) middleware.PreRequestMiddlewareF
                     const resp = c_resp.response;
 
                     // Store response in global storage (thread-safe)
-                    const mw = @import("Engine12").middleware;
+                    const mw = @import("engine12").middleware;
                     mw.storeCAPIResponse(req, resp) catch {
                         allocator.destroy(c_req);
                         return .abort;
@@ -500,11 +500,11 @@ fn createCRouterMiddleware(app_ptr: *CEngine12) middleware.PreRequestMiddlewareF
 
                     // Mark that we handled this request
                     req.context.put("c_api_handled", "true") catch {};
-                    return .abort; // Abort to prevent Engine12 routing
+                    return .abort; // Abort to prevent engine12 routing
                 }
             }
 
-            // No route matched - let Engine12 handle it
+            // No route matched - let engine12 handle it
             return .proceed;
         }
     };
@@ -574,12 +574,12 @@ export fn e12_start(app: ?*CEngine12Handle) c_int {
     clearLastError();
 
     if (app == null) {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1; // E12_ERROR_INVALID_ARGUMENT
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1; // E12_ERROR_INVALID_ARGUMENT
     };
 
@@ -595,12 +595,12 @@ export fn e12_stop(app: ?*CEngine12Handle) c_int {
     clearLastError();
 
     if (app == null) {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
 
@@ -619,7 +619,7 @@ export fn e12_is_running(app: ?*CEngine12Handle) bool {
 }
 
 // Helper to register a route with runtime path
-// Since Engine12 requires comptime paths, we register each route individually
+// Since engine12 requires comptime paths, we register each route individually
 // with a wrapper handler that dispatches to the C handler
 fn registerCRoute(
     app: *CEngine12,
@@ -628,7 +628,7 @@ fn registerCRoute(
     handler_id: usize,
     user_data: *anyopaque,
 ) !void {
-    // Build server if not already built (same as Engine12.get/post/etc)
+    // Build server if not already built (same as engine12.get/post/etc)
     if (app.engine.built_server == null) {
         var builder = ziggurat.ServerBuilder.init(app.allocator);
         var server = try builder
@@ -734,7 +734,7 @@ fn registerCRoute(
             try server.delete(path, wrapped_handler);
         } else if (std.mem.eql(u8, method, "PATCH")) {
             // PATCH is not directly supported by ziggurat Server
-            // Route is still registered in Engine12's route table
+            // Route is still registered in engine12's route table
             // Use POST as fallback for ziggurat registration
             try server.post(path, wrapped_handler);
         }
@@ -758,7 +758,7 @@ export fn e12_get(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
     const path_slice = std.mem.span(path);
@@ -790,7 +790,7 @@ export fn e12_post(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
     const path_slice = std.mem.span(path);
@@ -822,7 +822,7 @@ export fn e12_put(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
     const path_slice = std.mem.span(path);
@@ -854,7 +854,7 @@ export fn e12_delete(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
     const path_slice = std.mem.span(path);
@@ -886,7 +886,7 @@ export fn e12_patch(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
     const path_slice = std.mem.span(path);
@@ -1240,7 +1240,7 @@ export fn e12_use_pre_request(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1; // E12_ERROR_INVALID_ARGUMENT
     };
 
@@ -1298,7 +1298,7 @@ export fn e12_use_response(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1; // E12_ERROR_INVALID_ARGUMENT
     };
 
@@ -1355,7 +1355,7 @@ export fn e12_serve_static(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1; // E12_ERROR_INVALID_ARGUMENT
     };
 
@@ -1402,7 +1402,7 @@ export fn e12_register_task(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1; // E12_ERROR_INVALID_ARGUMENT
     };
 
@@ -1467,7 +1467,7 @@ export fn e12_register_health_check(
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1; // E12_ERROR_INVALID_ARGUMENT
     };
 
@@ -1870,7 +1870,7 @@ export fn e12_request_rate_limit_check(req: ?*CRequest, key: [*c]const u8) bool 
     if (req == null or key == null) return false;
     const request_ptr = req.?.request;
     // Access rate limiter via global
-    const limiter = @import("Engine12").engine12.global_rate_limiter orelse return false;
+    const limiter = @import("engine12").engine12.global_rate_limiter orelse return false;
     const key_slice = std.mem.span(key);
     // RateLimiter.check takes Request and route, so we need to use the request
     const result = limiter.check(request_ptr, key_slice) catch return false;
@@ -1918,7 +1918,7 @@ export fn e12_csrf_middleware(app: ?*CEngine12Handle) c_int {
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
 
@@ -1984,7 +1984,7 @@ export fn e12_cors_middleware(app: ?*CEngine12Handle) c_int {
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
 
@@ -2196,7 +2196,7 @@ export fn e12_register_error_handler(app: ?*CEngine12Handle, handler: ?*const fn
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
 
@@ -2319,7 +2319,7 @@ export fn e12_register_valve(app: ?*CEngine12Handle, valve_ptr: [*c]const E12Val
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
 
@@ -2462,7 +2462,7 @@ export fn e12_unregister_valve(app: ?*CEngine12Handle, name: [*c]const u8) c_int
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
 
@@ -2487,7 +2487,7 @@ export fn e12_get_valve_names(app: ?*CEngine12Handle, out_names: [*c][*c][*c]u8,
     }
 
     const c_app = getCEngine12(app.?) orelse {
-        setLastError("Invalid Engine12 instance");
+        setLastError("Invalid engine12 instance");
         return 1;
     };
 

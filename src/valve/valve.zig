@@ -24,7 +24,7 @@ pub const ValveState = enum {
 };
 
 /// Capabilities that a valve can request
-/// Each capability grants access to specific Engine12 features
+/// Each capability grants access to specific engine12 features
 pub const ValveCapability = enum {
     /// Register HTTP routes (GET, POST, PUT, DELETE, PATCH)
     routes,

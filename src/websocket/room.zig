@@ -94,19 +94,15 @@ pub const WebSocketRoom = struct {
 
     /// Broadcast a binary message to all connections in the room
     pub fn broadcastBinary(self: *WebSocketRoom, data: []const u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        var closed_connections = std.ArrayListUnmanaged(usize){};
-        defer closed_connections.deinit(self.allocator);
-
-        // Copy connections first to avoid issues
+        // Copy connection pointers while holding lock
         var connections_copy = std.ArrayListUnmanaged(*connection.WebSocketConnection){};
         defer connections_copy.deinit(self.allocator);
 
         {
             self.mutex.lock();
             defer self.mutex.unlock();
+
+            // Copy all connections while holding the lock
             for (self.connections.items) |conn| {
                 connections_copy.append(self.allocator, conn) catch continue;
             }

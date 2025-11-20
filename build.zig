@@ -3,7 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const mod = b.addModule("Engine12", .{
+    const mod = b.addModule("engine12", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Add vigil, ziggurat, and websocket to the Engine12 module's imports
+    // Add vigil, ziggurat, and websocket to the engine12 module's imports
     mod.addImport("vigil", vigil.module("vigil"));
     mod.addImport("ziggurat", ziggurat_mod);
     mod.addImport("websocket", websocket_dep.module("websocket"));
@@ -81,7 +81,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "vigil", .module = vigil.module("vigil") },
                 .{ .name = "ziggurat", .module = ziggurat_mod },
-                .{ .name = "Engine12", .module = mod },
+                .{ .name = "engine12", .module = mod },
             },
         }),
         .linkage = .dynamic,
@@ -112,13 +112,13 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&orm_header_install.step);
 
     const exe = b.addExecutable(.{
-        .name = "Engine12",
+        .name = "engine12",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "Engine12", .module = mod },
+                .{ .name = "engine12", .module = mod },
                 .{ .name = "vigil", .module = vigil.module("vigil") },
                 .{ .name = "ziggurat", .module = ziggurat_mod },
             },
@@ -134,7 +134,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Show available build commands");
     const run_info_cmd = b.addSystemCommand(&.{ "sh", "-c" });
     run_info_cmd.addArgs(&.{
-        "printf '\\nEngine12 Build Commands\\n=========================================================\\n  zig build             Build Engine12 library and executables\\n  zig build test         Run all tests\\n  zig build todo-run     Run the TODO application\\n  zig build todo-test    Run TODO application tests\\n=========================================================\\n\\n'",
+        "printf '\\nengine12 Build Commands\\n=========================================================\\n  zig build             Build engine12 library and executables\\n  zig build test         Run all tests\\n  zig build todo-run     Run the TODO application\\n  zig build todo-test    Run TODO application tests\\n=========================================================\\n\\n'",
     });
     run_step.dependOn(&run_info_cmd.step);
 
@@ -184,7 +184,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "Engine12", .module = mod },
+                .{ .name = "engine12", .module = mod },
                 .{ .name = "vigil", .module = vigil.module("vigil") },
                 .{ .name = "ziggurat", .module = ziggurat_mod },
             },

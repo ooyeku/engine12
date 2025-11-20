@@ -1,5 +1,5 @@
 const std = @import("std");
-const E12 = @import("Engine12");
+const E12 = @import("engine12");
 const Request = E12.Request;
 const Response = E12.Response;
 const validation = E12.validation;
@@ -855,7 +855,7 @@ fn handleSearchTodos(request: *Request) Response {
     }
 
     // NOTE: QueryBuilder Limitation
-    // The Engine12 QueryBuilder doesn't currently support OR conditions in WHERE clauses.
+    // The engine12 QueryBuilder doesn't currently support OR conditions in WHERE clauses.
     // For this search functionality that needs to search across multiple columns (title, description, tags)
     // with OR conditions, we use raw SQL instead.
     //
@@ -1296,7 +1296,7 @@ pub fn createApp() !E12.Engine12 {
 
     // Load template for hot reloading (development mode only)
     // Template will automatically reload when file changes
-    // Path is relative to the Engine12 root directory (where the app is run from)
+    // Path is relative to the engine12 root directory (where the app is run from)
     const template_path = "todo/src/templates/index.zt.html";
     global_index_template = try app.loadTemplate(template_path);
 

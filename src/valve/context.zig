@@ -16,10 +16,10 @@ const wrapHandler = engine12.wrapHandler;
 const createRuntimeRouteWrapper = engine12.createRuntimeRouteWrapper;
 const websocket_mod = @import("../websocket/module.zig");
 
-/// Controlled access to Engine12 runtime for valves
-/// Provides capability-checked methods for interacting with Engine12
+/// Controlled access to engine12 runtime for valves
+/// Provides capability-checked methods for interacting with engine12
 pub const ValveContext = struct {
-    /// Reference to Engine12 instance
+    /// Reference to engine12 instance
     app: *Engine12,
     /// Allocator for valve use
     allocator: std.mem.Allocator,
@@ -81,7 +81,7 @@ pub const ValveContext = struct {
             if (!self.app.static_root_mounted and !self.app.custom_root_handler) {
                 const default_handler = struct {
                     fn handle(_: *Request) Response {
-                        return Response.text("Engine12");
+                        return Response.text("engine12");
                     }
                 }.handle;
                 try server.get("/", wrapHandler(default_handler, "/"));
@@ -286,7 +286,7 @@ pub const ValveContext = struct {
         if (!self.hasCapability(.metrics_access)) {
             return null;
         }
-        // Access metrics collector from Engine12
+        // Access metrics collector from engine12
         return &self.app.metrics_collector;
     }
 

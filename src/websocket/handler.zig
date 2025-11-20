@@ -4,7 +4,7 @@ const connection = @import("connection.zig");
 const WebSocketConnection = connection.WebSocketConnection;
 const websocket_mod = @import("module.zig");
 
-/// WebSocket handler function type for Engine12
+/// WebSocket handler function type for engine12
 pub const WebSocketHandler = *const fn (*WebSocketConnection) void;
 
 /// App data type passed to websocket.zig Server.listen()
@@ -18,7 +18,7 @@ pub fn createAppData(
     };
 }
 
-/// Internal handler that bridges websocket.zig to Engine12
+/// Internal handler that bridges websocket.zig to engine12
 /// This implements websocket.zig's Handler interface
 pub fn createEngine12Handler(
     comptime HandlerFn: type,
@@ -28,7 +28,7 @@ pub fn createEngine12Handler(
     return struct {
         const Self = @This();
 
-        /// Engine12 connection wrapper
+        /// engine12 connection wrapper
         engine12_conn: ?*WebSocketConnection = null,
         /// Connection ID (generated per connection)
         conn_id: []const u8 = undefined,
@@ -53,7 +53,7 @@ pub fn createEngine12Handler(
             // Use path from app data (set when server is created)
             const path = app.path;
 
-            // Create Engine12 connection wrapper
+            // Create engine12 connection wrapper
             const engine12_conn = try app.allocator.create(WebSocketConnection);
             errdefer app.allocator.destroy(engine12_conn);
 
@@ -91,7 +91,7 @@ pub fn createEngine12Handler(
         /// websocket.zig Handler.afterInit - called after handshake
         pub fn afterInit(self: *Self) !void {
             if (self.engine12_conn) |conn| {
-                // Call the Engine12 handler function
+                // Call the engine12 handler function
                 // This gives users a chance to set up the connection
                 // They can store the connection and implement custom message handling
                 self.handler(conn);

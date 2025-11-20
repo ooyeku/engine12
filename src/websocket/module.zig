@@ -1,4 +1,4 @@
-// WebSocket module for Engine12
+// WebSocket module for engine12
 // Provides WebSocket support using karlseguin/websocket.zig
 
 pub const connection = @import("connection.zig");

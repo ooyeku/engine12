@@ -91,7 +91,7 @@ pub const WebSocketManager = struct {
                 },
             });
             
-            // Spawn thread for this server (like Engine12 does for HTTP server)
+            // Spawn thread for this server (like engine12 does for HTTP server)
             // We'll use a thread spawn approach since we need to capture server and app_data
             const ServerThread = struct {
                 server_ptr: *ws.Server(HandlerType),

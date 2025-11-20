@@ -8,7 +8,7 @@ const BUILD_ZON_TEMPLATE =
     \\    .version = "0.1.0",
     \\    .minimum_zig_version = "0.15.1",
     \\    .dependencies = .{
-    \\        .Engine12 = .{
+    \\        .engine12 = .{
     \\            .url = "git+https://github.com/ooyeku/Engine12.git",
     \\            .hash = "{ENGINE12_HASH}",
     \\        },
@@ -29,7 +29,7 @@ const BUILD_ZIG_TEMPLATE =
     \\    const target = b.standardTargetOptions(.{});
     \\    const optimize = b.standardOptimizeOption(.{});
     \\
-    \\    const Engine12_dep = b.dependency("Engine12", .{
+    \\    const engine12_dep = b.dependency("engine12", .{
     \\        .target = target,
     \\        .optimize = optimize,
     \\    });
@@ -43,7 +43,7 @@ const BUILD_ZIG_TEMPLATE =
     \\        }),
     \\    });
     \\
-    \\    exe.root_module.addImport("Engine12", Engine12_dep.module("Engine12"));
+    \\    exe.root_module.addImport("engine12", engine12_dep.module("engine12"));
     \\    exe.linkLibC(); // Required for ORM
     \\
     \\    b.installArtifact(exe);
@@ -60,7 +60,7 @@ const BUILD_ZIG_TEMPLATE =
 /// Template for main.zig
 const MAIN_ZIG_TEMPLATE =
     \\const std = @import("std");
-    \\const E12 = @import("Engine12");
+    \\const E12 = @import("engine12");
     \\const app = @import("app.zig");
     \\
     \\pub fn main() !void {
@@ -71,7 +71,7 @@ const MAIN_ZIG_TEMPLATE =
 /// Template for app.zig
 const APP_ZIG_TEMPLATE =
     \\const std = @import("std");
-    \\const E12 = @import("Engine12");
+    \\const E12 = @import("engine12");
     \\const Request = E12.Request;
     \\const Response = E12.Response;
     \\
@@ -99,7 +99,7 @@ const APP_ZIG_TEMPLATE =
 const README_TEMPLATE =
     \\# {PROJECT_NAME}
     \\
-    \\A minimal Engine12 application.
+    \\A minimal engine12 application.
     \\
     \\## Getting Started
     \\
@@ -122,7 +122,7 @@ const GITIGNORE_TEMPLATE =
     \\.DS_Store
 ;
 
-/// Scaffold a new Engine12 project
+/// Scaffold a new engine12 project
 pub fn scaffoldProject(
     allocator: std.mem.Allocator,
     project_name: []const u8,
@@ -159,15 +159,15 @@ pub fn scaffoldProject(
         return err;
     };
 
-    // Fetch Engine12 hash (we're already in the project directory)
-    std.debug.print("Fetching Engine12 dependency...\n", .{});
+    // Fetch engine12 hash (we're already in the project directory)
+    std.debug.print("Fetching engine12 dependency...\n", .{});
     const engine12_hash: []const u8 = cli_utils.fetchEngine12Hash(allocator, ".") catch |err| {
         // Cleanup on failure - change directory back and delete project
         std.posix.chdir(original_cwd) catch {};
         // Try to clean up the project directory using a fixed buffer
         var cleanup_path_buf: [512]u8 = undefined;
         const abs_project_path = std.fmt.bufPrint(&cleanup_path_buf, "{s}/{s}", .{ original_cwd, project_name }) catch |fmt_err| {
-            std.debug.print("Error: Failed to fetch Engine12 dependency: {}\n", .{err});
+            std.debug.print("Error: Failed to fetch engine12 dependency: {}\n", .{err});
             std.debug.print("Warning: Could not construct cleanup path: {}\n", .{fmt_err});
             // Exit immediately to avoid allocator cleanup panics
             std.process.exit(1);
