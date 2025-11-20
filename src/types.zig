@@ -85,7 +85,7 @@ pub const BackgroundWorker = struct {
 // WebSocket route storage
 pub const WebSocketRoute = struct {
     path: []const u8,
-    handler_ptr: *const WebSocketHandler,
+    handler_ptr: WebSocketHandler, // Store function pointer value directly, not a pointer to it
 };
 
 // Hot reload error types

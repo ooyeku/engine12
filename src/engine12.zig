@@ -861,7 +861,7 @@ pub const Engine12 = struct {
         // Store route
         self.ws_routes[self.ws_routes_count] = types.WebSocketRoute{
             .path = path_pattern,
-            .handler_ptr = &handler,
+            .handler_ptr = handler, // Store function pointer value directly, not address
         };
         self.ws_routes_count += 1;
 
@@ -1220,10 +1220,9 @@ pub const Engine12 = struct {
 
             // Register WebSocket route
             if (self.ws_routes_count < MAX_WS_ROUTES) {
-                const handler_fn: types.WebSocketHandler = hotReloadWebSocketHandler;
                 self.ws_routes[self.ws_routes_count] = types.WebSocketRoute{
                     .path = "/ws/hot-reload",
-                    .handler_ptr = &handler_fn,
+                    .handler_ptr = hotReloadWebSocketHandler, // Store function pointer value directly
                 };
                 self.ws_routes_count += 1;
 

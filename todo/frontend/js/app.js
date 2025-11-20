@@ -401,6 +401,12 @@ function initializePageFromHash() {
 function renderTodos() {
     const todoList = document.getElementById('todo-list');
     let filteredTodos = getFilteredTodos();
+    
+    // On the Active page, always exclude completed todos
+    if (currentPage === 'active') {
+        filteredTodos = filteredTodos.filter(t => !t.completed);
+    }
+    
     filteredTodos = applySearch(filteredTodos);
     filteredTodos = applySort(filteredTodos);
 

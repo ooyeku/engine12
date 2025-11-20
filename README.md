@@ -29,7 +29,7 @@ pub fn main() !void {
 Run `zig fetch` to add Engine12 to your `build.zig.zon`:
 
 ```bash
-zig fetch --save "git+https://github.com/ooyeku/Engine12.git"
+zig fetch --save "git+https://github.com/ooyeku/engine12.git"
 ```
 
 This will automatically add the dependency with the correct hash to your `build.zig.zon` file.
@@ -38,8 +38,8 @@ Alternatively, you can manually add it to your `build.zig.zon`:
 
 ```zig
 .dependencies = .{
-    .Engine12 = .{
-        .url = "git+https://github.com/ooyeku/Engine12.git",
+    .engine12 = .{
+        .url = "git+https://github.com/ooyeku/engine12.git",
         .hash = "...", // Run `zig fetch` to get the hash
     },
 },
@@ -50,12 +50,12 @@ Alternatively, you can manually add it to your `build.zig.zon`:
 Add the dependency and module to your `build.zig`:
 
 ```zig
-const Engine12_dep = b.dependency("Engine12", .{
+const engine12_dep = b.dependency("engine12", .{
     .target = target,
     .optimize = optimize,
 });
 
-exe.addModule("Engine12", Engine12_dep.module("Engine12"));
+exe.addModule("engine12", engine12_dep.module("engine12"));
 ```
 
 If you're using the ORM or C API, you'll also need to link libc:
