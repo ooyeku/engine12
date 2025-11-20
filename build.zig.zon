@@ -1,13 +1,13 @@
 .{
     .name = .Engine12,
 
-    .version = "0.6.0",
+    .version = "0.6.1",
     .fingerprint = 0xc56ad14f4bffb71f,
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .vigil = .{
-            .url = "git+https://github.com/ooyeku/vigil.git#v0.3.0",
-            .hash = "vigil-0.3.0-0NlCVPq6AgDcYrQFIJZ_BhogGaQXNdz1E5Ze6n9yYVie",
+            .url = "git+https://github.com/ooyeku/vigil/?ref=v0.4.0#473fdf071e74e7152fbeefa3cdcbb0b809918ba1",
+            .hash = "vigil-0.4.0-0NlCVGnuAgB7Sc17qin3gnzsthT-aL5RvpewJhORoJA9",
         },
         .ziggurat = .{
             .url = "git+https://github.com/ooyeku/ziggurat.git#44a0a22d0ca4fe6886a5dc9f27b5149544f2387e",
