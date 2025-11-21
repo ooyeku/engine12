@@ -65,6 +65,8 @@ pub const ValveError = valve.ValveError;
 pub const ValveContext = @import("valve/context.zig").ValveContext;
 pub const ValveRegistry = @import("valve/registry.zig").ValveRegistry;
 pub const RegistryError = @import("valve/registry.zig").RegistryError;
+pub const ValveErrorInfo = @import("valve/error_info.zig").ValveErrorInfo;
+pub const ValveErrorPhase = @import("valve/error_info.zig").ValveErrorPhase;
 
 // Re-export builtin valves
 pub const BasicAuthValve = @import("valve/builtin/basic_auth.zig").BasicAuthValve;

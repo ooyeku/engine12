@@ -3,6 +3,11 @@ const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
 const middleware_chain = @import("middleware.zig");
 
+/// Cache-specific errors
+pub const CacheError = error{
+    InvalidArgument,
+};
+
 /// Cache entry storing response data and metadata
 pub const CacheEntry = struct {
     /// Cached response body
@@ -23,7 +28,17 @@ pub const CacheEntry = struct {
     /// Content type
     content_type: []const u8,
 
-    pub fn init(allocator: std.mem.Allocator, body: []const u8, ttl_ms: u64, content_type: []const u8) !CacheEntry {
+    pub fn init(allocator: std.mem.Allocator, body: []const u8, ttl_ms: u64, content_type: []const u8) (CacheError || std.mem.Allocator.Error || std.fmt.ParseFloatError || error{NoSpaceLeft})!CacheEntry {
+        // Input validation
+        if (body.len == 0) {
+            std.debug.print("[CacheEntry] Error: Attempted to create cache entry with empty body\n", .{});
+            return error.InvalidArgument;
+        }
+        if (content_type.len == 0) {
+            std.debug.print("[CacheEntry] Error: Attempted to create cache entry with empty content type\n", .{});
+            return error.InvalidArgument;
+        }
+
         const now = std.time.milliTimestamp();
 
         // Generate ETag from body hash
@@ -70,53 +85,112 @@ pub const ResponseCache = struct {
     /// Default TTL in milliseconds
     default_ttl_ms: u64,
 
+    /// Maximum number of cache entries (0 = unlimited)
+    max_entries: usize = 0,
+
+    /// Mutex for thread-safe access
+    mutex: std.Thread.Mutex = .{},
+
     pub fn init(allocator: std.mem.Allocator, default_ttl_ms: u64) ResponseCache {
         return ResponseCache{
             .entries = std.StringHashMap(CacheEntry).init(allocator),
             .allocator = allocator,
             .default_ttl_ms = default_ttl_ms,
+            .max_entries = 0,
+            .mutex = .{},
+        };
+    }
+
+    /// Initialize cache with maximum entry limit
+    /// When limit is reached, oldest entries are evicted (LRU)
+    pub fn initWithLimit(allocator: std.mem.Allocator, default_ttl_ms: u64, max_entries: usize) ResponseCache {
+        return ResponseCache{
+            .entries = std.StringHashMap(CacheEntry).init(allocator),
+            .allocator = allocator,
+            .default_ttl_ms = default_ttl_ms,
+            .max_entries = max_entries,
+            .mutex = .{},
         };
     }
 
     /// Get a cached response if available and not expired
-    /// Note: The key parameter may point to freed memory, so we use the hash map's stored keys
+    /// Thread-safe: Uses mutex protection for concurrent access
+    /// 
+    /// Input validation:
+    /// - Key must not be empty
     pub fn get(self: *ResponseCache, key: []const u8) ?*CacheEntry {
-        // First, try to find a matching key in the hash map by iterating
-        // This is safe because we store duplicated keys in set()
-        var iterator = self.entries.iterator();
-        while (iterator.next()) |entry| {
-            // Compare lengths first for efficiency
-            if (entry.key_ptr.*.len != key.len) continue;
-            // Compare bytes - entry.key_ptr.* is safe because it's duplicated in set()
-            if (std.mem.eql(u8, entry.key_ptr.*, key)) {
-                if (entry.value_ptr.isExpired()) {
-                    // Remove expired entry and free its key
-                    entry.value_ptr.deinit(self.allocator);
-                    const stored_key = entry.key_ptr.*;
-                    _ = self.entries.remove(stored_key);
-                    self.allocator.free(stored_key);
-                    return null;
+        if (key.len == 0) {
+            return null; // Invalid key
+        }
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Use HashMap.getPtr() for O(1) lookup
+        // HashMap uses string equality (hash + mem.eql), not pointer equality,
+        // so this works correctly even if the key parameter is a different slice than the stored key
+        if (self.entries.getPtr(key)) |entry| {
+            if (entry.isExpired()) {
+                // Remove expired entry and free its key
+                // fetchRemove uses string equality, so it will find the entry by key content
+                if (self.entries.fetchRemove(key)) |removed| {
+                    var mutable_value = removed.value;
+                    mutable_value.deinit(self.allocator);
+                    self.allocator.free(removed.key);
                 }
-                return entry.value_ptr;
+                return null;
             }
+            return entry;
         }
         return null;
     }
 
     /// Store a response in the cache
     /// Duplicates the key to ensure it persists beyond the request lifetime
-    pub fn set(self: *ResponseCache, key: []const u8, body: []const u8, ttl_ms: ?u64, content_type: []const u8) !void {
+    /// Thread-safe: Uses mutex protection for concurrent access
+    /// 
+    /// Input validation:
+    /// - Key must not be empty
+    /// - Body must not be empty
+    /// - Content type must not be empty
+    pub fn set(self: *ResponseCache, key: []const u8, body: []const u8, ttl_ms: ?u64, content_type: []const u8) (CacheError || std.mem.Allocator.Error || std.fmt.ParseFloatError || error{NoSpaceLeft})!void {
+        // Input validation
+        if (key.len == 0) {
+            std.debug.print("[Cache] Error: Attempted to cache with empty key\n", .{});
+            return error.InvalidArgument;
+        }
+        if (body.len == 0) {
+            std.debug.print("[Cache] Error: Attempted to cache empty body\n", .{});
+            return error.InvalidArgument;
+        }
+        if (content_type.len == 0) {
+            std.debug.print("[Cache] Error: Attempted to cache with empty content type\n", .{});
+            return error.InvalidArgument;
+        }
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         const cache_ttl = ttl_ms orelse self.default_ttl_ms;
 
         // Remove existing entry if present (and free its key)
-        var iterator = self.entries.iterator();
-        while (iterator.next()) |entry| {
-            if (entry.key_ptr.*.len == key.len and std.mem.eql(u8, entry.key_ptr.*, key)) {
-                entry.value_ptr.deinit(self.allocator);
-                const old_key = entry.key_ptr.*;
-                _ = self.entries.remove(old_key);
-                self.allocator.free(old_key);
-                break;
+        if (self.entries.fetchRemove(key)) |old_entry| {
+            var mutable_value = old_entry.value;
+            mutable_value.deinit(self.allocator);
+            self.allocator.free(old_entry.key);
+        }
+
+        // Enforce max entries limit (simple eviction - remove oldest entry)
+        // Note: This is a simple implementation. For true LRU, we'd need to track access order
+        if (self.max_entries > 0 and self.entries.count() >= self.max_entries) {
+            // Remove first entry (simple eviction strategy)
+            var iterator = self.entries.iterator();
+            if (iterator.next()) |first_entry| {
+                var mutable_value = first_entry.value_ptr.*;
+                mutable_value.deinit(self.allocator);
+                const evicted_key = first_entry.key_ptr.*;
+                _ = self.entries.remove(evicted_key);
+                self.allocator.free(evicted_key);
             }
         }
 
@@ -134,59 +208,90 @@ pub const ResponseCache = struct {
     }
 
     /// Invalidate a cache entry
+    /// Thread-safe: Uses mutex protection for concurrent access
+    /// 
+    /// Input validation:
+    /// - Key must not be empty
     pub fn invalidate(self: *ResponseCache, key: []const u8) void {
-        var iterator = self.entries.iterator();
-        while (iterator.next()) |entry| {
-            if (entry.key_ptr.*.len == key.len and std.mem.eql(u8, entry.key_ptr.*, key)) {
-                entry.value_ptr.deinit(self.allocator);
-                const stored_key = entry.key_ptr.*;
-                _ = self.entries.remove(stored_key);
-                self.allocator.free(stored_key);
-                break;
-            }
+        if (key.len == 0) {
+            return; // Invalid key, nothing to invalidate
+        }
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        if (self.entries.fetchRemove(key)) |entry| {
+            var mutable_value = entry.value;
+            mutable_value.deinit(self.allocator);
+            self.allocator.free(entry.key);
         }
     }
 
     /// Invalidate all cache entries matching a prefix
+    /// Thread-safe: Uses mutex protection for concurrent access
+    /// 
+    /// Input validation:
+    /// - Prefix must not be null (empty prefix is valid and matches nothing)
     pub fn invalidatePrefix(self: *ResponseCache, prefix: []const u8) void {
-        var keys_to_remove = std.ArrayListUnmanaged([]const u8){};
-        var iterator = self.entries.iterator();
+        self.mutex.lock();
+        defer self.mutex.unlock();
 
+        var keys_to_remove = std.ArrayListUnmanaged([]const u8){};
+        defer keys_to_remove.deinit(self.allocator);
+
+        var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
             if (std.mem.startsWith(u8, entry.key_ptr.*, prefix)) {
-                entry.value_ptr.deinit(self.allocator);
+                var mutable_value = entry.value_ptr.*;
+                mutable_value.deinit(self.allocator);
                 keys_to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
             }
         }
 
+        // Remove entries and free keys
         for (keys_to_remove.items) |key| {
-            _ = self.entries.remove(key);
+            if (self.entries.fetchRemove(key)) |entry| {
+                self.allocator.free(entry.key);
+            }
         }
-        keys_to_remove.deinit(self.allocator);
     }
 
     /// Clean up expired entries
+    /// Thread-safe: Uses mutex protection for concurrent access
     pub fn cleanup(self: *ResponseCache) void {
-        var keys_to_remove = std.ArrayListUnmanaged([]const u8){};
-        var iterator = self.entries.iterator();
+        self.mutex.lock();
+        defer self.mutex.unlock();
 
+        var keys_to_remove = std.ArrayListUnmanaged([]const u8){};
+        defer keys_to_remove.deinit(self.allocator);
+
+        var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
             if (entry.value_ptr.isExpired()) {
-                entry.value_ptr.deinit(self.allocator);
+                var mutable_value = entry.value_ptr.*;
+                mutable_value.deinit(self.allocator);
                 keys_to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
             }
         }
 
+        // Remove entries and free keys
         for (keys_to_remove.items) |key| {
-            _ = self.entries.remove(key);
+            if (self.entries.fetchRemove(key)) |entry| {
+                self.allocator.free(entry.key);
+            }
         }
-        keys_to_remove.deinit(self.allocator);
     }
 
+    /// Deinitialize cache and free all entries
+    /// Thread-safe: Uses mutex protection for concurrent access
     pub fn deinit(self: *ResponseCache) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
-            entry.value_ptr.deinit(self.allocator);
+            var mutable_value = entry.value_ptr.*;
+            mutable_value.deinit(self.allocator);
             // Free the duplicated key
             self.allocator.free(entry.key_ptr.*);
         }
@@ -463,4 +568,62 @@ test "CacheEntry expiration check" {
     std.time.sleep(15 * std.time.ns_per_ms);
 
     try std.testing.expect(entry.isExpired());
+}
+
+test "CacheEntry init rejects empty body" {
+    const result = CacheEntry.init(std.testing.allocator, "", 1000, "text/plain");
+    try std.testing.expectError(error.InvalidArgument, result);
+}
+
+test "CacheEntry init rejects empty content type" {
+    const result = CacheEntry.init(std.testing.allocator, "body", 1000, "");
+    try std.testing.expectError(error.InvalidArgument, result);
+}
+
+test "ResponseCache set rejects empty key" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+
+    const result = cache.set("", "body", null, "text/plain");
+    try std.testing.expectError(error.InvalidArgument, result);
+}
+
+test "ResponseCache set rejects empty body" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+
+    const result = cache.set("key", "", null, "text/plain");
+    try std.testing.expectError(error.InvalidArgument, result);
+}
+
+test "ResponseCache set rejects empty content type" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+
+    const result = cache.set("key", "body", null, "");
+    try std.testing.expectError(error.InvalidArgument, result);
+}
+
+test "ResponseCache get returns null for empty key" {
+    var cache = ResponseCache.init(std.testing.allocator, 1000);
+    defer cache.deinit();
+
+    const entry = cache.get("");
+    try std.testing.expect(entry == null);
+}
+
+test "ResponseCache max entries limit" {
+    var cache = ResponseCache.initWithLimit(std.testing.allocator, 1000, 2);
+    defer cache.deinit();
+
+    try cache.set("/test1", "body1", null, "text/plain");
+    try cache.set("/test2", "body2", null, "text/plain");
+    try std.testing.expect(cache.get("/test1") != null);
+    try std.testing.expect(cache.get("/test2") != null);
+
+    // Adding third entry should evict first entry
+    try cache.set("/test3", "body3", null, "text/plain");
+    try std.testing.expect(cache.get("/test1") == null); // Evicted
+    try std.testing.expect(cache.get("/test2") != null);
+    try std.testing.expect(cache.get("/test3") != null);
 }

@@ -3,7 +3,7 @@ const ziggurat = @import("ziggurat");
 const router = @import("router.zig");
 const parsers = @import("parsers.zig");
 
-/// Engine12 Request wrapper around ziggurat.request.Request
+/// engine12 Request wrapper around ziggurat.request.Request
 /// Provides a clean API that abstracts ziggurat implementation details
 /// Each request gets its own arena allocator for memory-safe temporary allocations
 pub const Request = struct {
@@ -65,6 +65,10 @@ pub const Request = struct {
     /// Parse and get query parameters
     /// Returns a hashmap of key-value pairs
     /// Results are cached after first parse
+    /// 
+    /// Memory Management:
+    /// Query parameters are allocated using the request's arena allocator and are
+    /// automatically freed when the request completes (via Request.deinit()).
     /// 
     /// Example:
     /// ```zig

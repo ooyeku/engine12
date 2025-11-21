@@ -31,7 +31,7 @@ pub const CookieOptions = struct {
     httpOnly: bool = false, // Not accessible via JavaScript
 };
 
-/// Engine12 Response wrapper around ziggurat.response.Response
+/// engine12 Response wrapper around ziggurat.response.Response
 /// Provides a clean API with fluent builders and memory-safe response handling
 ///
 /// Memory Lifetime:

@@ -333,7 +333,11 @@ fn handleList(
     defer count_builder.deinit();
     
     if (config.enable_filtering) {
-        parseFilters(T, &count_builder, request) catch {};
+        // Parse filters for count query - ignore errors as filtering is optional
+        // If parsing fails, count query will proceed without filters
+        parseFilters(T, &count_builder, request) catch |err| {
+            std.debug.print("[REST API] Warning: Failed to parse filters for count query: {}\n", .{err});
+        };
     }
     
     // Build COUNT query
@@ -357,10 +361,20 @@ fn handleList(
             defer escaped_value.deinit(config.orm.allocator);
             for (clause.value) |char| {
                 if (char == '\'') {
-                    escaped_value.append(config.orm.allocator, '\'') catch {};
-                    escaped_value.append(config.orm.allocator, '\'') catch {};
+                    // Escaping SQL single quotes - best effort, log if allocation fails
+                    escaped_value.append(config.orm.allocator, '\'') catch {
+                        std.debug.print("[REST API] Warning: Failed to escape SQL value, skipping character\n", .{});
+                        continue;
+                    };
+                    escaped_value.append(config.orm.allocator, '\'') catch {
+                        std.debug.print("[REST API] Warning: Failed to escape SQL value, skipping character\n", .{});
+                        continue;
+                    };
                 } else {
-                    escaped_value.append(config.orm.allocator, char) catch {};
+                    escaped_value.append(config.orm.allocator, char) catch {
+                        std.debug.print("[REST API] Warning: Failed to escape SQL value, skipping character\n", .{});
+                        continue;
+                    };
                 }
             }
             count_sql_buf.writer(config.orm.allocator).print("{s} {s} '{s}'", .{ clause.field, clause.operator, escaped_value.items }) catch {
@@ -403,7 +417,10 @@ fn handleList(
                 defer config.orm.allocator.free(j);
                 const persistent_json = std.heap.page_allocator.dupe(u8, j) catch null;
                 if (persistent_json) |pj| {
-                    request.cacheSet(key, pj, ttl, "application/json") catch {};
+                    // Cache set is best-effort - log but don't fail request if caching fails
+                    request.cacheSet(key, pj, ttl, "application/json") catch |err| {
+                        std.debug.print("[REST API] Warning: Failed to cache response: {}\n", .{err});
+                    };
                 }
             }
         }
@@ -497,7 +514,10 @@ fn handleShow(
                 defer config.orm.allocator.free(j);
                 const persistent_json = std.heap.page_allocator.dupe(u8, j) catch null;
                 if (persistent_json) |pj| {
-                    request.cacheSet(key, pj, ttl, "application/json") catch {};
+                    // Cache set is best-effort - log but don't fail request if caching fails
+                    request.cacheSet(key, pj, ttl, "application/json") catch |err| {
+                        std.debug.print("[REST API] Warning: Failed to cache response: {}\n", .{err});
+                    };
                 }
             }
         }

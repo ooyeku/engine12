@@ -466,7 +466,7 @@ fn handleIndex(request: *Request) Response {
 
 fn validateTodo(req: *Request, todo: Todo) anyerror!validation.ValidationErrors {
     var errors = validation.ValidationErrors.init(req.arena.allocator());
-    
+
     // Validate title (required, max 200 chars)
     if (todo.title.len == 0) {
         try errors.add("title", "Title is required", "required");
@@ -474,12 +474,12 @@ fn validateTodo(req: *Request, todo: Todo) anyerror!validation.ValidationErrors 
     if (todo.title.len > 200) {
         try errors.add("title", "Title must be less than 200 characters", "max_length");
     }
-    
+
     // Validate description (max 1000 chars)
     if (todo.description.len > 1000) {
         try errors.add("description", "Description must be less than 1000 characters", "max_length");
     }
-    
+
     // Validate priority
     const allowed_priorities = [_][]const u8{ "low", "medium", "high" };
     var priority_valid = false;
@@ -492,12 +492,12 @@ fn validateTodo(req: *Request, todo: Todo) anyerror!validation.ValidationErrors 
     if (!priority_valid) {
         try errors.add("priority", "Priority must be one of: low, medium, high", "invalid");
     }
-    
+
     // Validate tags (max 500 chars)
     if (todo.tags.len > 500) {
         try errors.add("tags", "Tags must be less than 500 characters", "max_length");
     }
-    
+
     return errors;
 }
 
@@ -505,7 +505,7 @@ fn requireAuthForRestApi(req: *Request) !AuthUser {
     const user = BasicAuthValve.requireAuth(req) catch {
         return error.AuthenticationRequired;
     };
-    
+
     // Convert BasicAuthValve.User to AuthUser
     // Note: AuthUser fields will be freed by the caller
     return AuthUser{
@@ -525,7 +525,7 @@ fn canAccessTodo(req: *Request, todo: Todo) !bool {
         allocator.free(user.email);
         allocator.free(user.password_hash);
     }
-    
+
     // User can only access their own todos
     return todo.user_id == user.id;
 }
@@ -539,14 +539,14 @@ fn beforeCreateTodo(req: *Request, todo: Todo) !Todo {
         allocator.free(user.email);
         allocator.free(user.password_hash);
     }
-    
+
     // Set user_id and timestamps
     var new_todo = todo;
     new_todo.user_id = user.id;
     const now = std.time.milliTimestamp();
     new_todo.created_at = now;
     new_todo.updated_at = now;
-    
+
     return new_todo;
 }
 
@@ -559,13 +559,13 @@ fn beforeUpdateTodo(req: *Request, id: i64, todo: Todo) !Todo {
         allocator.free(user.email);
         allocator.free(user.password_hash);
     }
-    
+
     // Ensure user_id matches and update timestamp
     var updated_todo = todo;
     updated_todo.user_id = user.id;
     updated_todo.id = id;
     updated_todo.updated_at = std.time.milliTimestamp();
-    
+
     return updated_todo;
 }
 
@@ -1374,6 +1374,64 @@ pub fn createApp() !E12.Engine12 {
     });
     try app.registerValve(&auth_valve.valve);
 
+    // Example: Check valve state and handle errors
+    // This demonstrates the new valve system improvements:
+    // - Thread-safe state queries
+    // - Structured error reporting
+    // - Automatic route cleanup on unregistration
+    if (app.getValveRegistry()) |registry| {
+        // Check valve state (thread-safe)
+        if (registry.getValveState("basic_auth")) |state| {
+            switch (state) {
+                .registered => std.debug.print("[Valve] basic_auth: registered\n", .{}),
+                .initialized => std.debug.print("[Valve] basic_auth: initialized\n", .{}),
+                .started => std.debug.print("[Valve] basic_auth: started\n", .{}),
+                .stopped => std.debug.print("[Valve] basic_auth: stopped\n", .{}),
+                .failed => {
+                    std.debug.print("[Valve] basic_auth: failed\n", .{});
+                    // Get structured error information
+                    if (registry.getErrorInfo("basic_auth")) |error_info| {
+                        std.debug.print("[Valve] Error phase: {}\n", .{error_info.phase});
+                        std.debug.print("[Valve] Error type: {s}\n", .{error_info.error_type});
+                        std.debug.print("[Valve] Error message: {s}\n", .{error_info.message});
+                        std.debug.print("[Valve] Error timestamp: {}\n", .{error_info.timestamp});
+                    }
+                    // Or get formatted error string (backward compatible)
+                    const error_msg = registry.getValveErrors("basic_auth");
+                    if (error_msg.len > 0) {
+                        std.debug.print("[Valve] Error: {s}\n", .{error_msg});
+                    }
+                },
+            }
+        }
+
+        // Check if valve is healthy (thread-safe)
+        if (registry.isValveHealthy("basic_auth")) {
+            std.debug.print("[Valve] basic_auth is healthy\n", .{});
+        } else {
+            std.debug.print("[Valve] basic_auth is unhealthy\n", .{});
+        }
+
+        // Get all failed valves (thread-safe)
+        const failed_valves = registry.getFailedValves(allocator) catch |err| {
+            std.debug.print("[Valve] Failed to get failed valves: {}\n", .{err});
+            return err;
+        };
+        defer allocator.free(failed_valves);
+        if (failed_valves.len > 0) {
+            std.debug.print("[Valve] Failed valves: ", .{});
+            for (failed_valves, 0..) |name, i| {
+                if (i > 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{name});
+            }
+            std.debug.print("\n", .{});
+        }
+
+        // Example: Unregistering a valve automatically cleans up its routes
+        // try app.unregisterValve("basic_auth");
+        // All routes registered by basic_auth would be automatically removed
+    }
+
     // Load template for hot reloading (development mode only)
     // Template will automatically reload when file changes
     // Path is relative to the engine12 root directory (where the app is run from)
@@ -1462,13 +1520,13 @@ pub fn createApp() !E12.Engine12 {
     // API routes
     // Note: Route groups require comptime evaluation, so we register routes directly
     // Route groups are demonstrated in the codebase but require comptime usage
-    
+
     // Custom list endpoint (filters by user_id automatically)
     // Register this FIRST so it takes precedence over restApi's GET /api/todos
     try app.get("/api/todos", handleGetTodos);
     try app.get("/api/todos/search", handleSearchTodos);
     try app.get("/api/todos/stats", handleGetStats);
-    
+
     // RESTful API endpoints for individual resource operations
     // Note: List endpoint (GET /api/todos) is handled separately above to filter by user_id
     // restApi will register: GET /api/todos/:id, POST /api/todos, PUT /api/todos/:id, DELETE /api/todos/:id
@@ -1481,14 +1539,14 @@ pub fn createApp() !E12.Engine12 {
         .validator = validateTodo,
         .authenticator = requireAuthForRestApi,
         .authorization = canAccessTodo,
-        .enable_pagination = true,  // Not used since list is custom, but required by restApi
-        .enable_filtering = true,   // Not used since list is custom, but required by restApi
-        .enable_sorting = true,      // Not used since list is custom, but required by restApi
-        .cache_ttl_ms = 30000,       // 30 seconds
+        .enable_pagination = true, // Not used since list is custom, but required by restApi
+        .enable_filtering = true, // Not used since list is custom, but required by restApi
+        .enable_sorting = true, // Not used since list is custom, but required by restApi
+        .cache_ttl_ms = 30000, // 30 seconds
         // Note: Hooks are not currently supported due to Zig type system limitations
         // User_id and timestamps should be set in the validator or by modifying the model before calling restApi
     });
-    
+
     // Remove old individual CRUD handlers - now handled by restApi above
     // try app.get("/api/todos/:id", handleGetTodo);      // Now: GET /api/todos/:id via restApi
     // try app.post("/api/todos", handleCreateTodo);      // Now: POST /api/todos via restApi

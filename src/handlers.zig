@@ -5,7 +5,7 @@ const metrics = @import("metrics.zig");
 
 pub fn handleDefaultRoot(request: *Request) Response {
     _ = request;
-    return Response.json("{\"service\":\"Engine12\",\"status\":\"running\"}");
+    return Response.json("{\"service\":\"engine12\",\"status\":\"running\"}");
 }
 
 pub fn handleHealthEndpoint(request: *Request) Response {

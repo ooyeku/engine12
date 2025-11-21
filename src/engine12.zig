@@ -103,7 +103,7 @@ pub var global_cache: ?*cache.ResponseCache = null;
 pub var global_logger: ?*dev_tools.Logger = null;
 
 /// Global error handler registry pointer
-/// This is set when Engine12 is initialized and accessed at runtime
+/// This is set when engine12 is initialized and accessed at runtime
 ///
 /// Thread Safety:
 /// - Error handler registry is read-only after initialization
@@ -111,7 +111,7 @@ pub var global_logger: ?*dev_tools.Logger = null;
 pub var global_error_handler: ?*error_handler.ErrorHandlerRegistry = null;
 
 /// Global runtime route registry pointer
-/// This is set when Engine12 is initialized and accessed at runtime
+/// This is set when engine12 is initialized and accessed at runtime
 ///
 /// Thread Safety:
 /// - Runtime route registry uses internal mutex for thread-safe access
@@ -214,7 +214,7 @@ pub fn createRuntimeRouteWrapper() fn (*ziggurat.request.Request) ziggurat.respo
     }.wrapper;
 }
 
-/// Wrap an Engine12 handler to work with ziggurat
+/// Wrap an engine12 handler to work with ziggurat
 /// Creates an arena allocator for each request and automatically cleans it up
 /// If route_pattern is provided, extracts route parameters from the request path
 /// Executes middleware chain before and after handler
@@ -289,7 +289,7 @@ pub fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_patter
                 }
             }
 
-            // Call the Engine12 handler
+            // Call the engine12 handler
             // Error handler registry is available via global_error_handler if handlers need it
             var engine12_response = handler(&engine12_request);
 
@@ -301,7 +301,7 @@ pub fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_patter
                 timing.finish(mc) catch {};
             }
 
-            // Convert Engine12 response to ziggurat response
+            // Convert engine12 response to ziggurat response
             // Note: Response data must be copied to persistent allocator before arena is freed
             return engine12_response.toZiggurat();
         }
@@ -390,7 +390,7 @@ pub const Engine12 = struct {
         return app;
     }
 
-    /// Initialize Engine12 for development
+    /// Initialize engine12 for development
     /// Hot reloading is automatically enabled in development mode
     pub fn initDevelopment() !Engine12 {
         var app = try Engine12.initWithProfile(types.ServerProfile_Development);
@@ -410,12 +410,12 @@ pub const Engine12 = struct {
         return app;
     }
 
-    /// Initialize Engine12 for production
+    /// Initialize engine12 for production
     pub fn initProduction() !Engine12 {
         return Engine12.initWithProfile(types.ServerProfile_Production);
     }
 
-    /// Initialize Engine12 for testing
+    /// Initialize engine12 for testing
     pub fn initTesting() !Engine12 {
         return Engine12.initWithProfile(types.ServerProfile_Testing);
     }
@@ -444,8 +444,8 @@ pub const Engine12 = struct {
         self.runtime_routes.deinit();
     }
 
-    /// Register a valve with this Engine12 instance
-    /// Valves provide isolated services that integrate with Engine12 runtime
+    /// Register a valve with this engine12 instance
+    /// Valves provide isolated services that integrate with engine12 runtime
     ///
     /// Example:
     /// ```zig
@@ -528,7 +528,7 @@ pub const Engine12 = struct {
             self.http_server = @ptrCast(&server);
         }
 
-        // Wrap the Engine12 handler to work with ziggurat
+        // Wrap the engine12 handler to work with ziggurat
         // path_pattern is comptime-known, so it can be captured in the wrapper
         // Set global middleware before registering so wrapper can access it
         global_middleware = &self.middleware;
@@ -586,7 +586,7 @@ pub const Engine12 = struct {
             self.http_server = @ptrCast(&server);
         }
 
-        // Wrap the Engine12 handler to work with ziggurat
+        // Wrap the engine12 handler to work with ziggurat
         const wrapped_handler = wrapHandler(handler_fn, path_pattern);
 
         if (self.built_server) |*server| {
@@ -635,7 +635,7 @@ pub const Engine12 = struct {
             self.http_server = @ptrCast(&server);
         }
 
-        // Wrap the Engine12 handler to work with ziggurat
+        // Wrap the engine12 handler to work with ziggurat
         const wrapped_handler = wrapHandler(handler_fn, path_pattern);
 
         if (self.built_server) |*server| {
@@ -684,7 +684,7 @@ pub const Engine12 = struct {
             self.http_server = @ptrCast(&server);
         }
 
-        // Wrap the Engine12 handler to work with ziggurat
+        // Wrap the engine12 handler to work with ziggurat
         const wrapped_handler = wrapHandler(handler_fn, path_pattern);
 
         if (self.built_server) |*server| {
@@ -708,7 +708,7 @@ pub const Engine12 = struct {
     /// api.get("/todos", handleTodos);  // Registers at /api/todos
     /// ```
     pub fn group(self: *Engine12, prefix: []const u8) route_group.RouteGroup {
-        // Create wrapper functions that cast engine_ptr back to Engine12
+        // Create wrapper functions that cast engine_ptr back to engine12
         const get_wrapper = struct {
             fn wrap(ptr: *anyopaque, comptime path: []const u8, handler: anytype) !void {
                 const engine = @as(*Engine12, @ptrCast(ptr));

@@ -89,7 +89,7 @@ pub const QueryParser = struct {
 /// Body parsing utilities
 pub const BodyParser = struct {
     /// Parse JSON body into a struct
-    /// Uses Engine12's Json module for type-safe deserialization
+    /// Uses engine12's Json module for type-safe deserialization
     /// 
     /// Example:
     /// ```zig

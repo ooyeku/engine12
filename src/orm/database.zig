@@ -8,6 +8,16 @@ pub const ConnectionPoolConfig = struct {
     max_connections: usize = 10,
     idle_timeout_ms: u64 = 300000, // 5 minutes default
     acquire_timeout_ms: u64 = 5000, // 5 seconds default
+
+    /// Validate configuration values
+    pub fn validate(self: *const ConnectionPoolConfig) !void {
+        if (self.max_connections == 0) {
+            return error.InvalidArgument;
+        }
+        if (self.max_connections > 1000) {
+            return error.InvalidArgument; // Reasonable upper limit
+        }
+    }
 };
 
 pub const ConnectionPool = struct {
@@ -61,14 +71,18 @@ pub const ConnectionPool = struct {
         for (self.in_use.items, 0..) |conn, i| {
             if (conn.c_db == db.c_db) {
                 _ = self.in_use.swapRemove(i);
-                self.available.append(self.allocator, db) catch {
-                    // If we can't add to pool, close it
+                self.available.append(self.allocator, db) catch |err| {
+                    // If we can't add to pool, log error and close connection
+                    std.debug.print("[ConnectionPool] Warning: Failed to return connection to pool: {}. Closing connection.\n", .{err});
                     db.close();
                     self.created -= 1;
                 };
                 return;
             }
         }
+        // Connection not found in in_use - this shouldn't happen but log it
+        std.debug.print("[ConnectionPool] Warning: Attempted to release connection not in use pool. Closing connection.\n", .{});
+        db.close();
     }
 
     pub fn deinit(self: *ConnectionPool) void {
@@ -466,7 +480,7 @@ test "Connection pool acquire and release" {
         .max_connections = 2,
     };
 
-    var pool = ConnectionPool.init(":memory:", config, allocator);
+    var pool = try ConnectionPool.init(":memory:", config, allocator);
     defer pool.deinit();
 
     const db1 = try pool.acquire();
@@ -489,7 +503,7 @@ test "Connection pool max connections" {
         .max_connections = 1,
     };
 
-    var pool = ConnectionPool.init(":memory:", config, allocator);
+    var pool = try ConnectionPool.init(":memory:", config, allocator);
     defer pool.deinit();
 
     const db1 = try pool.acquire();

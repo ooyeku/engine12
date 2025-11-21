@@ -148,7 +148,8 @@ pub const RuntimeRouteRegistry = struct {
         defer self.allocator.free(key);
 
         if (self.routes.fetchRemove(key)) |entry| {
-            entry.value.deinit(self.allocator);
+            var mutable_value = entry.value;
+            mutable_value.deinit(self.allocator);
         } else {
             return error.RouteNotFound;
         }

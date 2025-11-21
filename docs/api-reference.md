@@ -596,14 +596,17 @@ try registry.register(&my_valve, &app);
 ```
 
 #### `unregister(name: []const u8) !void`
-Unregister a valve by name. Calls `valve.deinit()` and removes from registry.
+Unregister a valve by name. Automatically cleans up all routes registered by the valve, calls `valve.deinit()`, and removes from registry. Thread-safe.
+
+**Automatic Route Cleanup**: When a valve is unregistered, all HTTP routes it registered are automatically removed from the runtime route registry. This prevents orphaned routes and ensures clean unregistration.
 
 ```zig
 try registry.unregister("my_valve");
+// All routes registered by "my_valve" are automatically cleaned up
 ```
 
 #### `getContext(name: []const u8) ?*ValveContext`
-Get context for a valve by name. Returns null if valve not found.
+Get context for a valve by name. Returns null if valve not found. Thread-safe.
 
 ```zig
 if (registry.getContext("my_valve")) |ctx| {
@@ -612,7 +615,7 @@ if (registry.getContext("my_valve")) |ctx| {
 ```
 
 #### `getValveNames(allocator: Allocator) ![]const []const u8`
-Get all registered valve names. Returns a slice allocated with the provided allocator.
+Get all registered valve names. Returns a slice allocated with the provided allocator. Thread-safe.
 
 ```zig
 const names = try registry.getValveNames(allocator);
@@ -621,6 +624,122 @@ for (names) |name| {
     std.debug.print("Valve: {s}\n", .{name});
 }
 ```
+
+#### `getValveState(name: []const u8) ?ValveState`
+Get the current state of a valve by name. Returns null if valve not found. Thread-safe.
+
+```zig
+if (registry.getValveState("my_valve")) |state| {
+    switch (state) {
+        .registered => std.debug.print("Valve registered\n", .{}),
+        .initialized => std.debug.print("Valve initialized\n", .{}),
+        .started => std.debug.print("Valve started\n", .{}),
+        .stopped => std.debug.print("Valve stopped\n", .{}),
+        .failed => std.debug.print("Valve failed\n", .{}),
+    }
+}
+```
+
+#### `getErrorInfo(name: []const u8) ?ValveErrorInfo`
+Get structured error information for a valve by name. Returns null if no error or valve not found. Thread-safe.
+
+```zig
+if (registry.getErrorInfo("my_valve")) |error_info| {
+    std.debug.print("Error phase: {}\n", .{error_info.phase});
+    std.debug.print("Error type: {s}\n", .{error_info.error_type});
+    std.debug.print("Error message: {s}\n", .{error_info.message});
+    std.debug.print("Timestamp: {}\n", .{error_info.timestamp});
+}
+```
+
+#### `getValveErrors(name: []const u8) []const u8`
+Get error message for a valve by name. Returns empty string if no error or valve not found. Returns the error message from structured error info for backward compatibility. Thread-safe.
+
+**Note**: For structured error information, use `getErrorInfo()` instead.
+
+```zig
+const error_msg = registry.getValveErrors("my_valve");
+if (error_msg.len > 0) {
+    std.debug.print("Error: {s}\n", .{error_msg});
+}
+```
+
+#### `isValveHealthy(name: []const u8) bool`
+Check if a valve is healthy (not failed). Returns false if valve not found or failed. Thread-safe.
+
+```zig
+if (registry.isValveHealthy("my_valve")) {
+    std.debug.print("Valve is healthy\n", .{});
+} else {
+    std.debug.print("Valve is unhealthy or not found\n", .{});
+}
+```
+
+#### `getFailedValves(allocator: Allocator) ![]const []const u8`
+Get all failed valve names. Returns a slice allocated with the provided allocator. Thread-safe.
+
+```zig
+const failed = try registry.getFailedValves(allocator);
+defer allocator.free(failed);
+for (failed) |name| {
+    std.debug.print("Failed valve: {s}\n", .{name});
+}
+```
+
+### Valve Error Information
+
+#### `ValveErrorPhase`
+Enum indicating the phase in valve lifecycle where an error occurred.
+
+- `.init` - Error during valve initialization (init callback)
+- `.start` - Error during app start (onAppStart callback)
+- `.stop` - Error during app stop (onAppStop callback)
+- `.runtime` - Error during runtime operation
+
+#### `ValveErrorInfo`
+Structured error information providing detailed context for debugging and monitoring.
+
+```zig
+pub const ValveErrorInfo = struct {
+    phase: ValveErrorPhase,        // Phase where error occurred
+    error_type: []const u8,        // Error type name (e.g., "OutOfMemory")
+    message: []const u8,           // Human-readable error message
+    timestamp: i64,                // Unix timestamp in milliseconds
+    
+    pub fn deinit(self: *ValveErrorInfo, allocator: Allocator) void;
+    pub fn format(self: *const ValveErrorInfo, allocator: Allocator) ![]const u8;
+};
+```
+
+**Example**:
+```zig
+if (registry.getErrorInfo("my_valve")) |error_info| {
+    // Access structured error information
+    std.debug.print("Phase: {}\n", .{error_info.phase});
+    std.debug.print("Type: {s}\n", .{error_info.error_type});
+    std.debug.print("Message: {s}\n", .{error_info.message});
+    
+    // Format as string
+    const formatted = try error_info.format(allocator);
+    defer allocator.free(formatted);
+    std.debug.print("Formatted: {s}\n", .{formatted});
+}
+```
+
+### Thread Safety
+
+All `ValveRegistry` query methods are thread-safe and protected by a mutex:
+- `getContext()`
+- `getValveState()`
+- `getValveErrors()`
+- `getErrorInfo()`
+- `isValveHealthy()`
+- `getFailedValves()`
+- `getValveNames()`
+- `register()`
+- `unregister()`
+
+This ensures safe concurrent access to valve registry state from multiple threads.
 
 ### Valve Errors
 

@@ -47,19 +47,21 @@ pub const WebSocketRoom = struct {
             }
         }
 
-        // Now unlock and iterate - connections might be freed, so we need to be careful
-        // Use a safe wrapper to check if connection is still valid
+        // Now unlock and iterate - connections might be closed, but shouldn't be freed
+        // Connections are only freed after being removed from all rooms
         for (connections_copy.items) |conn| {
-            // Safely check if connection is open
-            // If the connection was freed, this will segfault, so we need to be defensive
-            const is_open = safeIsOpen(conn);
-            if (!is_open) {
+            // Check if connection is still open using atomic load
+            // This is safe because is_open is an atomic value that persists even if conn is freed
+            // However, we ensure connections are only freed after removal from rooms
+            if (!conn.is_open.load(.monotonic)) {
                 continue;
             }
 
-            // Try to send - if connection was freed, this will fail gracefully
-            conn.sendText(message) catch {
-                // Connection error or freed - skip it
+            // Try to send - connection errors are handled gracefully
+            conn.sendText(message) catch |err| {
+                // Connection error (closed, network issue, etc.) - skip it
+                // Log error for debugging but don't crash
+                std.debug.print("[WebSocketRoom] Error sending message to connection: {}\n", .{err});
                 continue;
             };
         }
@@ -82,13 +84,12 @@ pub const WebSocketRoom = struct {
     }
 
     /// Safely check if a connection is open
-    /// Returns false if connection is invalid or closed
-    /// Note: This is not truly safe if the connection was freed, but we try to minimize that risk
-    /// by ensuring connections are only removed from the room when they're closed
+    /// Returns false if connection is closed
+    /// Note: This accesses the atomic is_open field which is safe to read even if the connection
+    /// is being cleaned up, as long as connections are only freed after removal from all rooms
     fn safeIsOpen(conn: *connection.WebSocketConnection) bool {
-        // Check if connection is still open
-        // If connection was freed, this will segfault - but connections should only be freed
-        // after they're removed from the room, so this should be safe
+        // Check if connection is still open using atomic load
+        // This is thread-safe and safe as long as conn pointer is valid
         return conn.is_open.load(.monotonic);
     }
 
@@ -110,7 +111,9 @@ pub const WebSocketRoom = struct {
 
         for (connections_copy.items) |conn| {
             if (safeIsOpen(conn)) {
-                conn.sendBinary(data) catch {
+                conn.sendBinary(data) catch |err| {
+                    // Connection error - log for debugging but don't crash
+                    std.debug.print("[WebSocketRoom] Error sending binary to connection: {}\n", .{err});
                     continue;
                 };
             }
@@ -146,6 +149,13 @@ pub const WebSocketRoom = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
+        // Check if connection is already in room (prevent duplicates)
+        for (self.connections.items) |existing| {
+            if (existing == conn) {
+                return; // Already in room
+            }
+        }
+
         try self.connections.append(self.allocator, conn);
     }
 
@@ -171,7 +181,8 @@ pub const WebSocketRoom = struct {
     }
 
     /// Check if room is empty
-    pub fn isEmpty(self: *const WebSocketRoom) bool {
+    /// Thread-safe: Uses mutex protection via count()
+    pub fn isEmpty(self: *WebSocketRoom) bool {
         return self.count() == 0;
     }
 };

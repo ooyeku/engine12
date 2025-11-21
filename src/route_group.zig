@@ -15,7 +15,7 @@ const middleware_chain = @import("middleware.zig");
 pub const RouteGroup = struct {
     const Self = @This();
     
-    /// Opaque pointer to parent Engine12 instance
+    /// Opaque pointer to parent engine12 instance
     engine_ptr: *anyopaque,
     
     /// Path prefix for all routes in this group

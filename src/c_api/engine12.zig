@@ -293,37 +293,8 @@ pub const CResponse = struct {
     }
 };
 
-// Global storage for C API responses (inline to avoid module conflicts)
-// Uses request pointer as key for thread-safe access
-var c_api_response_storage: std.AutoHashMap(*Request, Response) = undefined;
-var c_api_response_storage_init = false;
-var c_api_response_storage_mutex: std.Thread.Mutex = std.Thread.Mutex{};
-
-fn initCAPIResponseStorage() void {
-    if (!c_api_response_storage_init) {
-        c_api_response_storage = std.AutoHashMap(*Request, Response).init(allocator);
-        c_api_response_storage_init = true;
-    }
-}
-
-fn storeCAPIResponse(req: *Request, resp: Response) !void {
-    initCAPIResponseStorage();
-    c_api_response_storage_mutex.lock();
-    defer c_api_response_storage_mutex.unlock();
-
-    try c_api_response_storage.put(req, resp);
-}
-
-pub fn getCAPIResponse(req: *Request) ?Response {
-    initCAPIResponseStorage();
-    c_api_response_storage_mutex.lock();
-    defer c_api_response_storage_mutex.unlock();
-
-    if (c_api_response_storage.fetchRemove(req)) |entry| {
-        return entry.value;
-    }
-    return null;
-}
+// C API response storage is handled by the middleware module
+// which uses request ID as key for automatic cleanup
 
 // Global storage for C API app instances keyed by request
 // This allows middleware to access the app instance without capturing
@@ -1726,7 +1697,7 @@ export fn e12_request_cache(req: ?*CRequest) ?*CCache {
     // Create wrapper
     const c_cache = allocator.create(CCache) catch return null;
     // Note: This is a bit of a hack - we're storing a pointer to the cache
-    // The cache is owned by Engine12, so we don't free it here
+    // The cache is owned by engine12, so we don't free it here
     c_cache.* = CCache{ .cache = cache_ptr.* };
     return @ptrCast(c_cache);
 }

@@ -352,6 +352,48 @@ Valves declare required capabilities in their metadata. Capabilities are granted
 - Valves receive their own allocator from Engine12
 - Each valve has its own context, preventing cross-valve interference
 
+### Thread Safety
+
+The `ValveRegistry` provides thread-safe access to valve state and information:
+
+- **Mutex Protection**: All registry methods are protected by a mutex, ensuring safe concurrent access
+- **Query Methods**: All query methods (`getContext`, `getValveState`, `getValveErrors`, `getErrorInfo`, `isValveHealthy`, `getFailedValves`, `getValveNames`) are thread-safe
+- **Registration Methods**: `register()` and `unregister()` are thread-safe and can be called concurrently
+- **Lifecycle Methods**: `onAppStart()` and `onAppStop()` are thread-safe
+
+This allows safe monitoring and management of valves from multiple threads, such as health check endpoints or administrative interfaces.
+
+### Automatic Route Cleanup
+
+When a valve is unregistered, the registry automatically cleans up all routes registered by that valve:
+
+- **Route Discovery**: Uses `runtime_routes.getValveRoutes()` to find all routes registered by the valve
+- **Automatic Unregistration**: Each route is automatically removed from the runtime route registry
+- **Error Handling**: Route cleanup errors are logged but don't prevent valve unregistration
+- **Clean Unregistration**: Ensures no orphaned routes remain after valve removal
+
+This prevents route conflicts and ensures clean unregistration without manual route management.
+
+### Error Reporting
+
+The valve system provides structured error information for better debugging and monitoring:
+
+- **Structured Errors**: Errors are stored as `ValveErrorInfo` structures containing phase, type, message, and timestamp
+- **Error Phases**: Errors are categorized by lifecycle phase (init, start, stop, runtime)
+- **Backward Compatibility**: `getValveErrors()` still returns formatted strings for compatibility
+- **Detailed Information**: `getErrorInfo()` provides structured access to error details including timestamps
+- **Automatic Cleanup**: Error information is automatically freed when valves are unregistered
+
+**Error Information Structure**:
+```zig
+pub const ValveErrorInfo = struct {
+    phase: ValveErrorPhase,        // Phase where error occurred
+    error_type: []const u8,        // Error type name
+    message: []const u8,           // Human-readable message
+    timestamp: i64,                // Unix timestamp in milliseconds
+};
+```
+
 ### Security Considerations
 
 - **Capability-Based Access Control**: Valves must declare and receive capabilities before accessing features

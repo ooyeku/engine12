@@ -1,4 +1,4 @@
-// Hot reload module for Engine12
+// Hot reload module for engine12
 // Provides hot reloading support for development mode
 
 pub const watcher = @import("watcher.zig");
