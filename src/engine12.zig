@@ -603,42 +603,33 @@ pub const Engine12 = struct {
         };
         self.template_routes_count += 1;
 
-        // Create handler that accesses stored template route info
-        const Handler = struct {
-            app_ptr: *Engine12,
-            route_idx: usize,
+        // Create handler that captures app pointer and route index
+        // We need to capture these values in the closure
+        const captured_app = self;
+        const captured_route_idx = route_index;
 
-            fn handler(handler_instance: *const Handler, req: *Request) Response {
-                const route_info = handler_instance.app_ptr.template_routes[handler_instance.route_idx];
+        // Create wrapper struct that captures the values
+        const Wrapper = struct {
+            fn handler(req: *Request) Response {
+                const route_info = captured_app.template_routes[captured_route_idx];
                 const template_path_ptr = route_info.path;
                 const context_fn_ptr = @as(ContextFn, @ptrCast(@alignCast(route_info.context_fn)));
 
                 const context = context_fn_ptr(req);
                 const templates_simple_mod = @import("templates/simple.zig");
-                const html = templates_simple_mod.renderSimple(template_path_ptr, context, allocator) catch |err| {
+                const html = templates_simple_mod.renderSimple(template_path_ptr, context, captured_app.allocator) catch |err| {
                     return switch (err) {
                         error.TemplateNotFound => Response.text("Template not found").withStatus(404),
                         error.TemplateTooLarge => Response.text("Template too large").withStatus(500),
                         else => Response.text("Template rendering error").withStatus(500),
                     };
                 };
-                defer allocator.free(html);
+                defer captured_app.allocator.free(html);
                 return Response.html(html);
             }
         };
 
-        const handler_instance = Handler{
-            .app_ptr = self,
-            .route_idx = route_index,
-        };
-        
-        // Create a wrapper function that captures handler_instance
-        const wrapper = struct {
-            fn call(req: *Request) Response {
-                return Handler.handler(&handler_instance, req);
-            }
-        };
-        try self.get(path_pattern, wrapper.call);
+        try self.get(path_pattern, Wrapper.handler);
     }
 
     /// Register a POST endpoint
@@ -992,13 +983,19 @@ pub const Engine12 = struct {
         // Check if validator is provided in overrides
         var validator_provided = false;
         var validator_fn: ?*const fn (*Request, Model) anyerror!validation.ValidationErrors = null;
-        if (@typeInfo(OverrideType) == .Struct) {
-            inline for (@typeInfo(OverrideType).Struct.fields) |field| {
-                if (std.mem.eql(u8, field.name, "validator")) {
-                    validator_provided = true;
-                    validator_fn = @field(overrides, field.name);
-                    break;
-                }
+        comptime {
+            const type_info = @typeInfo(OverrideType);
+            switch (type_info) {
+                .@"struct" => |struct_info| {
+                    for (struct_info.fields) |field| {
+                        if (std.mem.eql(u8, field.name, "validator")) {
+                            validator_provided = true;
+                            validator_fn = @field(overrides, field.name);
+                            break;
+                        }
+                    }
+                },
+                else => {},
             }
         }
 
@@ -1021,11 +1018,17 @@ pub const Engine12 = struct {
         config.cache_ttl_ms = null;
 
         // Apply overrides if provided
-        if (@typeInfo(OverrideType) == .Struct) {
-            inline for (@typeInfo(OverrideType).Struct.fields) |field| {
-                if (@hasField(ConfigType, field.name)) {
-                    @field(config, field.name) = @field(overrides, field.name);
-                }
+        comptime {
+            const type_info = @typeInfo(OverrideType);
+            switch (type_info) {
+                .@"struct" => |struct_info| {
+                    for (struct_info.fields) |field| {
+                        if (@hasField(ConfigType, field.name)) {
+                            @field(config, field.name) = @field(overrides, field.name);
+                        }
+                    }
+                },
+                else => {},
             }
         }
 
