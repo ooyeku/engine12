@@ -608,8 +608,8 @@ pub const Engine12 = struct {
             app_ptr: *Engine12,
             route_idx: usize,
 
-            fn handler(req: *Request) Response {
-                const route_info = self.app_ptr.template_routes[self.route_idx];
+            fn handler(handler_instance: *const Handler, req: *Request) Response {
+                const route_info = handler_instance.app_ptr.template_routes[handler_instance.route_idx];
                 const template_path_ptr = route_info.path;
                 const context_fn_ptr = @as(ContextFn, @ptrCast(@alignCast(route_info.context_fn)));
 
@@ -631,7 +631,14 @@ pub const Engine12 = struct {
             .app_ptr = self,
             .route_idx = route_index,
         };
-        try self.get(path_pattern, handler_instance.handler);
+        
+        // Create a wrapper function that captures handler_instance
+        const wrapper = struct {
+            fn call(req: *Request) Response {
+                return Handler.handler(&handler_instance, req);
+            }
+        };
+        try self.get(path_pattern, wrapper.call);
     }
 
     /// Register a POST endpoint
