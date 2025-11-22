@@ -76,8 +76,8 @@ var app = try Engine12.initWithProfile(profile);
 
 ### Route Registration
 
-#### `get(path_pattern: []const u8, handler: HttpHandler) !void`
-Register a GET endpoint. Supports route parameters with `:param` syntax.
+#### `get(comptime path_pattern: []const u8, comptime handler: anytype) !void`
+Register a GET endpoint. Supports route parameters with `:param` syntax. Both `path_pattern` and `handler` must be comptime-known.
 
 ```zig
 fn handleRoot(req: *Request) Response {
@@ -105,8 +105,8 @@ try app.templateRoute("/", "src/templates/index.zt.html", getIndexContext);
 - Automatic template rendering with variable replacement
 - Works without hot reload (production-safe)
 
-#### `post(path_pattern: []const u8, handler: HttpHandler) !void`
-Register a POST endpoint.
+#### `post(comptime path_pattern: []const u8, comptime handler: anytype) !void`
+Register a POST endpoint. Both `path_pattern` and `handler` must be comptime-known.
 
 ```zig
 fn handleCreate(req: *Request) Response {
@@ -118,22 +118,22 @@ fn handleCreate(req: *Request) Response {
 try app.post("/todos", handleCreate);
 ```
 
-#### `put(path_pattern: []const u8, handler: HttpHandler) !void`
-Register a PUT endpoint.
+#### `put(comptime path_pattern: []const u8, comptime handler: anytype) !void`
+Register a PUT endpoint. Both `path_pattern` and `handler` must be comptime-known.
 
 ```zig
 try app.put("/todos/:id", handleUpdate);
 ```
 
-#### `delete(path_pattern: []const u8, handler: HttpHandler) !void`
-Register a DELETE endpoint.
+#### `delete(comptime path_pattern: []const u8, comptime handler: anytype) !void`
+Register a DELETE endpoint. Both `path_pattern` and `handler` must be comptime-known.
 
 ```zig
 try app.delete("/todos/:id", handleDelete);
 ```
 
-#### `patch(path_pattern: []const u8, handler: HttpHandler) !void`
-Register a PATCH endpoint.
+#### `patch(comptime path_pattern: []const u8, comptime handler: anytype) !void`
+Register a PATCH endpoint. Both `path_pattern` and `handler` must be comptime-known.
 
 ```zig
 try app.patch("/todos/:id", handlePatch);
@@ -153,8 +153,8 @@ api.post("/todos", handleCreate); // Registers at /api/todos
 
 ### RESTful API Resource
 
-#### `restApi(prefix: []const u8, comptime Model: type, config: RestApiConfig) !void`
-Generate complete RESTful CRUD endpoints for a model with built-in support for filtering, sorting, pagination, authentication, authorization, validation, and caching.
+#### `restApi(comptime prefix: []const u8, comptime Model: type, config: RestApiConfig(Model)) !void`
+Generate complete RESTful CRUD endpoints for a model with built-in support for filtering, sorting, pagination, authentication, authorization, validation, and caching. The `prefix` must be comptime-known.
 
 This function automatically generates 5 endpoints:
 - `GET {prefix}` - List all resources (with filtering, sorting, pagination)
@@ -296,11 +296,13 @@ try app.restApi("/api/todos", Todo, .{
 
 Engine12 provides automatic OpenAPI 3.0 specification generation and Swagger UI integration. This feature automatically introspects your `restApi` resources and generates complete API documentation.
 
-#### `enableOpenApiDocs(mount_path: []const u8, info: OpenApiInfo) !void`
+#### `enableOpenApiDocs(comptime mount_path: []const u8, info: OpenApiInfo) !void`
 
 Enable OpenAPI documentation generation and serve Swagger UI. This registers two endpoints:
 - `GET {mount_path}/openapi.json` - Serves the generated OpenAPI 3.0 JSON specification
 - `GET {mount_path}` - Serves an HTML page with embedded Swagger UI
+
+The `mount_path` must be comptime-known.
 
 **OpenApiInfo**:
 ```zig
@@ -399,12 +401,12 @@ try app.restApi("/api/posts", Post, config);
 
 **Note**: OpenAPI documentation is generated at runtime based on your registered routes. If you add or remove `restApi` resources, the documentation will reflect those changes automatically.
 
-#### `restApiDefault(prefix: []const u8, comptime Model: type, overrides: anytype) !void`
-Register RESTful API endpoints with sensible defaults. Uses `app.getORM()` automatically and enables pagination, filtering, and sorting by default. Only requires model type and path - all other options are optional.
+#### `restApiDefault(comptime prefix: []const u8, comptime Model: type, overrides: anytype) !void`
+Register RESTful API endpoints with sensible defaults. Uses `app.getORM()` automatically and enables pagination, filtering, and sorting by default. Only requires model type and path - all other options are optional. The `prefix` must be comptime-known. The `overrides` parameter is optional and can be omitted for minimal usage.
 
 ```zig
-// Minimal usage - uses defaults
-try app.restApiDefault("/api/items", Item);
+// Minimal usage - uses defaults (no overrides parameter)
+try app.restApiDefault("/api/items", Item, .{});
 
 // With optional overrides
 try app.restApiDefault("/api/items", Item, .{
@@ -854,7 +856,7 @@ HandlerCtx is optional - existing handlers continue to work. You can adopt it in
 ### Server Lifecycle
 
 #### `start() !void`
-Start the HTTP server and background tasks.
+Start the entire system including HTTP server, background tasks, WebSocket servers, and hot reload manager (in development mode).
 
 ```zig
 try app.start();
@@ -1005,8 +1007,12 @@ if (app.getCache()) |cache| {
 Register a custom error handler.
 
 ```zig
-fn customErrorHandler(err: anyerror) Response {
-    return Response.status(500).withJson("{\"error\":\"Internal error\"}");
+fn customErrorHandler(req: *Request, err: ErrorResponse, allocator: std.mem.Allocator) Response {
+    const json = err.toJson(allocator, false) catch {
+        return Response.serverError("Failed to serialize error");
+    };
+    defer allocator.free(json);
+    return Response.json(json).withStatus(500);
 }
 
 app.useErrorHandler(customErrorHandler);
@@ -1036,14 +1042,36 @@ Get total request count.
 const count = app.getRequestCount();
 ```
 
+#### `getActiveRequestCount() u64`
+Get number of currently active (in-flight) requests.
+
+```zig
+const active = app.getActiveRequestCount();
+```
+
+#### `registerShutdownHook(hook: ShutdownHook) !void`
+Register a shutdown hook for cleanup operations. Hooks are executed during graceful shutdown before the server stops.
+
+```zig
+try app.registerShutdownHook(.{
+    .name = "cleanup_db",
+    .hook = cleanupDatabase,
+});
+```
+
 #### `printStatus() void`
 Print streamlined server status.
 
 ```zig
 app.printStatus();
 // Output:
+// 
 // Server ready
 //   Status: RUNNING | Health: healthy | Routes: 5 | Tasks: 2
+// 
+// Frontend: http://127.0.0.1:8080/
+// API: http://127.0.0.1:8080/api/todos
+// 
 ```
 
 #### `registerValve(valve: *Valve) !void`
@@ -1548,10 +1576,10 @@ const MyValve = struct {
         const self = @as(*MyValve, @ptrFromInt(@intFromPtr(v) - @offsetOf(MyValve, "valve")));
         
         // Register routes
-        try ctx.registerRoute("GET", "/api/my-valve", Self.handleRequest);
+        try ctx.registerRoute("GET", "/api/my-valve", MyValve.handleRequest);
         
         // Register middleware
-        try ctx.registerMiddleware(&Self.myMiddleware);
+        try ctx.registerMiddleware(&MyValve.myMiddleware);
         
         _ = self;
     }
@@ -1619,7 +1647,7 @@ const body = req.body();
 ```
 
 #### `jsonBody(comptime T: type) !T`
-Parse request body as JSON into a struct.
+Parse request body as JSON into a struct. Validates body length to prevent DoS attacks (max 10MB by default).
 
 ```zig
 const Todo = struct {
@@ -1630,8 +1658,38 @@ const Todo = struct {
 const todo = try req.jsonBody(Todo);
 ```
 
+#### `parseJson(comptime T: type) !T`
+Alias for `jsonBody()`. Parse request body as JSON into a struct.
+
+```zig
+const todo = try req.parseJson(Todo);
+```
+
+#### `parseJsonOptional(comptime T: type) ?T`
+Parse request body as JSON, returning null on error instead of erroring.
+
+```zig
+if (req.parseJsonOptional(Todo)) |todo| {
+    // Use todo
+} else {
+    return Response.errorResponse("Invalid JSON", 400);
+}
+```
+
+#### `validateJson(comptime T: type, schema: *ValidationSchema) !T`
+Parse and validate JSON body against a validation schema. Returns parsed value if validation passes, or error if parsing/validation fails.
+
+```zig
+const TodoInput = struct { title: []const u8, description: []const u8 };
+var schema = validation.ValidationSchema.init(req.arena.allocator());
+defer schema.deinit();
+const title_validator = try schema.field("title", "");
+title_validator.rule(validation.required);
+const todo = try req.validateJson(TodoInput, &schema);
+```
+
 #### `formBody() !StringHashMap([]const u8)`
-Parse request body as URL-encoded form data.
+Parse request body as URL-encoded form data. Validates body length to prevent DoS attacks (max 1MB by default).
 
 ```zig
 const form = try req.formBody();
@@ -1754,6 +1812,13 @@ Get a value from the request context.
 
 ```zig
 const user_id = req.get("user_id");
+```
+
+#### `requestId() ?[]const u8`
+Get the request ID for correlation tracking. Returns null if request ID was not set. Request IDs are automatically generated for each request.
+
+```zig
+const req_id = req.requestId();
 ```
 
 ### Cache Access
@@ -1999,11 +2064,41 @@ return Response.ok().withCookie("session_id", "abc123", options);
 ```
 
 #### `redirect(location: []const u8) Response`
-Create a redirect response.
+Create a redirect response (302 Found by default).
 
 ```zig
 return Response.redirect("/login");
-return Response.redirect("/dashboard").withStatus(301); // Permanent
+return Response.redirect("/dashboard").withStatus(301); // Permanent redirect
+```
+
+#### `noCache() Response`
+Set cache-control headers to prevent caching. Sets no-cache, no-store, must-revalidate, Pragma: no-cache, and Expires: 0.
+
+```zig
+return Response.json(data).noCache();
+```
+
+#### `errorJson(message: []const u8, allocator: Allocator) !Response`
+Create an error JSON response with status 500. The allocator is used to format the error message.
+
+```zig
+return try Response.errorJson("Internal server error", allocator);
+```
+
+#### `errorJsonWithStatus(message: []const u8, status_code: u16, allocator: Allocator) !Response`
+Create an error JSON response with custom status code. The allocator is used to format the error message.
+
+```zig
+return try Response.errorJsonWithStatus("Not found", 404, allocator);
+```
+
+#### `successJson(data: []const u8, allocator: Allocator) !Response`
+Create a success JSON response with status 200. The allocator parameter is accepted for consistency but not used (data is already formatted).
+
+```zig
+const data = try Json.serialize(MyStruct, my_data, allocator);
+defer allocator.free(data);
+return try Response.successJson(data, allocator);
 ```
 
 ## Middleware System
@@ -3642,9 +3737,9 @@ Engine12 provides WebSocket support for real-time bidirectional communication. E
 
 ### Registering WebSocket Routes
 
-#### `websocket(path_pattern: []const u8, handler: WebSocketHandler) !void`
+#### `websocket(comptime path_pattern: []const u8, handler: WebSocketHandler) !void`
 
-Register a WebSocket endpoint. The handler function is called when a connection is established.
+Register a WebSocket endpoint. The handler function is called when a connection is established. The `path_pattern` must be comptime-known.
 
 ```zig
 const websocket = @import("Engine12").websocket;
