@@ -200,8 +200,16 @@ async function fetchTodos() {
             return;
         }
         if (!response.ok) throw new Error('Failed to fetch todos');
-        const data = await response.json();
-        todos = Array.isArray(data) ? data : [];
+        const responseData = await response.json();
+        // Handle paginated response structure: {data: [...], meta: {...}}
+        if (responseData && responseData.data && Array.isArray(responseData.data)) {
+            todos = responseData.data;
+        } else if (Array.isArray(responseData)) {
+            // Fallback: if response is already an array (for backwards compatibility)
+            todos = responseData;
+        } else {
+            todos = [];
+        }
         renderTodos();
         updateStats();
     } catch (error) {

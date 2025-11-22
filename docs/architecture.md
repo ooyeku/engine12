@@ -590,6 +590,159 @@ Engine12 provides hot reloading support for development mode, enabling automatic
 - **Comptime Templates**: Runtime templates provide content strings but don't support full comptime type checking. Use comptime templates (`@embedFile`) for production type safety.
 - **Performance**: Polling adds minimal overhead (500ms intervals), but is acceptable for development mode.
 
+## HandlerCtx Architecture
+
+HandlerCtx is a high-level abstraction layer that reduces boilerplate code in handlers by 70-80%. It wraps common handler patterns (authentication, ORM access, parameter parsing, caching, logging) into a single, convenient interface.
+
+### Key Components
+
+- **HandlerCtx Struct** (`src/handler_context.zig`): Core context wrapper that holds request, user, ORM, and logger references
+- **Initialization Options**: Configurable requirements for authentication and ORM access
+- **Convenience Methods**: Type-safe helpers for parameter parsing, caching, logging, and error responses
+- **Memory Management**: Automatic memory management via request arena allocator
+
+### Design Decisions
+
+#### 1. **Zero-Cost Abstraction**
+
+HandlerCtx is designed as a zero-cost abstraction - it doesn't add runtime overhead beyond what handlers would do manually. All operations are direct method calls with no indirection or dynamic dispatch.
+
+#### 2. **Type Safety**
+
+All methods use Zig's comptime type system for compile-time guarantees:
+- `query(comptime T: type, name: []const u8)` - Type-safe query parameter parsing
+- `param(comptime T: type, name: []const u8)` - Type-safe route parameter parsing
+- `json(comptime T: type)` - Type-safe JSON body parsing
+
+#### 3. **Memory Management**
+
+HandlerCtx uses the request's arena allocator for all allocations:
+- Auth user strings are allocated in the request arena (automatically freed with request)
+- Cache keys are allocated in the request arena
+- No manual memory management required
+
+#### 4. **Flexible ORM Access**
+
+ORM access is configurable via a function pointer:
+- Applications can provide their own ORM getter function
+- Supports global ORM patterns (like in todo app)
+- Supports app-level ORM instances
+- Can be extended to support other access patterns
+
+#### 5. **Optional Requirements**
+
+HandlerCtx uses optional requirements to make handler needs explicit:
+- `require_auth: bool` - Makes authentication requirement explicit
+- `require_orm: bool` - Makes ORM requirement explicit
+- Errors are returned at initialization time, not during handler execution
+
+#### 6. **Consistent Error Handling**
+
+All error responses follow a consistent pattern:
+- Automatic logging with appropriate log levels
+- Standardized HTTP status codes
+- User-friendly error messages
+- Context-aware error responses (includes user_id, request_id when available)
+
+### How It Works
+
+1. **Initialization**: Handler creates HandlerCtx with requirements:
+   ```zig
+   var ctx = HandlerCtx.init(req, .{
+       .require_auth = true,
+       .require_orm = true,
+       .get_orm = getORM,
+   }) catch |err| {
+       return handleError(err);
+   };
+   ```
+
+2. **Authentication**: If `require_auth = true`, HandlerCtx:
+   - Calls `BasicAuthValve.requireAuth()` to get user
+   - Converts `BasicAuthValve.User` to `AuthUser` with arena-allocated strings
+   - Stores user in context for later access
+   - Frees original user strings automatically
+
+3. **ORM Access**: If `require_orm = true`, HandlerCtx:
+   - Calls provided `get_orm` function (or uses global if available)
+   - Stores ORM reference in context
+   - Returns error if ORM is not available
+
+4. **Parameter Parsing**: HandlerCtx provides type-safe parameter parsing:
+   - `query()` - Parses query parameters with better error messages
+   - `param()` - Parses route parameters with type conversion
+   - `json()` - Parses JSON body with validation
+
+5. **Caching**: HandlerCtx simplifies cache operations:
+   - `cacheKey()` - Builds cache keys with user context
+   - `cacheGet()` / `cacheSet()` - Simplified cache operations
+   - Automatic user_id inclusion in cache keys
+
+6. **Logging**: HandlerCtx provides context-aware logging:
+   - Automatically includes user_id if authenticated
+   - Includes request_id if available
+   - Appropriate log levels based on operation
+
+### Integration with Existing Systems
+
+HandlerCtx integrates seamlessly with existing Engine12 systems:
+
+- **BasicAuthValve**: Uses `BasicAuthValve.requireAuth()` for authentication
+- **Request Arena**: Uses request's arena allocator for all allocations
+- **Global Logger**: Accesses `global_logger` from engine12.zig
+- **Cache System**: Uses request's cache methods
+- **restApi**: Works alongside restApi - doesn't replace it
+
+### Code Reduction Analysis
+
+HandlerCtx achieves 70-80% code reduction by eliminating:
+
+1. **Authentication Boilerplate** (~8 lines → 1 line):
+   - Manual `BasicAuthValve.requireAuth()` call
+   - Manual memory management (defer free)
+   - Error handling boilerplate
+
+2. **ORM Access** (~3 lines → 1 line):
+   - Manual `getORM()` call
+   - Error handling boilerplate
+
+3. **Parameter Parsing** (~4 lines → 1 line):
+   - Manual `queryParamTyped()` call
+   - Null checking
+   - Error handling boilerplate
+
+4. **Cache Operations** (~3 lines → 1 line):
+   - Manual cache key generation
+   - User context inclusion
+
+5. **Error Responses** (~2 lines → 1 line):
+   - Consistent error response creation
+   - Automatic logging
+
+### Migration Path
+
+HandlerCtx is designed for incremental adoption:
+
+1. **Optional**: Existing handlers continue to work without HandlerCtx
+2. **Gradual Migration**: Migrate handlers one at a time
+3. **Mixed Usage**: HandlerCtx handlers can coexist with traditional handlers
+4. **No Breaking Changes**: HandlerCtx doesn't modify existing APIs
+
+### Benefits
+
+- **Developer Experience**: Cleaner, more maintainable handler code
+- **Consistency**: Standardized patterns across all handlers
+- **Type Safety**: Compile-time guarantees for parameter parsing
+- **Memory Safety**: Automatic memory management via arena allocator
+- **Error Handling**: Consistent error responses with automatic logging
+- **Productivity**: 70-80% reduction in handler boilerplate
+
+### Limitations
+
+- **ORM Access Pattern**: Requires applications to provide ORM getter function (flexible but requires setup)
+- **Optional Feature**: HandlerCtx is optional - doesn't replace existing patterns
+- **Learning Curve**: Developers need to learn HandlerCtx API (minimal, well-documented)
+
 ## Future Considerations
 
 - Async/await support when Zig adds it

@@ -25,6 +25,8 @@ const LoggingConfig = E12.LoggingConfig;
 const restApi = E12.restApi;
 const RestApiConfig = E12.RestApiConfig;
 const AuthUser = E12.AuthUser;
+const HandlerCtx = E12.HandlerCtx;
+const HandlerCtxError = E12.HandlerCtxError;
 
 const allocator = std.heap.page_allocator;
 
@@ -140,136 +142,6 @@ const TodoStats = struct {
     overdue: u32,
 };
 
-fn createTodo(orm: *ORM, user_id: i64, title: []const u8, description: []const u8, priority: []const u8, due_date: ?i64, tags: []const u8) !Todo {
-    const now = std.time.milliTimestamp();
-    const title_copy = try allocator.dupe(u8, title);
-    errdefer allocator.free(title_copy);
-    const desc_copy = try allocator.dupe(u8, description);
-    errdefer allocator.free(desc_copy);
-    const priority_copy = try allocator.dupe(u8, priority);
-    errdefer allocator.free(priority_copy);
-    const tags_copy = try allocator.dupe(u8, tags);
-    errdefer allocator.free(tags_copy);
-
-    const todo = Todo{
-        .id = 0,
-        .user_id = user_id,
-        .title = title_copy,
-        .description = desc_copy,
-        .completed = false,
-        .priority = priority_copy,
-        .due_date = due_date,
-        .tags = tags_copy,
-        .created_at = now,
-        .updated_at = now,
-    };
-
-    std.debug.print("[createTodo] Attempting to create todo with title: {s}\n", .{title});
-    try orm.create(Todo, todo);
-    std.debug.print("[createTodo] Todo created successfully\n", .{});
-
-    // Get the last insert row ID
-    const last_id = orm.db.lastInsertRowId() catch {
-        std.debug.print("[createTodo] Failed to get lastInsertRowId, falling back to query\n", .{});
-        // Fallback: query for the most recently created todo with explicit column order
-        const fallback_sql = try std.fmt.allocPrint(orm.allocator, "SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE user_id = {d} ORDER BY id DESC LIMIT 1", .{user_id});
-        defer orm.allocator.free(fallback_sql);
-
-        var fallback_result = try orm.db.query(fallback_sql);
-        defer fallback_result.deinit();
-
-        var todos_list = try fallback_result.toArrayList(Todo);
-        defer {
-            for (todos_list.items) |t| {
-                orm.allocator.free(t.title);
-                orm.allocator.free(t.description);
-                orm.allocator.free(t.priority);
-                orm.allocator.free(t.tags);
-            }
-            todos_list.deinit(orm.allocator);
-        }
-
-        if (todos_list.items.len > 0) {
-            const t = todos_list.items[0];
-            return Todo{
-                .id = t.id,
-                .user_id = t.user_id,
-                .title = try allocator.dupe(u8, t.title),
-                .description = try allocator.dupe(u8, t.description),
-                .completed = t.completed,
-                .priority = try allocator.dupe(u8, t.priority),
-                .due_date = t.due_date,
-                .tags = try allocator.dupe(u8, t.tags),
-                .created_at = t.created_at,
-                .updated_at = t.updated_at,
-            };
-        }
-
-        return error.FailedToCreateTodo;
-    };
-
-    // Fetch the created todo by ID using managed result
-    var find_result = try orm.findManaged(Todo, last_id);
-    if (find_result) |*result| {
-        defer result.deinit();
-        if (result.first()) |t| {
-            return Todo{
-                .id = t.id,
-                .user_id = t.user_id,
-                .title = try allocator.dupe(u8, t.title),
-                .description = try allocator.dupe(u8, t.description),
-                .completed = t.completed,
-                .priority = try allocator.dupe(u8, t.priority),
-                .due_date = t.due_date,
-                .tags = try allocator.dupe(u8, t.tags),
-                .created_at = t.created_at,
-                .updated_at = t.updated_at,
-            };
-        }
-    }
-
-    return error.FailedToCreateTodo;
-}
-
-fn findTodoById(orm: *ORM, id: i64, user_id: i64) !?Todo {
-    // Use raw SQL with explicit column order to match Todo struct field order:
-    // id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at
-    const sql = try std.fmt.allocPrint(orm.allocator, "SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE id = {d} AND user_id = {d}", .{ id, user_id });
-    defer orm.allocator.free(sql);
-
-    var query_result = try orm.db.query(sql);
-    defer query_result.deinit();
-
-    var todos_list = try query_result.toArrayList(Todo);
-    defer {
-        for (todos_list.items) |t| {
-            orm.allocator.free(t.title);
-            orm.allocator.free(t.description);
-            orm.allocator.free(t.priority);
-            orm.allocator.free(t.tags);
-        }
-        todos_list.deinit(orm.allocator);
-    }
-
-    if (todos_list.items.len > 0) {
-        const t = todos_list.items[0];
-        // Duplicate strings for the caller to own
-        return Todo{
-            .id = t.id,
-            .user_id = t.user_id,
-            .title = try allocator.dupe(u8, t.title),
-            .description = try allocator.dupe(u8, t.description),
-            .completed = t.completed,
-            .priority = try allocator.dupe(u8, t.priority),
-            .due_date = t.due_date,
-            .tags = try allocator.dupe(u8, t.tags),
-            .created_at = t.created_at,
-            .updated_at = t.updated_at,
-        };
-    }
-    return null;
-}
-
 fn getAllTodos(orm: *ORM, user_id: i64) !std.ArrayListUnmanaged(Todo) {
     // Filter todos by user_id using raw SQL
     // IMPORTANT: Column order must match Todo struct field order:
@@ -281,89 +153,6 @@ fn getAllTodos(orm: *ORM, user_id: i64) !std.ArrayListUnmanaged(Todo) {
     defer query_result.deinit();
 
     return try query_result.toArrayList(Todo);
-}
-
-fn updateTodo(orm: *ORM, id: i64, user_id: i64, updates: struct {
-    title: ?[]const u8 = null,
-    description: ?[]const u8 = null,
-    completed: ?bool = null,
-    priority: ?[]const u8 = null,
-    due_date: ?i64 = null,
-    tags: ?[]const u8 = null,
-}) !?Todo {
-    // Find existing record using findTodoById (which uses explicit column order)
-    const existing = try findTodoById(orm, id, user_id);
-    if (existing == null) return null;
-
-    var todo = existing.?;
-    defer {
-        allocator.free(todo.title);
-        allocator.free(todo.description);
-        allocator.free(todo.priority);
-        allocator.free(todo.tags);
-    }
-
-    // Merge updates into existing todo
-    if (updates.title) |title| {
-        allocator.free(todo.title);
-        todo.title = try allocator.dupe(u8, title);
-    }
-
-    if (updates.description) |desc| {
-        allocator.free(todo.description);
-        todo.description = try allocator.dupe(u8, desc);
-    }
-
-    if (updates.completed) |completed| {
-        todo.completed = completed;
-    }
-
-    if (updates.priority) |priority| {
-        allocator.free(todo.priority);
-        todo.priority = try allocator.dupe(u8, priority);
-    }
-
-    if (updates.due_date) |due_date| {
-        todo.due_date = due_date;
-    }
-
-    if (updates.tags) |tags| {
-        allocator.free(todo.tags);
-        todo.tags = try allocator.dupe(u8, tags);
-    }
-
-    todo.updated_at = std.time.milliTimestamp();
-
-    // Use ORM.update directly (returns void) - avoids column order issues
-    try orm.update(Todo, todo);
-
-    // Fetch the updated record using findTodoById (with explicit column order)
-    const updated = try findTodoById(orm, id, user_id);
-    return updated;
-}
-
-fn deleteTodo(orm: *ORM, id: i64, user_id: i64) !bool {
-    // First verify todo belongs to user using findTodoById (with explicit column order)
-    const todo_opt = try findTodoById(orm, id, user_id);
-    if (todo_opt == null) {
-        std.debug.print("[deleteTodo] Todo not found or doesn't belong to user\n", .{});
-        return false;
-    }
-
-    const todo = todo_opt.?;
-    // Free the todo strings since we verified ownership
-    defer {
-        allocator.free(todo.title);
-        allocator.free(todo.description);
-        allocator.free(todo.priority);
-        allocator.free(todo.tags);
-    }
-
-    // Use ORM.delete directly (returns void) - avoids column order issues from model.delete()
-    std.debug.print("[deleteTodo] Deleting todo id: {d}\n", .{id});
-    try orm.delete(Todo, id);
-    std.debug.print("[deleteTodo] Delete successful\n", .{});
-    return true;
 }
 
 fn getStats(orm: *ORM, user_id: i64) !TodoStats {
@@ -530,441 +319,33 @@ fn canAccessTodo(req: *Request, todo: Todo) !bool {
     return todo.user_id == user.id;
 }
 
-fn beforeCreateTodo(req: *Request, todo: Todo) !Todo {
-    const user = BasicAuthValve.requireAuth(req) catch {
-        return error.AuthenticationRequired;
-    };
-    defer {
-        allocator.free(user.username);
-        allocator.free(user.email);
-        allocator.free(user.password_hash);
-    }
-
-    // Set user_id and timestamps
-    var new_todo = todo;
-    new_todo.user_id = user.id;
-    const now = std.time.milliTimestamp();
-    new_todo.created_at = now;
-    new_todo.updated_at = now;
-
-    return new_todo;
-}
-
-fn beforeUpdateTodo(req: *Request, id: i64, todo: Todo) !Todo {
-    const user = BasicAuthValve.requireAuth(req) catch {
-        return error.AuthenticationRequired;
-    };
-    defer {
-        allocator.free(user.username);
-        allocator.free(user.email);
-        allocator.free(user.password_hash);
-    }
-
-    // Ensure user_id matches and update timestamp
-    var updated_todo = todo;
-    updated_todo.user_id = user.id;
-    updated_todo.id = id;
-    updated_todo.updated_at = std.time.milliTimestamp();
-
-    return updated_todo;
-}
-
 // ============================================================================
 // REQUEST HANDLERS
 // ============================================================================
 
-fn handleGetTodos(request: *Request) Response {
-    // Require authentication
-    const user = BasicAuthValve.requireAuth(request) catch {
-        return Response.errorResponse("Authentication required", 401);
-    };
-    defer {
-        allocator.free(user.username);
-        allocator.free(user.email);
-        allocator.free(user.password_hash);
-    }
-
-    // Check cache first (include user_id in cache key)
-    const cache_key_opt = std.fmt.allocPrint(request.arena.allocator(), "todos:all:{d}", .{user.id}) catch null;
-
-    if (cache_key_opt) |cache_key| {
-        if (request.cacheGet(cache_key) catch null) |entry| {
-            return Response.text(entry.body)
-                .withContentType(entry.content_type)
-                .withHeader("X-Cache", "HIT");
-        }
-    }
-
-    const orm = getORM() catch {
-        return Response.serverError("Database not initialized");
-    };
-
-    // Get todos filtered by user_id
-    std.debug.print("[handleGetTodos] Fetching todos for user_id: {d}\n", .{user.id});
-    var todos = getAllTodos(orm, user.id) catch |err| {
-        std.debug.print("[handleGetTodos] getAllTodos failed with error: {}\n", .{err});
-        return Response.serverError("Failed to fetch todos");
-    };
-    std.debug.print("[handleGetTodos] Found {d} todos\n", .{todos.items.len});
-    defer {
-        for (todos.items) |todo| {
-            allocator.free(todo.title);
-            allocator.free(todo.description);
-            allocator.free(todo.priority);
-            allocator.free(todo.tags);
-        }
-        todos.deinit(allocator);
-    }
-
-    // Use Model to create response
-    const response = TodoModel.toResponseList(todos, allocator);
-
-    // Cache the result for 30 seconds - need to serialize for cache
-    if (cache_key_opt) |cache_key| {
-        const json = TodoModel.toJsonList(todos, allocator) catch {
-            return response;
-        };
-        defer allocator.free(json);
-        request.cacheSet(cache_key, json, 30000, "application/json") catch {};
-    }
-
-    return response.withHeader("X-Cache", "MISS");
-}
-
-fn handleGetTodo(request: *Request) Response {
-    // Require authentication
-    const user = BasicAuthValve.requireAuth(request) catch {
-        return Response.errorResponse("Authentication required", 401);
-    };
-    defer {
-        allocator.free(user.username);
-        allocator.free(user.email);
-        allocator.free(user.password_hash);
-    }
-
-    const id = request.paramTyped(i64, "id") catch {
-        return Response.errorResponse("Invalid ID", 400);
-    };
-
-    const orm = getORM() catch {
-        return Response.serverError("Database not initialized");
-    };
-
-    // Find todo and verify it belongs to user
-    const found = findTodoById(orm, id, user.id) catch {
-        return Response.serverError("Failed to fetch todo");
-    };
-
-    const todo = found orelse {
-        return Response.notFound("Todo not found");
-    };
-    defer {
-        allocator.free(todo.title);
-        allocator.free(todo.description);
-        allocator.free(todo.priority);
-        allocator.free(todo.tags);
-    }
-
-    return TodoModel.toResponse(todo, allocator)
-        .withHeader("Cache-Control", "no-cache, no-store, must-revalidate")
-        .withHeader("Pragma", "no-cache")
-        .withHeader("Expires", "0");
-}
-
-fn handleCreateTodo(request: *Request) Response {
-    // Debug: Log request details
-    const body = request.body();
-    const content_length_str = request.header("Content-Length");
-    const content_length = if (content_length_str) |cl_str|
-        std.fmt.parseInt(usize, cl_str, 10) catch 0
-    else
-        0;
-
-    std.debug.print("[handleCreateTodo] Method: {s}, Path: {s}\n", .{ request.method(), request.path() });
-    std.debug.print("[handleCreateTodo] Body length: {d}, Content-Length header: {d}\n", .{ body.len, content_length });
-    std.debug.print("[handleCreateTodo] Body content (first 200 chars): {s}\n", .{if (body.len > 200) body[0..200] else body});
-
-    // Require authentication
-    const user = BasicAuthValve.requireAuth(request) catch {
-        return Response.errorResponse("Authentication required", 401);
-    };
-    defer {
-        allocator.free(user.username);
-        allocator.free(user.email);
-        allocator.free(user.password_hash);
-    }
-
-    const parsed = request.jsonBody(TodoInput) catch |err| {
-        std.debug.print("[handleCreateTodo] JSON parsing error: {}\n", .{err});
-        std.debug.print("[handleCreateTodo] Body was: {s}\n", .{body});
-        return Response.errorResponse("Invalid JSON", 400);
-    };
-    // Note: parsed strings are allocated with request.arena.allocator()
-    // They will be automatically freed when the request ends, so no manual cleanup needed
-
-    // Use validation framework
-    var schema = validation.ValidationSchema.init(request.arena.allocator());
-    defer schema.deinit();
-
-    // Validate title (required, max 200 chars)
-    const title_for_validation = parsed.title orelse "";
-    const title_validator = schema.field("title", title_for_validation) catch {
-        return Response.serverError("Validation error");
-    };
-    title_validator.rule(validation.required) catch {
-        return Response.serverError("Validation error");
-    };
-    title_validator.maxLength(200) catch {
-        return Response.serverError("Validation error");
-    };
-
-    // Validate description if provided (max 1000 chars)
-    if (parsed.description) |desc| {
-        if (desc.len > 0) {
-            const desc_validator = schema.field("description", desc) catch {
-                return Response.serverError("Validation error");
-            };
-            desc_validator.maxLength(1000) catch {
-                return Response.serverError("Validation error");
-            };
-        }
-    }
-
-    // Validate priority if provided
-    if (parsed.priority) |priority| {
-        const priority_validator = schema.field("priority", priority) catch {
-            return Response.serverError("Validation error");
-        };
-        const allowed_priorities = [_][]const u8{ "low", "medium", "high" };
-        priority_validator.oneOf(&allowed_priorities) catch {
-            return Response.serverError("Validation error");
-        };
-    }
-
-    // Validate tags if provided (max 500 chars)
-    if (parsed.tags) |tags| {
-        const tags_validator = schema.field("tags", tags) catch {
-            return Response.serverError("Validation error");
-        };
-        tags_validator.maxLength(500) catch {
-            return Response.serverError("Validation error");
-        };
-    }
-
-    // Run validation
-    var validation_errors = schema.validate() catch {
-        return Response.serverError("Validation error");
-    };
-    defer validation_errors.deinit();
-
-    if (!validation_errors.isEmpty()) {
-        return Response.validationError(&validation_errors);
-    }
-
-    const orm = getORM() catch {
-        return Response.serverError("Database not initialized");
-    };
-
-    const title_value = parsed.title orelse return Response.errorResponse("Title is required", 400);
-    const description_value = parsed.description orelse "";
-    const priority_value = parsed.priority orelse "medium";
-    const tags_value = parsed.tags orelse "";
-
-    // Create todo with user_id
-    std.debug.print("[handleCreateTodo] Calling createTodo with user_id: {d}, title: {s}\n", .{ user.id, title_value });
-    const todo = createTodo(orm, user.id, title_value, description_value, priority_value, parsed.due_date, tags_value) catch |err| {
-        std.debug.print("[handleCreateTodo] createTodo failed with error: {}\n", .{err});
-        return Response.serverError("Failed to create todo");
-    };
-    std.debug.print("[handleCreateTodo] Todo created successfully with id: {d}\n", .{todo.id});
-
-    defer {
-        allocator.free(todo.title);
-        allocator.free(todo.description);
-        allocator.free(todo.priority);
-        allocator.free(todo.tags);
-    }
-
-    // Invalidate cache when todos change (include user_id in cache key)
-    const cache_key_all = std.fmt.allocPrint(request.arena.allocator(), "todos:all:{d}", .{user.id}) catch null;
-    const cache_key_stats = std.fmt.allocPrint(request.arena.allocator(), "todos:stats:{d}", .{user.id}) catch null;
-    if (cache_key_all) |key| request.cacheInvalidate(key);
-    if (cache_key_stats) |key| request.cacheInvalidate(key);
-
-    return TodoModel.toResponse(todo, allocator);
-}
-
-fn handleUpdateTodo(request: *Request) Response {
-    // Require authentication
-    const user = BasicAuthValve.requireAuth(request) catch {
-        return Response.errorResponse("Authentication required", 401);
-    };
-    defer {
-        allocator.free(user.username);
-        allocator.free(user.email);
-        allocator.free(user.password_hash);
-    }
-
-    const id = request.paramTyped(i64, "id") catch {
-        return Response.errorResponse("Invalid ID", 400);
-    };
-
-    std.debug.print("[handleUpdateTodo] Updating todo id: {d} for user_id: {d}\n", .{ id, user.id });
-
-    const parsed = request.jsonBody(TodoInput) catch {
-        return Response.errorResponse("Invalid JSON", 400);
-    };
-    // Note: parsed strings are allocated with request.arena.allocator()
-    // They will be automatically freed when the request ends, so no manual cleanup needed
-
-    // Use validation framework
-    var schema = validation.ValidationSchema.init(request.arena.allocator());
-    defer schema.deinit();
-
-    // Validate title if provided
-    if (parsed.title) |title| {
-        if (title.len > 0) {
-            const title_validator = schema.field("title", title) catch {
-                return Response.serverError("Validation error");
-            };
-            title_validator.maxLength(200) catch {
-                return Response.serverError("Validation error");
-            };
-        }
-    }
-
-    // Validate description if provided
-    if (parsed.description) |desc| {
-        if (desc.len > 0) {
-            const desc_validator = schema.field("description", desc) catch {
-                return Response.serverError("Validation error");
-            };
-            desc_validator.maxLength(1000) catch {
-                return Response.serverError("Validation error");
-            };
-        }
-    }
-
-    // Validate priority if provided
-    if (parsed.priority) |priority| {
-        const priority_validator = schema.field("priority", priority) catch {
-            return Response.serverError("Validation error");
-        };
-        const allowed_priorities = [_][]const u8{ "low", "medium", "high" };
-        priority_validator.oneOf(&allowed_priorities) catch {
-            return Response.serverError("Validation error");
-        };
-    }
-
-    // Validate tags if provided (max 500 chars)
-    if (parsed.tags) |tags| {
-        const tags_validator = schema.field("tags", tags) catch {
-            return Response.serverError("Validation error");
-        };
-        tags_validator.maxLength(500) catch {
-            return Response.serverError("Validation error");
-        };
-    }
-
-    // Run validation
-    var validation_errors = schema.validate() catch {
-        return Response.serverError("Validation error");
-    };
-    defer validation_errors.deinit();
-
-    if (!validation_errors.isEmpty()) {
-        return Response.validationError(&validation_errors);
-    }
-
-    const orm = getORM() catch {
-        return Response.serverError("Database not initialized");
-    };
-
-    const updates = updateTodo(orm, id, user.id, .{
-        .title = parsed.title,
-        .description = parsed.description,
-        .completed = parsed.completed,
-        .priority = parsed.priority,
-        .due_date = parsed.due_date,
-        .tags = parsed.tags,
-    }) catch |err| {
-        std.debug.print("[handleUpdateTodo] updateTodo failed with error: {}\n", .{err});
-        return Response.serverError("Failed to update todo");
-    };
-
-    std.debug.print("[handleUpdateTodo] updateTodo returned, found: {}\n", .{updates != null});
-
-    const todo = updates orelse {
-        return Response.notFound("Todo not found");
-    };
-    defer {
-        allocator.free(todo.title);
-        allocator.free(todo.description);
-        allocator.free(todo.priority);
-        allocator.free(todo.tags);
-    }
-
-    // Invalidate cache when todos change (include user_id in cache key)
-    const cache_key_all = std.fmt.allocPrint(request.arena.allocator(), "todos:all:{d}", .{user.id}) catch null;
-    const cache_key_stats = std.fmt.allocPrint(request.arena.allocator(), "todos:stats:{d}", .{user.id}) catch null;
-    if (cache_key_all) |key| request.cacheInvalidate(key);
-    if (cache_key_stats) |key| request.cacheInvalidate(key);
-
-    return TodoModel.toResponse(todo, allocator);
-}
-
-fn handleDeleteTodo(request: *Request) Response {
-    // Require authentication
-    const user = BasicAuthValve.requireAuth(request) catch {
-        return Response.errorResponse("Authentication required", 401);
-    };
-    defer {
-        allocator.free(user.username);
-        allocator.free(user.email);
-        allocator.free(user.password_hash);
-    }
-
-    const id = request.paramTyped(i64, "id") catch {
-        return Response.errorResponse("Invalid ID", 400);
-    };
-
-    std.debug.print("[handleDeleteTodo] Deleting todo id: {d} for user_id: {d}\n", .{ id, user.id });
-
-    const orm = getORM() catch {
-        return Response.serverError("Database not initialized");
-    };
-
-    // Delete todo (verify ownership inside deleteTodo)
-    const deleted = deleteTodo(orm, id, user.id) catch |err| {
-        std.debug.print("[handleDeleteTodo] deleteTodo failed with error: {}\n", .{err});
-        return Response.serverError("Failed to delete todo");
-    };
-
-    std.debug.print("[handleDeleteTodo] deleteTodo returned: {}\n", .{deleted});
-
-    if (deleted) {
-        // Invalidate cache when todos change (include user_id in cache key)
-        const cache_key_all = std.fmt.allocPrint(request.arena.allocator(), "todos:all:{d}", .{user.id}) catch null;
-        const cache_key_stats = std.fmt.allocPrint(request.arena.allocator(), "todos:stats:{d}", .{user.id}) catch null;
-        if (cache_key_all) |key| request.cacheInvalidate(key);
-        if (cache_key_stats) |key| request.cacheInvalidate(key);
-
-        return Response.json("{\"success\":true}");
-    } else {
-        return Response.notFound("Todo not found");
-    }
-}
-
 fn handleSearchTodos(request: *Request) Response {
-    // Require authentication
-    const user = BasicAuthValve.requireAuth(request) catch {
-        return Response.errorResponse("Authentication required", 401);
+    // Initialize HandlerCtx with authentication and ORM required
+    var ctx = HandlerCtx.init(request, .{
+        .require_auth = true,
+        .require_orm = true,
+        .get_orm = getORM,
+    }) catch |err| {
+        return switch (err) {
+            error.AuthenticationRequired => Response.errorResponse("Authentication required", 401),
+            error.DatabaseNotInitialized => Response.serverError("Database not initialized"),
+            else => Response.serverError("Internal error"),
+        };
     };
-    defer {
-        allocator.free(user.username);
-        allocator.free(user.email);
-        allocator.free(user.password_hash);
-    }
+
+    // Parse search query parameter
+    const search_query = ctx.query([]const u8, "q") catch {
+        return ctx.badRequest("Missing or invalid query parameter 'q'");
+    };
+
+    const orm = ctx.orm() catch {
+        return ctx.serverError("Database not initialized");
+    };
+    const user = ctx.user.?; // Safe because require_auth = true
 
     // NOTE: QueryBuilder Limitation
     // The engine12 QueryBuilder doesn't currently support OR conditions in WHERE clauses.
@@ -982,24 +363,14 @@ fn handleSearchTodos(request: *Request) Response {
     //
     // For OR conditions or complex queries, raw SQL is the current approach.
 
-    const search_query = request.queryParamTyped([]const u8, "q") catch {
-        return Response.errorResponse("Invalid query parameter", 400);
-    } orelse {
-        return Response.errorResponse("Missing query parameter", 400);
-    };
-
-    const orm = getORM() catch {
-        return Response.serverError("Database not initialized");
-    };
-
     // Use ORM's escapeLike method for safe SQL LIKE pattern escaping
     const escaped_query = orm.escapeLike(search_query, request.arena.allocator()) catch {
-        return Response.serverError("Failed to escape query");
+        return ctx.serverError("Failed to escape query");
     };
 
     // Build search query - search in title, description, and tags, filtered by user_id
     const search_pattern = std.fmt.allocPrint(request.arena.allocator(), "%{s}%", .{escaped_query}) catch {
-        return Response.serverError("Failed to format search query");
+        return ctx.serverError("Failed to format search query");
     };
     const sql = std.fmt.allocPrint(request.arena.allocator(),
         \\SELECT id, user_id, title, description, completed, priority, due_date, tags, created_at, updated_at FROM todos WHERE 
@@ -1010,16 +381,16 @@ fn handleSearchTodos(request: *Request) Response {
         \\  )
         \\ORDER BY created_at DESC
     , .{ user.id, search_pattern, search_pattern, search_pattern }) catch {
-        return Response.serverError("Failed to build search query");
+        return ctx.serverError("Failed to build search query");
     };
 
     var result = orm.db.query(sql) catch {
-        return Response.serverError("Failed to search todos");
+        return ctx.serverError("Failed to search todos");
     };
     defer result.deinit();
 
     var todos = result.toArrayList(Todo) catch {
-        return Response.serverError("Failed to parse search results");
+        return ctx.serverError("Failed to parse search results");
     };
     defer {
         for (todos.items) |todo| {
@@ -1058,47 +429,50 @@ fn handleMetrics(request: *Request) Response {
 }
 
 fn handleGetStats(request: *Request) Response {
-    // Require authentication
-    const user = BasicAuthValve.requireAuth(request) catch {
-        return Response.errorResponse("Authentication required", 401);
+    // Initialize HandlerCtx with authentication and ORM required
+    var ctx = HandlerCtx.init(request, .{
+        .require_auth = true,
+        .require_orm = true,
+        .get_orm = getORM,
+    }) catch |err| {
+        return switch (err) {
+            error.AuthenticationRequired => Response.errorResponse("Authentication required", 401),
+            error.DatabaseNotInitialized => Response.serverError("Database not initialized"),
+            else => Response.serverError("Internal error"),
+        };
     };
-    defer {
-        allocator.free(user.username);
-        allocator.free(user.email);
-        allocator.free(user.password_hash);
-    }
+
+    const user = ctx.user.?; // Safe because require_auth = true
 
     // Check cache first (include user_id in cache key)
-    const cache_key_opt = std.fmt.allocPrint(request.arena.allocator(), "todos:stats:{d}", .{user.id}) catch null;
+    const cache_key = ctx.cacheKey("todos:stats:{d}") catch {
+        return ctx.serverError("Failed to create cache key");
+    };
 
-    if (cache_key_opt) |cache_key| {
-        if (request.cacheGet(cache_key) catch null) |entry| {
-            return Response.text(entry.body)
-                .withContentType(entry.content_type)
-                .withHeader("X-Cache", "HIT");
-        }
+    if (ctx.cacheGet(cache_key) catch null) |entry| {
+        return Response.text(entry.body)
+            .withContentType(entry.content_type)
+            .withHeader("X-Cache", "HIT");
     }
 
-    const orm = getORM() catch {
-        return Response.serverError("Database not initialized");
+    const orm = ctx.orm() catch {
+        return ctx.serverError("Database not initialized");
     };
 
     const stats = getStats(orm, user.id) catch {
-        return Response.serverError("Failed to fetch stats");
+        return ctx.serverError("Failed to fetch stats");
     };
 
     // Create JSON response manually since we're not using ModelStats anymore
     const json = std.fmt.allocPrint(allocator,
         \\{{"total":{d},"completed":{d},"pending":{d},"completed_percentage":{d:.2},"overdue":{d}}}
     , .{ stats.total, stats.completed, stats.pending, stats.completed_percentage, stats.overdue }) catch {
-        return Response.serverError("Failed to serialize stats");
+        return ctx.serverError("Failed to serialize stats");
     };
     defer allocator.free(json);
 
     // Cache stats for 10 seconds
-    if (cache_key_opt) |cache_key| {
-        request.cacheSet(cache_key, json, 10000, "application/json") catch {};
-    }
+    ctx.cacheSet(cache_key, json, 10000, "application/json");
 
     return Response.json(json).withHeader("X-Cache", "MISS");
 }
@@ -1439,8 +813,15 @@ pub fn createApp() !E12.Engine12 {
     global_index_template = try app.loadTemplate(template_path);
 
     // Register root route FIRST to prevent default handler from being registered
-    // This must be done before any POST routes that might build the server
+    // This must be done before any other routes that might build the server
     try app.get("/", handleIndex);
+
+    // Enable OpenAPI documentation
+    try app.enableOpenApiDocs("/docs", .{
+        .title = "Todo API",
+        .version = "1.0.0",
+        .description = "A simple todo management API with user authentication and filtering",
+    });
 
     // Register auth routes directly (valve system doesn't support runtime route registration yet)
     try app.post("/auth/register", BasicAuthValve.handleRegister);
@@ -1521,16 +902,17 @@ pub fn createApp() !E12.Engine12 {
     // Note: Route groups require comptime evaluation, so we register routes directly
     // Route groups are demonstrated in the codebase but require comptime usage
 
-    // Custom list endpoint (filters by user_id automatically)
-    // Register this FIRST so it takes precedence over restApi's GET /api/todos
-    try app.get("/api/todos", handleGetTodos);
+    // Custom endpoints for search and stats (not standard REST operations)
     try app.get("/api/todos/search", handleSearchTodos);
     try app.get("/api/todos/stats", handleGetStats);
 
-    // RESTful API endpoints for individual resource operations
-    // Note: List endpoint (GET /api/todos) is handled separately above to filter by user_id
-    // restApi will register: GET /api/todos/:id, POST /api/todos, PUT /api/todos/:id, DELETE /api/todos/:id
-    // The GET /api/todos route registered above will take precedence over restApi's list endpoint
+    // RESTful API endpoints - restApi automatically handles:
+    // - GET /api/todos (list with automatic user_id filtering, pagination, filtering, sorting)
+    // - GET /api/todos/:id (show)
+    // - POST /api/todos (create)
+    // - PUT /api/todos/:id (update)
+    // - DELETE /api/todos/:id (delete)
+    // restApi automatically filters by user_id when authenticator is present and model has user_id field
     const orm_for_rest = getORM() catch {
         return error.DatabaseNotInitialized;
     };
@@ -1539,19 +921,13 @@ pub fn createApp() !E12.Engine12 {
         .validator = validateTodo,
         .authenticator = requireAuthForRestApi,
         .authorization = canAccessTodo,
-        .enable_pagination = true, // Not used since list is custom, but required by restApi
-        .enable_filtering = true, // Not used since list is custom, but required by restApi
-        .enable_sorting = true, // Not used since list is custom, but required by restApi
+        .enable_pagination = true,
+        .enable_filtering = true,
+        .enable_sorting = true,
         .cache_ttl_ms = 30000, // 30 seconds
         // Note: Hooks are not currently supported due to Zig type system limitations
         // User_id and timestamps should be set in the validator or by modifying the model before calling restApi
     });
-
-    // Remove old individual CRUD handlers - now handled by restApi above
-    // try app.get("/api/todos/:id", handleGetTodo);      // Now: GET /api/todos/:id via restApi
-    // try app.post("/api/todos", handleCreateTodo);      // Now: POST /api/todos via restApi
-    // try app.put("/api/todos/:id", handleUpdateTodo);   // Now: PUT /api/todos/:id via restApi
-    // try app.delete("/api/todos/:id", handleDeleteTodo); // Now: DELETE /api/todos/:id via restApi
 
     // Background tasks
     try app.schedulePeriodicTask("cleanup_old_todos", &cleanupOldCompletedTodos, 3600000);

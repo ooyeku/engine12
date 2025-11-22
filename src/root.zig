@@ -93,3 +93,8 @@ pub const rest_api = @import("rest_api.zig");
 pub const restApi = rest_api.restApi;
 pub const RestApiConfig = rest_api.RestApiConfig; // Generic function: RestApiConfig(Model)
 pub const AuthUser = rest_api.AuthUser;
+
+// Re-export Handler Context types
+pub const handler_context = @import("handler_context.zig");
+pub const HandlerCtx = handler_context.HandlerCtx;
+pub const HandlerCtxError = handler_context.HandlerCtxError;

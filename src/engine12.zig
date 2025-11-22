@@ -779,7 +779,7 @@ pub const Engine12 = struct {
     /// ```zig
     /// try app.enableOpenApiDocs("/docs", .{ .title = "My API", .version = "1.0" });
     /// ```
-    pub fn enableOpenApiDocs(self: *Engine12, mount_path: []const u8, info: openapi.OpenApiInfo) !void {
+    pub fn enableOpenApiDocs(self: *Engine12, comptime mount_path: []const u8, info: openapi.OpenApiInfo) !void {
         // Initialize generator if not present, or update info
         if (self.openapi_generator == null) {
             self.openapi_generator = openapi.OpenAPIGenerator.init(self.allocator, info);
@@ -790,7 +790,8 @@ pub const Engine12 = struct {
         // Set global pointer for handlers
         global_openapi_generator = &self.openapi_generator.?;
 
-        const json_path = try std.fmt.allocPrint(self.allocator, "{s}/openapi.json", .{mount_path});
+        // Use comptime string concatenation for JSON path
+        const json_path = mount_path ++ "/openapi.json";
 
         // 1. JSON Endpoint
         try self.get(json_path, struct {
