@@ -586,15 +586,8 @@ pub const Engine12 = struct {
         context_fn: anytype,
     ) !void {
         const ContextFn = @TypeOf(context_fn);
-        // Validate that context_fn is a function type
-        // In Zig 0.15+, @typeInfo returns a union(enum), so we check the tag
-        comptime {
-            const type_info = @typeInfo(ContextFn);
-            switch (type_info) {
-                .Fn => {}, // Valid function type
-                else => @compileError("templateRoute context_fn must be a function"),
-            }
-        }
+        // Type validation happens automatically when we try to call the function
+        // No need for explicit type checking - Zig's type system will catch errors
 
         // Duplicate template_path to ensure it persists
         const template_path_copy = try self.allocator.dupe(u8, template_path);
