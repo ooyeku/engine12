@@ -1,5 +1,6 @@
 const std = @import("std");
 const new_command = @import("commands/new.zig");
+const docs_command = @import("commands/docs.zig");
 const cli_utils = @import("utils.zig");
 
 const allocator = std.heap.page_allocator;
@@ -43,6 +44,11 @@ pub fn main() !void {
             std.debug.print("\nError: Failed to create project: {}\n", .{err});
             std.process.exit(1);
         };
+    } else if (std.mem.eql(u8, command, "docs")) {
+        docs_command.generateDocs(alloc) catch |err| {
+            std.debug.print("\nError: Failed to generate docs: {}\n", .{err});
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "-v") or std.mem.eql(u8, command, "--version")) {
         std.debug.print("Engine12 CLI v{s}\n", .{cli_utils.ENGINE12_VERSION});
     } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "-h") or std.mem.eql(u8, command, "--help")) {
@@ -60,6 +66,7 @@ fn printUsage() void {
         \\
         \\Usage:
         \\  e12 new <project-name>    Create a new Engine12 project
+        \\  e12 docs                  Generate engine12-docs.md
         \\  e12 version               Show version information
         \\  e12 help                  Show this help message
         \\
