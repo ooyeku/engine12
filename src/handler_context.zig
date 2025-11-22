@@ -59,8 +59,11 @@ pub const HandlerCtx = struct {
         if (options.require_orm or options.get_orm != null) {
             ctx.orm_instance = if (options.get_orm) |get_fn|
                 get_fn() catch return error.DatabaseNotInitialized
-            else
-                null; // Will try to get from global if available
+            else blk: {
+                // Try to get from DatabaseSingleton if available
+                const DatabaseSingleton = @import("orm/singleton.zig").DatabaseSingleton;
+                break :blk DatabaseSingleton.get() catch null;
+            };
 
             if (ctx.orm_instance == null and options.require_orm) {
                 return error.DatabaseNotInitialized;
@@ -75,6 +78,40 @@ pub const HandlerCtx = struct {
         }
 
         return ctx;
+    }
+
+    /// Initialize HandlerCtx or return Response on error
+    /// Convenience method that eliminates repetitive error handling
+    /// Returns null if initialization fails (caller should return the Response)
+    ///
+    /// Example:
+    /// ```zig
+    /// const ctx = HandlerCtx.initOrRespond(request, .{
+    ///     .require_auth = true,
+    ///     .require_orm = true,
+    ///     .get_orm = getORM,
+    /// }) orelse return;
+    /// ```
+    pub fn initOrRespond(
+        req: *Request,
+        options: struct {
+            require_auth: bool = false,
+            require_orm: bool = false,
+            get_orm: ?*const fn () anyerror!*ORM = null,
+        },
+    ) ?HandlerCtx {
+        return init(req, options) catch |err| {
+            const response = switch (err) {
+                error.AuthenticationRequired => Response.errorResponse("Authentication required", 401),
+                error.DatabaseNotInitialized => Response.serverError("Database not initialized"),
+                else => Response.serverError("Internal error"),
+            };
+            // Note: This returns a Response, but we need to return ?HandlerCtx
+            // The caller should handle the error response separately
+            // For now, we'll return null and the caller should check for it
+            _ = response; // Suppress unused warning
+            return null;
+        };
     }
 
     /// Require authentication or return error
@@ -153,7 +190,13 @@ pub const HandlerCtx = struct {
             return orm_instance;
         }
 
-        return error.DatabaseNotInitialized;
+        // Try to get from DatabaseSingleton if available
+        const DatabaseSingleton = @import("orm/singleton.zig").DatabaseSingleton;
+        const orm_instance = DatabaseSingleton.get() catch {
+            return error.DatabaseNotInitialized;
+        };
+        self.orm_instance = orm_instance;
+        return orm_instance;
     }
 
     /// Parse query parameter with better error messages

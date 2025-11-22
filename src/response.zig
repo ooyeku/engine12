@@ -117,6 +117,61 @@ pub const Response = struct {
         };
     }
 
+    /// Serve a file with automatic content-type detection
+    /// Detects MIME type from file extension and sets appropriate Content-Type header
+    /// Supports common file types: CSS, JS, HTML, JSON, images, fonts, etc.
+    ///
+    /// Example:
+    /// ```zig
+    /// const contents = try readFile("static/css/style.css");
+    /// return Response.serveFile("style.css", contents);
+    /// ```
+    pub fn serveFile(file_path: []const u8, contents: []const u8) Response {
+        const mime_type = getMimeTypeFromPath(file_path);
+        
+        const persistent_body = persistent_allocator.dupe(u8, contents) catch {
+            // Fallback to original contents if allocation fails
+            const response = Response.text(contents);
+            return response.withContentType(mime_type);
+        };
+
+        // Create response based on content type
+        var response = if (std.mem.eql(u8, mime_type, "text/html"))
+            Response.html(persistent_body)
+        else if (std.mem.eql(u8, mime_type, "text/css"))
+            Response.text(persistent_body).withContentType("text/css")
+        else if (std.mem.eql(u8, mime_type, "application/javascript"))
+            Response.text(persistent_body).withContentType("application/javascript")
+        else
+            Response.text(persistent_body).withContentType(mime_type);
+
+        response._persistent_body = persistent_body;
+        return response;
+    }
+
+    /// Get MIME type from file path (internal helper)
+    fn getMimeTypeFromPath(file_path: []const u8) []const u8 {
+        if (std.mem.lastIndexOf(u8, file_path, ".")) |dot_index| {
+            const ext = file_path[dot_index + 1 ..];
+            
+            if (std.mem.eql(u8, ext, "html")) return "text/html";
+            if (std.mem.eql(u8, ext, "css")) return "text/css";
+            if (std.mem.eql(u8, ext, "js")) return "application/javascript";
+            if (std.mem.eql(u8, ext, "json")) return "application/json";
+            if (std.mem.eql(u8, ext, "png")) return "image/png";
+            if (std.mem.eql(u8, ext, "jpg") or std.mem.eql(u8, ext, "jpeg")) return "image/jpeg";
+            if (std.mem.eql(u8, ext, "svg")) return "image/svg+xml";
+            if (std.mem.eql(u8, ext, "ico")) return "image/x-icon";
+            if (std.mem.eql(u8, ext, "woff")) return "font/woff";
+            if (std.mem.eql(u8, ext, "woff2")) return "font/woff2";
+            if (std.mem.eql(u8, ext, "ttf")) return "font/ttf";
+            if (std.mem.eql(u8, ext, "txt")) return "text/plain";
+            if (std.mem.eql(u8, ext, "xml")) return "application/xml";
+        }
+        
+        return "application/octet-stream";
+    }
+
     /// Create a 200 OK response with JSON body
     ///
     /// Example:

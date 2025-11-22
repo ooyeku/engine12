@@ -88,6 +88,23 @@ try app.get("/", handleRoot);
 try app.get("/todos/:id", handleTodo);
 ```
 
+#### `templateRoute(path_pattern: []const u8, template_path: []const u8, context_fn: fn(*Request) anytype) !void`
+Register a template route that automatically renders a template file. Context function is called for each request to provide template variables.
+
+```zig
+fn getIndexContext(req: *Request) struct { title: []const u8, message: []const u8 } {
+    _ = req;
+    return .{ .title = "Welcome", .message = "Hello" };
+}
+
+try app.templateRoute("/", "src/templates/index.zt.html", getIndexContext);
+```
+
+**Benefits**:
+- Eliminates need for separate handler functions for simple template routes
+- Automatic template rendering with variable replacement
+- Works without hot reload (production-safe)
+
 #### `post(path_pattern: []const u8, handler: HttpHandler) !void`
 Register a POST endpoint.
 
@@ -382,6 +399,37 @@ try app.restApi("/api/posts", Post, config);
 
 **Note**: OpenAPI documentation is generated at runtime based on your registered routes. If you add or remove `restApi` resources, the documentation will reflect those changes automatically.
 
+#### `restApiDefault(prefix: []const u8, comptime Model: type, overrides: anytype) !void`
+Register RESTful API endpoints with sensible defaults. Uses `app.getORM()` automatically and enables pagination, filtering, and sorting by default. Only requires model type and path - all other options are optional.
+
+```zig
+// Minimal usage - uses defaults
+try app.restApiDefault("/api/items", Item);
+
+// With optional overrides
+try app.restApiDefault("/api/items", Item, .{
+    .authenticator = auth.requireAuthForRestApi,
+    .validator = validators.validateItem,
+    .authorization = auth.canAccessItem,
+});
+```
+
+**Benefits**:
+- Reduces boilerplate - only requires model type and path
+- Automatically uses `app.getORM()` (no need to pass ORM instance)
+- Sensible defaults (pagination, filtering, sorting enabled)
+- Optional overrides for auth, validation, etc.
+
+**Default Configuration**:
+- `orm`: Uses `app.getORM()` automatically
+- `enable_pagination`: `true`
+- `enable_filtering`: `true`
+- `enable_sorting`: `true`
+- `validator`: Default no-op validator (accepts all)
+- `authenticator`: `null` (no authentication)
+- `authorization`: `null` (no authorization)
+- `cache_ttl_ms`: `null` (no caching)
+
 ## Handler Context
 
 The `HandlerCtx` abstraction provides a high-level interface for writing handlers that reduces boilerplate code by 70-80%. It automatically handles common patterns like authentication, ORM access, parameter parsing, caching, and logging.
@@ -407,6 +455,23 @@ Initialize a HandlerCtx from a request with optional requirements.
 - `require_auth: bool = false` - If true, authentication is required (returns error if not authenticated)
 - `require_orm: bool = false` - If true, ORM must be available (returns error if not available)
 - `get_orm: ?*const fn () anyerror!*ORM = null` - Optional function to get ORM instance
+
+#### `initOrRespond(req: *Request, options: struct) HandlerCtxError!HandlerCtx`
+Initialize HandlerCtx or return error. Convenience method that eliminates repetitive error handling. Returns the same as `init()` - use with standard error handling.
+
+```zig
+const ctx = HandlerCtx.initOrRespond(request, .{
+    .require_auth = true,
+    .require_orm = true,
+    .get_orm = getORM,
+}) catch |err| {
+    return switch (err) {
+        error.AuthenticationRequired => Response.errorResponse("Authentication required", 401),
+        error.DatabaseNotInitialized => Response.serverError("Database not initialized"),
+        else => Response.serverError("Internal error"),
+    };
+};
+```
 
 **Example: Basic Usage**
 ```zig
@@ -839,14 +904,30 @@ try app.useResponse(corsMiddleware);
 ### Static File Serving
 
 #### `serveStatic(mount_path: []const u8, directory: []const u8) !void`
-Register static file serving from a directory. Supports nested paths for non-root mounts.
+Register static file serving from a directory. Supports nested paths for non-root mounts. Can be called before or after server is started (lazy route registration).
 
 ```zig
 try app.serveStatic("/", "frontend/public");
 try app.serveStatic("/css", "frontend/css"); // Handles nested paths like /css/styles/main.css
 ```
 
-**Note**: The route limit is 5000 routes.
+**Note**: The route limit is 5000 routes. This method now works even after `app.start()` is called.
+
+#### `serveStaticDirectory(static_dir: []const u8) !void`
+Convenience method to serve all static files from a directory. Auto-discovers subdirectories and serves them at corresponding routes. Equivalent to calling `discoverStaticFiles()`.
+
+```zig
+try app.serveStaticDirectory("static");
+// Automatically registers:
+// - static/css/ -> /css/*
+// - static/js/ -> /js/*
+// - static/images/ -> /images/*
+```
+
+**Benefits**:
+- Single method call instead of multiple `serveStatic()` calls
+- Automatic discovery of subdirectories
+- Works even after server is started
 
 #### `discoverStaticFiles(static_dir: []const u8) !void`
 
@@ -1883,6 +1964,28 @@ Set the Content-Type header.
 return Response.text("data").withContentType("application/json");
 ```
 
+#### `serveFile(file_path: []const u8, contents: []const u8) Response`
+Serve a file with automatic content-type detection. Detects MIME type from file extension and sets appropriate Content-Type header. Supports common file types: CSS, JS, HTML, JSON, images, fonts, etc.
+
+```zig
+const contents = try readFile("static/css/style.css");
+return Response.serveFile("style.css", contents);
+```
+
+**Supported File Types**:
+- `html` → `text/html`
+- `css` → `text/css`
+- `js` → `application/javascript`
+- `json` → `application/json`
+- `png` → `image/png`
+- `jpg`, `jpeg` → `image/jpeg`
+- `svg` → `image/svg+xml`
+- `ico` → `image/x-icon`
+- `woff`, `woff2`, `ttf` → font types
+- `txt` → `text/plain`
+- `xml` → `application/xml`
+- Unknown → `application/octet-stream`
+
 #### `withCookie(name: []const u8, value: []const u8, options: CookieOptions) Response`
 Set a cookie.
 
@@ -2323,6 +2426,42 @@ try orm.execute("DELETE FROM todos WHERE completed = 1");
 ```
 
 ## Database API
+
+### Engine12 Database Integration
+
+#### `initDatabase(db_path: []const u8) !void`
+Initialize database using singleton pattern. Opens database and creates ORM instance. Thread-safe and idempotent (can be called multiple times safely).
+
+```zig
+try app.initDatabase("app.db");
+```
+
+**Benefits**:
+- Thread-safe singleton pattern
+- No need for manual database.zig file
+- Idempotent (safe to call multiple times)
+
+#### `initDatabaseWithMigrations(db_path: []const u8, migrations_dir: []const u8) !void`
+Initialize database and run migrations automatically. Discovers migrations from directory and runs them. Supports both `init.zig` convention and numbered migration files.
+
+```zig
+try app.initDatabaseWithMigrations("app.db", "src/migrations");
+```
+
+**Benefits**:
+- Automatic migration discovery and execution
+- Supports both `init.zig` and numbered migration files
+- Eliminates need for manual migration management
+
+#### `getORM() !*ORM`
+Get ORM instance from singleton. Returns error if database is not initialized.
+
+```zig
+const orm = try app.getORM();
+const items = try orm.findAll(Item);
+```
+
+**Note**: Requires database to be initialized first with `initDatabase()` or `initDatabaseWithMigrations()`.
 
 ### Connection
 
@@ -2834,6 +2973,49 @@ defer allocator.free(sql);
 ```
 
 ## Template Engine
+
+### Simple Template Rendering (Runtime)
+
+#### `E12.templates_simple.renderSimple(template_path: []const u8, variables: anytype, allocator: Allocator) ![]u8`
+Simple template rendering utility for runtime template processing. Reads template files from disk and performs basic variable replacement. Works without hot reload (production-safe).
+
+```zig
+const html = try E12.templates_simple.renderSimple(
+    "src/templates/index.zt.html",
+    .{ .title = "Welcome", .message = "Hello" },
+    allocator
+);
+defer allocator.free(html);
+return Response.html(html);
+```
+
+**Features**:
+- Reads template files from disk at runtime
+- Performs simple `{{ .field }}` variable replacement
+- Works without hot reload (production-safe)
+- Supports struct with fields matching template variables
+- Handles strings, integers, floats, booleans, and optionals
+
+**Template Format**:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ .title }}</title>
+</head>
+<body>
+    <h1>{{ .title }}</h1>
+    <p>{{ .message }}</p>
+</body>
+</html>
+```
+
+**Variable Types Supported**:
+- `[]const u8` (strings) - used directly
+- `i64`, `i32`, etc. (integers) - converted to string
+- `f64`, `f32` (floats) - converted to string
+- `bool` - converted to "true" or "false"
+- `?T` (optionals) - converted if present, empty string if null
 
 ### Compiling Templates
 

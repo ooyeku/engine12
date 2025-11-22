@@ -1349,7 +1349,6 @@ export fn e12_serve_static(
         setLastError(@errorName(err));
         return switch (err) {
             error.TooManyStaticRoutes => 2,
-            error.ServerAlreadyBuilt => 3,
             else => 99,
         };
     };

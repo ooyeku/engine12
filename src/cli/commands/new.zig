@@ -29,10 +29,42 @@ const BUILD_ZIG_TEMPLATE =
     \\    const target = b.standardTargetOptions(.{});
     \\    const optimize = b.standardOptimizeOption(.{});
     \\
-    \\    const engine12_dep = b.dependency("engine12", .{
-    \\        .target = target,
-    \\        .optimize = optimize,
-    \\    });
+    \\    // Try to use local Engine12 if available (for development)
+    \\    // Checks for ../Engine12/src/root.zig relative to project directory
+    \\    var use_local_engine12 = false;
+    \\    {
+    \\        const local_path = "../Engine12/src/root.zig";
+    \\        const cwd = std.fs.cwd();
+    \\        const file = cwd.openFile(local_path, .{}) catch null;
+    \\        if (file) |f| {
+    \\            f.close();
+    \\            use_local_engine12 = true;
+    \\        }
+    \\    }
+    \\
+    \\    const engine12_module = if (use_local_engine12) blk: {
+    \\        // Use local Engine12
+    \\        const mod = b.addModule("engine12", .{
+    \\            .root_source_file = b.path("../Engine12/src/root.zig"),
+    \\            .target = target,
+    \\            .optimize = optimize,
+    \\        });
+    \\        // Add dependencies that local Engine12 needs
+    \\        const vigil_dep = b.dependency("vigil", .{ .target = target, .optimize = optimize });
+    \\        const ziggurat_dep = b.dependency("ziggurat", .{ .target = target, .optimize = optimize });
+    \\        const websocket_dep = b.dependency("websocket", .{ .target = target, .optimize = optimize });
+    \\        mod.addImport("vigil", vigil_dep.module("vigil"));
+    \\        mod.addImport("ziggurat", ziggurat_dep.module("ziggurat"));
+    \\        mod.addImport("websocket", websocket_dep.module("websocket"));
+    \\        break :blk mod;
+    \\    } else blk: {
+    \\        // Use published Engine12 from package cache
+    \\        const engine12_dep = b.dependency("engine12", .{
+    \\            .target = target,
+    \\            .optimize = optimize,
+    \\        });
+    \\        break :blk engine12_dep.module("engine12");
+    \\    };
     \\
     \\    const exe = b.addExecutable(.{
     \\        .name = "{PROJECT_NAME}",
@@ -43,7 +75,7 @@ const BUILD_ZIG_TEMPLATE =
     \\        }),
     \\    });
     \\
-    \\    exe.root_module.addImport("engine12", engine12_dep.module("engine12"));
+    \\    exe.root_module.addImport("engine12", engine12_module);
     \\    exe.linkLibC(); // Required for ORM
     \\
     \\    b.installArtifact(exe);
@@ -109,6 +141,14 @@ const README_TEMPLATE =
     \\
     \\The server will start on http://127.0.0.1:8080
     \\
+    \\## Using Local Engine12 (Development)
+    \\
+    \\If you're developing Engine12 locally and want to use the latest features:
+    \\
+    \\1. Ensure Engine12 is in a sibling directory: `../Engine12/`
+    \\2. The build system will automatically detect and use the local Engine12
+    \\3. If Engine12 is in a different location, edit `build.zig` to update the path
+    \\
 ;
 
 /// Template for .gitignore
@@ -137,13 +177,11 @@ const MODELS_ZIG_TEMPLATE =
     \\    updated_at: i64,
     \\};
     \\
-    \\/// Input struct for JSON parsing
     \\pub const ItemInput = struct {
     \\    title: ?[]const u8,
     \\    description: ?[]const u8,
     \\};
     \\
-    \\// Model wrappers
     \\pub const ItemModel = E12.orm.Model(Item);
     \\pub const ItemModelORM = E12.orm.ModelWithORM(Item);
 ;
@@ -154,11 +192,10 @@ const DATABASE_ZIG_TEMPLATE =
     \\const E12 = @import("engine12");
     \\const Database = E12.orm.Database;
     \\const ORM = E12.orm.ORM;
-    \\const MigrationRegistry = E12.orm.MigrationRegistryType;
+    \\const Migration = E12.orm.MigrationType;
     \\
     \\const allocator = std.heap.page_allocator;
     \\
-    \\// Global state
     \\var global_db: ?Database = null;
     \\var global_orm: ?ORM = null;
     \\var db_mutex: std.Thread.Mutex = .{};
@@ -181,23 +218,16 @@ const DATABASE_ZIG_TEMPLATE =
     \\    defer db_mutex.unlock();
     \\
     \\    if (global_db != null) {
-    \\        return; // Already initialized
+    \\        return;
     \\    }
     \\
-    \\    // Open database file
     \\    const db_path = "app.db";
     \\    global_db = try Database.open(db_path, allocator);
     \\
-    \\    // Initialize ORM
     \\    global_orm = ORM.init(global_db.?, allocator);
     \\
-    \\    // Use migration discovery to load migrations
-    \\    const migration_discovery = @import("engine12").orm.migration_discovery;
-    \\    var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
-    \\    defer registry.deinit();
-    \\
-    \\    // Run migrations
-    \\    try global_orm.?.runMigrationsFromRegistry(&registry);
+    \\    const migrations = @import("migrations/init.zig").migrations;
+    \\    try global_orm.?.runMigrations(&migrations);
     \\}
 ;
 
@@ -214,7 +244,6 @@ const VALIDATORS_ZIG_TEMPLATE =
     \\pub fn validateItem(req: *Request, item: Item) anyerror!validation.ValidationErrors {
     \\    var errors = validation.ValidationErrors.init(req.arena.allocator());
     \\
-    \\    // Validate title (required, max 200 chars)
     \\    if (item.title.len == 0) {
     \\        try errors.add("title", "Title is required", "required");
     \\    }
@@ -222,7 +251,6 @@ const VALIDATORS_ZIG_TEMPLATE =
     \\        try errors.add("title", "Title must be less than 200 characters", "max_length");
     \\    }
     \\
-    \\    // Validate description (max 1000 chars)
     \\    if (item.description.len > 1000) {
     \\        try errors.add("description", "Description must be less than 1000 characters", "max_length");
     \\    }
@@ -275,7 +303,6 @@ const UTILS_ZIG_TEMPLATE =
     \\const std = @import("std");
     \\const E12 = @import("engine12");
     \\
-    \\// Add your utility functions here
 ;
 
 /// Template for handlers/search.zig
@@ -286,15 +313,13 @@ const HANDLER_SEARCH_ZIG_TEMPLATE =
     \\const Response = E12.Response;
     \\const HandlerCtx = E12.HandlerCtx;
     \\const models = @import("../models.zig");
-    \\const database = @import("../database.zig");
-    \\const getORM = database.getORM;
     \\
     \\/// Example search handler using HandlerCtx
     \\pub fn handleSearch(request: *Request) Response {
     \\    var ctx = HandlerCtx.init(request, .{
     \\        .require_auth = true,
     \\        .require_orm = true,
-    \\        .get_orm = getORM,
+    \\        .get_orm = null,
     \\    }) catch |err| {
     \\        return switch (err) {
     \\            error.AuthenticationRequired => Response.errorResponse("Authentication required", 401),
@@ -303,11 +328,10 @@ const HANDLER_SEARCH_ZIG_TEMPLATE =
     \\        };
     \\    };
     \\
-    \\    const query = ctx.query([]const u8, "q") catch {
+    \\    _ = ctx.query([]const u8, "q") catch {
     \\        return ctx.badRequest("Missing query parameter 'q'");
     \\    };
     \\
-    \\    // Add your search logic here
     \\    return Response.json("{{\"results\":[]}}");
     \\}
 ;
@@ -316,7 +340,7 @@ const HANDLER_SEARCH_ZIG_TEMPLATE =
 const MIGRATIONS_INIT_ZIG_TEMPLATE =
     \\const std = @import("std");
     \\const E12 = @import("engine12");
-    \\const Migration = E12.orm.Migration;
+    \\const Migration = E12.orm.MigrationType;
     \\
     \\/// Initial migration
     \\pub const migrations = [_]Migration{
@@ -335,28 +359,254 @@ const MIGRATIONS_INIT_ZIG_TEMPLATE =
 
 /// Template for static/css/style.css
 const STATIC_CSS_TEMPLATE =
-    \\/* Main stylesheet */
+    \\/* Modern, elegant stylesheet */
+    \\:root {
+    \\    --primary-color: #6366f1;
+    \\    --primary-hover: #4f46e5;
+    \\    --secondary-color: #1e293b;
+    \\    --text-color: #334155;
+    \\    --text-light: #64748b;
+    \\    --bg-gradient-start: #f8fafc;
+    \\    --bg-gradient-end: #e2e8f0;
+    \\    --card-bg: #ffffff;
+    \\    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    \\    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    \\    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    \\}
+    \\
+    \\* {
+    \\    box-sizing: border-box;
+    \\}
+    \\
     \\body {
-    \\    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    \\    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     \\    margin: 0;
-    \\    padding: 20px;
-    \\    background-color: #f5f5f5;
+    \\    padding: 0;
+    \\    background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
+    \\    min-height: 100vh;
+    \\    color: var(--text-color);
+    \\    line-height: 1.6;
+    \\    display: flex;
+    \\    align-items: center;
+    \\    justify-content: center;
     \\}
     \\
     \\.container {
-    \\    max-width: 800px;
-    \\    margin: 0 auto;
+    \\    max-width: 1200px;
+    \\    width: 95%;
+    \\    margin: 2rem auto;
+    \\    background: var(--card-bg);
+    \\    border-radius: 24px;
+    \\    box-shadow: var(--shadow-lg);
+    \\    overflow: hidden;
+    \\    opacity: 0;
+    \\    transform: translateY(20px);
+    \\    animation: fadeInUp 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+    \\}
+    \\
+    \\.hero {
+    \\    padding: 4rem 2rem;
+    \\    text-align: center;
+    \\    background: linear-gradient(to bottom, #ffffff, #f8fafc);
+    \\    border-bottom: 1px solid #e2e8f0;
+    \\}
+    \\
+    \\.logo {
+    \\    font-size: 4rem;
+    \\    color: var(--primary-color);
+    \\    margin-bottom: 1.5rem;
+    \\    display: inline-block;
+    \\    animation: float 6s ease-in-out infinite;
+    \\}
+    \\
+    \\.hero h1 {
+    \\    font-size: 3rem;
+    \\    font-weight: 800;
+    \\    margin: 0 0 1rem 0;
+    \\    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    \\    -webkit-background-clip: text;
+    \\    -webkit-text-fill-color: transparent;
+    \\    background-clip: text;
+    \\    letter-spacing: -0.02em;
+    \\}
+    \\
+    \\.subtitle {
+    \\    font-size: 1.25rem;
+    \\    color: var(--text-light);
+    \\    margin: 0 auto 2.5rem auto;
+    \\    max-width: 600px;
+    \\}
+    \\
+    \\.cta-buttons {
+    \\    display: flex;
+    \\    gap: 1rem;
+    \\    justify-content: center;
+    \\}
+    \\
+    \\.btn {
+    \\    display: inline-flex;
+    \\    align-items: center;
+    \\    justify-content: center;
+    \\    padding: 0.75rem 1.5rem;
+    \\    font-weight: 600;
+    \\    border-radius: 12px;
+    \\    text-decoration: none;
+    \\    transition: all 0.2s ease;
+    \\    gap: 0.5rem;
+    \\}
+    \\
+    \\.btn-primary {
+    \\    background: var(--primary-color);
+    \\    color: white;
+    \\    box-shadow: 0 4px 6px -1px rgba(99, 102, 241, 0.3);
+    \\}
+    \\
+    \\.btn-primary:hover {
+    \\    background: var(--primary-hover);
+    \\    transform: translateY(-2px);
+    \\    box-shadow: 0 6px 8px -1px rgba(99, 102, 241, 0.4);
+    \\}
+    \\
+    \\.btn-secondary {
     \\    background: white;
-    \\    padding: 20px;
-    \\    border-radius: 8px;
-    \\    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    \\    color: var(--text-color);
+    \\    border: 1px solid #e2e8f0;
+    \\}
+    \\
+    \\.btn-secondary:hover {
+    \\    background: #f8fafc;
+    \\    border-color: #cbd5e1;
+    \\    transform: translateY(-2px);
+    \\}
+    \\
+    \\.features {
+    \\    display: grid;
+    \\    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    \\    gap: 2rem;
+    \\    padding: 4rem 2rem;
+    \\    background: #ffffff;
+    \\}
+    \\
+    \\.feature-card {
+    \\    padding: 2rem;
+    \\    border-radius: 16px;
+    \\    background: #f8fafc;
+    \\    border: 1px solid #f1f5f9;
+    \\    transition: all 0.3s ease;
+    \\    text-align: center;
+    \\}
+    \\
+    \\.feature-card:hover {
+    \\    transform: translateY(-5px);
+    \\    box-shadow: var(--shadow-md);
+    \\    background: white;
+    \\    border-color: #e2e8f0;
+    \\}
+    \\
+    \\.icon-wrapper {
+    \\    width: 64px;
+    \\    height: 64px;
+    \\    background: white;
+    \\    border-radius: 16px;
+    \\    display: flex;
+    \\    align-items: center;
+    \\    justify-content: center;
+    \\    margin: 0 auto 1.5rem auto;
+    \\    font-size: 1.75rem;
+    \\    color: var(--primary-color);
+    \\    box-shadow: var(--shadow-sm);
+    \\}
+    \\
+    \\.feature-card h3 {
+    \\    font-size: 1.25rem;
+    \\    font-weight: 700;
+    \\    margin: 0 0 0.75rem 0;
+    \\    color: var(--secondary-color);
+    \\}
+    \\
+    \\.feature-card p {
+    \\    font-size: 0.95rem;
+    \\    color: var(--text-light);
+    \\    margin: 0;
+    \\}
+    \\
+    \\footer {
+    \\    text-align: center;
+    \\    padding: 2rem;
+    \\    background: #f8fafc;
+    \\    border-top: 1px solid #e2e8f0;
+    \\    font-size: 0.9rem;
+    \\    color: var(--text-light);
+    \\}
+    \\
+    \\footer a {
+    \\    color: var(--primary-color);
+    \\    text-decoration: none;
+    \\    font-weight: 500;
+    \\}
+    \\
+    \\footer a:hover {
+    \\    text-decoration: underline;
+    \\}
+    \\
+    \\@keyframes fadeInUp {
+    \\    to {
+    \\        opacity: 1;
+    \\        transform: translateY(0);
+    \\    }
+    \\}
+    \\
+    \\@keyframes float {
+    \\    0%, 100% { transform: translateY(0); }
+    \\    50% { transform: translateY(-10px); }
+    \\}
+    \\
+    \\@media (max-width: 768px) {
+    \\    .hero h1 { font-size: 2.25rem; }
+    \\    .features { grid-template-columns: 1fr; padding: 2rem; }
+    \\    .container { width: 95%; margin: 1rem auto; }
     \\}
 ;
 
 /// Template for static/js/app.js
 const STATIC_JS_TEMPLATE =
     \\// Main application JavaScript
+    \\document.addEventListener('DOMContentLoaded', function() {
     \\console.log('Engine12 application loaded');
+    \\    
+    \\    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+    \\        const href = anchor.getAttribute('href');
+    \\        if (href === '#') return;
+    \\        
+    \\        anchor.addEventListener('click', function (e) {
+    \\            e.preventDefault();
+    \\            const target = document.querySelector(href);
+    \\            if (target) {
+    \\                target.scrollIntoView({
+    \\                    behavior: 'smooth'
+    \\                });
+    \\            }
+    \\        });
+    \\    });
+    \\
+    \\    const cards = document.querySelectorAll('.feature-card');
+    \\    cards.forEach(card => {
+    \\        card.addEventListener('mouseenter', () => {
+    \\            const icon = card.querySelector('.icon-wrapper');
+    \\            if (icon) {
+    \\                icon.style.transform = 'scale(1.1) rotate(5deg)';
+    \\                icon.style.transition = 'transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)';
+    \\            }
+    \\        });
+    \\        
+    \\        card.addEventListener('mouseleave', () => {
+    \\            const icon = card.querySelector('.icon-wrapper');
+    \\            if (icon) {
+    \\                icon.style.transform = 'scale(1) rotate(0deg)';
+    \\            }
+    \\        });
+    \\    });
+    \\});
 ;
 
 /// Template for templates/index.zt.html
@@ -368,11 +618,48 @@ const TEMPLATE_INDEX_ZT_HTML =
     \\    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     \\    <title>{{ .title }}</title>
     \\    <link rel="stylesheet" href="/css/style.css">
+    \\    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     \\</head>
     \\<body>
     \\    <div class="container">
-    \\        <h1>{{ .title }}</h1>
-    \\        <p>{{ .message }}</p>
+    \\        <div class="hero">
+    \\            <div class="logo">
+    \\                <i class="fas fa-cubes"></i>
+    \\            </div>
+    \\            <h1>{{ .title }}</h1>
+    \\            <p class="subtitle">{{ .message }}</p>
+    \\            <div class="cta-buttons">
+    \\                <a href="https://github.com/ooyeku/Engine12" class="btn btn-primary"><i class="fab fa-github"></i> GitHub</a>
+    \\            </div>
+    \\        </div>
+    \\        
+    \\        <div class="features">
+    \\            <div class="feature-card">
+    \\                <div class="icon-wrapper">
+    \\                    <i class="fas fa-bolt"></i>
+    \\                </div>
+    \\                <h3>Blazing Fast</h3>
+    \\                <p>Built with Zig for maximum performance and minimal resource usage.</p>
+    \\            </div>
+    \\            <div class="feature-card">
+    \\                <div class="icon-wrapper">
+    \\                    <i class="fas fa-shield-alt"></i>
+    \\                </div>
+    \\                <h3>Type Safe</h3>
+    \\                <p>Leverage Zig's powerful type system to catch errors at compile time.</p>
+    \\            </div>
+    \\            <div class="feature-card">
+    \\                <div class="icon-wrapper">
+    \\                    <i class="fas fa-puzzle-piece"></i>
+    \\                </div>
+    \\                <h3>Modular</h3>
+    \\                <p>Flexible architecture that scales from simple apps to complex systems.</p>
+    \\            </div>
+    \\        </div>
+    \\
+    \\        <footer>
+    \\            <p>Powered by <strong>Engine12</strong> &bull; <a href="/api/items/search?q=test">Test API</a></p>
+    \\        </footer>
     \\    </div>
     \\    <script src="/js/app.js"></script>
     \\</body>
@@ -386,8 +673,6 @@ const MAIN_ZIG_RECOMMENDED_TEMPLATE =
     \\const Request = E12.Request;
     \\const Response = E12.Response;
     \\
-    \\// Project modules
-    \\const database = @import("database.zig");
     \\const models = @import("models.zig");
     \\const Item = models.Item;
     \\const validators = @import("validators.zig");
@@ -398,72 +683,37 @@ const MAIN_ZIG_RECOMMENDED_TEMPLATE =
     \\
     \\const allocator = std.heap.page_allocator;
     \\
-    \\pub fn main() !void {
-    \\    // Initialize database
-    \\    try database.initDatabase();
+    \\fn getIndexContext(req: *Request) struct { title: []const u8, message: []const u8 } {
+    \\    _ = req;
+    \\    return .{
+    \\        .title = "Welcome to {PROJECT_NAME}",
+    \\        .message = "This is a sample Engine12 application",
+    \\    };
+    \\}
     \\
-    \\    // Create app
+    \\pub fn main() !void {
     \\    var app = try E12.Engine12.initDevelopment();
     \\    defer app.deinit();
     \\
-    \\    // Auto-discover static files
-    \\    app.discoverStaticFiles("static") catch |err| {
-    \\        std.debug.print("[Engine12] Warning: Static file discovery failed: {}\n", .{err});
-    \\    };
+    \\    try app.initDatabaseWithMigrations("app.db", "src/migrations");
     \\
-    \\    // Auto-discover templates (development mode only)
-    \\    const template_registry = app.discoverTemplates("src/templates") catch |err| {
-    \\        std.debug.print("[Engine12] Warning: Template discovery failed: {}\n", .{err});
-    \\        // Continue without templates
-    \\    };
-    \\    defer template_registry.deinit();
+    \\    try app.serveStaticDirectory("static");
     \\
-    \\    // Register root route
-    \\    try app.get("/", handleIndex);
+    \\    try app.templateRoute("/", "src/templates/index.zt.html", getIndexContext);
     \\
-    \\    // Register custom handlers
     \\    try app.get("/api/items/search", handlers.search.handleSearch);
     \\
-    \\    // Register REST API endpoints
-    \\    const orm = try database.getORM();
-    \\    try app.restApi("/api/items", Item, E12.RestApiConfig(Item){
-    \\        .orm = orm,
+    \\    try app.restApiDefault("/api/items", Item, .{
     \\        .validator = validators.validateItem,
     \\        .authenticator = auth.requireAuthForRestApi,
     \\        .authorization = auth.canAccessItem,
-    \\        .enable_pagination = true,
-    \\        .enable_filtering = true,
-    \\        .enable_sorting = true,
     \\    });
     \\
     \\    std.debug.print("Server starting on http://127.0.0.1:8080\n", .{});
     \\    std.debug.print("Press Ctrl+C to stop\n", .{});
     \\    try app.start();
     \\
-    \\    // Keep the server running
     \\    while (true) {}
-    \\}
-    \\
-    \\fn handleIndex(req: *Request) Response {
-    \\    _ = req;
-    \\    // Load template manually (or use template registry if stored globally)
-    \\    const template = app.loadTemplate("src/templates/index.zt.html") catch {
-    \\        return Response.text("Template not found").withStatus(500);
-    \\    };
-    \\
-    \\    const context = struct {
-    \\        title: []const u8,
-    \\        message: []const u8,
-    \\    }{
-    \\        .title = "Welcome to {PROJECT_NAME}",
-    \\        .message = "This is a sample Engine12 application",
-    \\    };
-    \\
-    \\    const html = template.render(@TypeOf(context), context, allocator) catch {
-    \\        return Response.text("Template rendering failed").withStatus(500);
-    \\    };
-    \\
-    \\    return Response.html(html);
     \\}
 ;
 
@@ -560,7 +810,6 @@ pub fn scaffoldProject(
         .{ "build.zig", BUILD_ZIG_TEMPLATE },
         .{ "src/main.zig", MAIN_ZIG_RECOMMENDED_TEMPLATE },
         .{ "src/models.zig", MODELS_ZIG_TEMPLATE },
-        .{ "src/database.zig", DATABASE_ZIG_TEMPLATE },
         .{ "src/validators.zig", VALIDATORS_ZIG_TEMPLATE },
         .{ "src/auth.zig", AUTH_ZIG_TEMPLATE },
         .{ "src/utils.zig", UTILS_ZIG_TEMPLATE },
@@ -590,3 +839,4 @@ pub fn scaffoldProject(
     // Exit immediately to avoid allocator cleanup issues
     std.process.exit(0);
 }
+

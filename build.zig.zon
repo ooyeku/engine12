@@ -1,7 +1,7 @@
 .{
     .name = .engine12,
 
-    .version = "0.9.1",
+    .version = "0.9.2",
     .fingerprint = 0x3c1cb3191ea1e4d2,
     .minimum_zig_version = "0.15.1",
     .dependencies = .{

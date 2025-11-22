@@ -23,6 +23,7 @@ const hot_reload_mod = @import("hot_reload/module.zig");
 const script_injector_mod = @import("hot_reload/script_injector.zig");
 const rest_api_mod = @import("rest_api.zig");
 const openapi = @import("openapi.zig");
+const validation = @import("validation.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -338,6 +339,10 @@ pub const Engine12 = struct {
     static_routes_count: usize = 0,
     static_root_mounted: bool = false, // Track if static files are mounted at "/"
 
+    // Template Routes
+    template_routes: [MAX_ROUTES]struct { path: []const u8, context_fn: *const anyopaque } = undefined,
+    template_routes_count: usize = 0,
+
     // Supervision
     background_workers: [MAX_WORKERS]?types.BackgroundWorker = [_]?types.BackgroundWorker{null} ** MAX_WORKERS,
     workers_count: usize = 0,
@@ -561,6 +566,74 @@ pub const Engine12 = struct {
             .handler_ptr = &handler,
         };
         self.routes_count += 1;
+    }
+
+    /// Register a template route that automatically renders a template file
+    /// Context function is called for each request to provide template variables
+    ///
+    /// Example:
+    /// ```zig
+    /// fn getIndexContext(req: *Request) struct { title: []const u8, message: []const u8 } {
+    ///     _ = req;
+    ///     return .{ .title = "Welcome", .message = "Hello" };
+    /// }
+    /// try app.templateRoute("/", "src/templates/index.zt.html", getIndexContext);
+    /// ```
+    pub fn templateRoute(
+        self: *Engine12,
+        comptime path_pattern: []const u8,
+        template_path: []const u8,
+        context_fn: anytype,
+    ) !void {
+        const ContextFn = @TypeOf(context_fn);
+        const context_fn_type_info = @typeInfo(ContextFn);
+        if (context_fn_type_info != .Fn) {
+            return error.InvalidContextFunction;
+        }
+
+        // Duplicate template_path to ensure it persists
+        const template_path_copy = try self.allocator.dupe(u8, template_path);
+
+        // Store template route info
+        if (self.template_routes_count >= MAX_ROUTES) {
+            return error.TooManyRoutes;
+        }
+        const route_index = self.template_routes_count;
+        self.template_routes[route_index] = .{
+            .path = template_path_copy,
+            .context_fn = @ptrCast(context_fn),
+        };
+        self.template_routes_count += 1;
+
+        // Create handler that accesses stored template route info
+        const Handler = struct {
+            app_ptr: *Engine12,
+            route_idx: usize,
+
+            fn handler(req: *Request) Response {
+                const route_info = self.app_ptr.template_routes[self.route_idx];
+                const template_path_ptr = route_info.path;
+                const context_fn_ptr = @as(ContextFn, @ptrCast(@alignCast(route_info.context_fn)));
+                
+                const context = context_fn_ptr(req);
+                const templates_simple_mod = @import("templates/simple.zig");
+                const html = templates_simple_mod.renderSimple(template_path_ptr, context, allocator) catch |err| {
+                    return switch (err) {
+                        error.TemplateNotFound => Response.text("Template not found").withStatus(404),
+                        error.TemplateTooLarge => Response.text("Template too large").withStatus(500),
+                        else => Response.text("Template rendering error").withStatus(500),
+                    };
+                };
+                defer allocator.free(html);
+                return Response.html(html);
+            }
+        };
+
+        const handler_instance = Handler{
+            .app_ptr = self,
+            .route_idx = route_index,
+        };
+        try self.get(path_pattern, handler_instance.handler);
     }
 
     /// Register a POST endpoint
@@ -884,6 +957,76 @@ pub const Engine12 = struct {
         return rest_api_mod.restApi(self, prefix, Model, config);
     }
 
+    /// Register RESTful API endpoints with sensible defaults
+    /// Uses app.getORM() automatically and enables pagination, filtering, and sorting by default
+    /// Only requires model type and path - all other options are optional
+    ///
+    /// Example:
+    /// ```zig
+    /// // Minimal usage - uses defaults
+    /// try app.restApiDefault("/api/items", Item);
+    ///
+    /// // With optional overrides
+    /// try app.restApiDefault("/api/items", Item, .{
+    ///     .authenticator = auth.requireAuthForRestApi,
+    ///     .validator = validators.validateItem,
+    /// });
+    /// ```
+    pub fn restApiDefault(
+        self: *Engine12,
+        comptime prefix: []const u8,
+        comptime Model: type,
+        overrides: anytype,
+    ) !void {
+        const orm_instance = try self.getORM();
+        
+        // Build config with defaults, allowing overrides
+        const ConfigType = rest_api_mod.RestApiConfig(Model);
+        const OverrideType = @TypeOf(overrides);
+        
+        // Check if validator is provided in overrides
+        var validator_provided = false;
+        var validator_fn: ?*const fn (*Request, Model) anyerror!validation.ValidationErrors = null;
+        if (@typeInfo(OverrideType) == .Struct) {
+            inline for (@typeInfo(OverrideType).Struct.fields) |field| {
+                if (std.mem.eql(u8, field.name, "validator")) {
+                    validator_provided = true;
+                    validator_fn = @field(overrides, field.name);
+                    break;
+                }
+            }
+        }
+        
+        // Validator is required, so provide a default no-op validator if not provided
+        const default_validator = struct {
+            fn validate(_: *Request, _: Model) anyerror!validation.ValidationErrors {
+                const errors = validation.ValidationErrors.init(allocator);
+                return errors;
+            }
+        }.validate;
+        
+        var config: ConfigType = undefined;
+        config.orm = orm_instance;
+        config.validator = if (validator_provided) validator_fn.? else default_validator;
+        config.enable_pagination = true;
+        config.enable_filtering = true;
+        config.enable_sorting = true;
+        config.authenticator = null;
+        config.authorization = null;
+        config.cache_ttl_ms = null;
+        
+        // Apply overrides if provided
+        if (@typeInfo(OverrideType) == .Struct) {
+            inline for (@typeInfo(OverrideType).Struct.fields) |field| {
+                if (@hasField(ConfigType, field.name)) {
+                    @field(config, field.name) = @field(overrides, field.name);
+                }
+            }
+        }
+        
+        return rest_api_mod.restApi(self, prefix, Model, config);
+    }
+
     /// Register a custom error handler
     ///
     /// Example:
@@ -1198,13 +1341,22 @@ pub const Engine12 = struct {
         }
     }
 
+    /// Convenience method to serve all static files from a directory
+    /// Auto-discovers subdirectories and serves them at corresponding routes
+    /// Example: static/css/ -> /css/*, static/js/ -> /js/*
+    ///
+    /// ```zig
+    /// try app.serveStaticDirectory("static");
+    /// ```
+    pub fn serveStaticDirectory(self: *Engine12, static_dir: []const u8) !void {
+        try self.discoverStaticFiles(static_dir);
+    }
+
     /// Register static file serving from a directory
+    /// Can be called before or after server is started (lazy route registration)
     pub fn serveStatic(self: *Engine12, mount_path: []const u8, directory: []const u8) !void {
         if (self.static_routes_count >= MAX_STATIC_ROUTES) {
             return error.TooManyStaticRoutes;
-        }
-        if (self.server_built) {
-            return error.ServerAlreadyBuilt;
         }
 
         // Duplicate mount_path and directory to ensure they persist
@@ -1238,7 +1390,7 @@ pub const Engine12 = struct {
             };
         }
 
-        // Build server if not already built
+        // Build server if not already built (works even after start() is called)
         if (self.built_server == null) {
             var builder = ziggurat.ServerBuilder.init(self.allocator);
             var server = try builder
@@ -1372,6 +1524,74 @@ pub const Engine12 = struct {
                 }
             }
         }
+    }
+
+    /// Initialize database using singleton pattern
+    /// Opens database and creates ORM instance
+    /// Thread-safe and idempotent (can be called multiple times safely)
+    ///
+    /// Example:
+    /// ```zig
+    /// try app.initDatabase("app.db");
+    /// ```
+    pub fn initDatabase(self: *Engine12, db_path: []const u8) !void {
+        const DatabaseSingleton = @import("orm/singleton.zig").DatabaseSingleton;
+        try DatabaseSingleton.init(db_path, self.allocator);
+    }
+
+    /// Initialize database and run migrations automatically
+    /// Discovers migrations from directory and runs them
+    /// Supports both init.zig convention and numbered migration files
+    ///
+    /// Example:
+    /// ```zig
+    /// try app.initDatabaseWithMigrations("app.db", "src/migrations");
+    /// ```
+    pub fn initDatabaseWithMigrations(
+        self: *Engine12,
+        db_path: []const u8,
+        migrations_dir: []const u8,
+    ) !void {
+        try self.initDatabase(db_path);
+
+        const DatabaseSingleton = @import("orm/singleton.zig").DatabaseSingleton;
+        const orm_instance = try DatabaseSingleton.get();
+
+        // Try to discover migrations from directory
+        const migration_discovery_mod = @import("orm/migration_discovery.zig");
+        var registry = migration_discovery_mod.discoverMigrations(self.allocator, migrations_dir) catch |err| {
+            std.debug.print("[Engine12] Warning: Migration discovery failed: {}\n", .{err});
+            // Try direct import of init.zig as fallback
+            const init_path = try std.fmt.allocPrint(self.allocator, "{s}/init.zig", .{migrations_dir});
+            defer self.allocator.free(init_path);
+            
+            const init_file = std.fs.cwd().openFile(init_path, .{}) catch {
+                return; // No migrations to run
+            };
+            defer init_file.close();
+
+            // If init.zig exists, try to import it (this requires comptime, so we'll just return)
+            // User should use direct import pattern for init.zig
+            std.debug.print("[Engine12] Info: migrations/init.zig found. For comptime imports, use @import(\"migrations/init.zig\") directly.\n", .{});
+            return;
+        };
+        defer registry.deinit();
+
+        // Run discovered migrations
+        try orm_instance.runMigrationsFromRegistry(&registry);
+    }
+
+    /// Get ORM instance from singleton
+    /// Returns error if database is not initialized
+    ///
+    /// Example:
+    /// ```zig
+    /// const orm = try app.getORM();
+    /// const items = try orm.findAll(Item);
+    /// ```
+    pub fn getORM(_: *Engine12) !*orm.ORM {
+        const DatabaseSingleton = @import("orm/singleton.zig").DatabaseSingleton;
+        return DatabaseSingleton.get();
     }
 
     /// Register a background task that runs once
