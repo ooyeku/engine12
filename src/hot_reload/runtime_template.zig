@@ -115,7 +115,7 @@ test "RuntimeTemplate init and deinit" {
 
     // Create a test template file
     const test_file = "test_template.zt.html";
-    std.fs.cwd().writeFile(test_file, "<h1>{{ .title }}</h1>") catch {
+    std.fs.cwd().writeFile(.{ .sub_path = test_file, .data = "<h1>{{ .title }}</h1>" }) catch {
         // Skip test if file creation fails
         return;
     };
@@ -135,7 +135,7 @@ test "RuntimeTemplate reload on change" {
 
     // Create a test template file
     const test_file = "test_reload.zt.html";
-    std.fs.cwd().writeFile(test_file, "original") catch {
+    std.fs.cwd().writeFile(.{ .sub_path = test_file, .data = "original" }) catch {
         return;
     };
     defer std.fs.cwd().deleteFile(test_file) catch {};
@@ -147,7 +147,7 @@ test "RuntimeTemplate reload on change" {
     try std.testing.expectEqualStrings(content, "original");
 
     // Modify the file
-    std.fs.cwd().writeFile(test_file, "modified") catch {
+    std.fs.cwd().writeFile(.{ .sub_path = test_file, .data = "modified" }) catch {
         return;
     };
 
@@ -156,4 +156,3 @@ test "RuntimeTemplate reload on change" {
     content = try rt.getContentString();
     try std.testing.expectEqualStrings(content, "modified");
 }
-

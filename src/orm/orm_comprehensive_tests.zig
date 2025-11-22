@@ -588,8 +588,8 @@ test "ORM findAll - column count mismatch detection" {
     var db = try Database.open(":memory:", allocator);
     defer db.close();
 
-    // Create table with more columns than struct fields
-    try db.execute("CREATE TABLE User (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    // Create table with more columns than struct fields (use lowercase to match getTableName)
+    try db.execute("CREATE TABLE user (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
 
     var orm = ORM.init(db, allocator);
 
@@ -608,8 +608,8 @@ test "ORM where - column count mismatch detection" {
     var db = try Database.open(":memory:", allocator);
     defer db.close();
 
-    // Create table with more columns than struct fields
-    try db.execute("CREATE TABLE User (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
+    // Create table with more columns than struct fields (use lowercase to match getTableName)
+    try db.execute("CREATE TABLE user (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)");
 
     var orm = ORM.init(db, allocator);
 

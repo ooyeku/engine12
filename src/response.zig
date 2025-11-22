@@ -50,6 +50,9 @@ pub const Response = struct {
     /// Headers are stored as key-value pairs in persistent memory
     _custom_headers: ?std.StringHashMap([]const u8) = null,
 
+    /// Status code (stored separately since ziggurat may not support status codes directly)
+    _status_code: ?u16 = null,
+
     /// Create a JSON response
     /// The body string will be copied to persistent memory automatically
     ///
@@ -64,12 +67,16 @@ pub const Response = struct {
             return Response{
                 .inner = ziggurat.response.Response.json(body),
                 ._persistent_body = null,
+                ._custom_headers = null,
+                ._status_code = null,
             };
         };
 
         return Response{
             .inner = ziggurat.response.Response.json(persistent_body),
             ._persistent_body = persistent_body,
+            ._custom_headers = null,
+            ._status_code = null,
         };
     }
 
@@ -86,12 +93,16 @@ pub const Response = struct {
             return Response{
                 .inner = ziggurat.response.Response.text(body),
                 ._persistent_body = null,
+                ._custom_headers = null,
+                ._status_code = null,
             };
         };
 
         return Response{
             .inner = ziggurat.response.Response.text(persistent_body),
             ._persistent_body = persistent_body,
+            ._custom_headers = null,
+            ._status_code = null,
         };
     }
 
@@ -108,12 +119,16 @@ pub const Response = struct {
             return Response{
                 .inner = ziggurat.response.Response.html(body),
                 ._persistent_body = null,
+                ._custom_headers = null,
+                ._status_code = null,
             };
         };
 
         return Response{
             .inner = ziggurat.response.Response.html(persistent_body),
             ._persistent_body = persistent_body,
+            ._custom_headers = null,
+            ._status_code = null,
         };
     }
 
@@ -182,6 +197,8 @@ pub const Response = struct {
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = null,
+            ._custom_headers = null,
+            ._status_code = null,
         };
         return resp.withStatus(200);
     }
@@ -196,6 +213,8 @@ pub const Response = struct {
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = null,
+            ._custom_headers = null,
+            ._status_code = null,
         };
         return resp.withStatus(201);
     }
@@ -210,6 +229,8 @@ pub const Response = struct {
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = null,
+            ._custom_headers = null,
+            ._status_code = null,
         };
         return resp.withStatus(204);
     }
@@ -224,6 +245,8 @@ pub const Response = struct {
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = null,
+            ._custom_headers = null,
+            ._status_code = null,
         };
         return resp.withStatus(400);
     }
@@ -238,6 +261,8 @@ pub const Response = struct {
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = null,
+            ._custom_headers = null,
+            ._status_code = null,
         };
         return resp.withStatus(401);
     }
@@ -252,6 +277,8 @@ pub const Response = struct {
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = null,
+            ._custom_headers = null,
+            ._status_code = null,
         };
         return resp.withStatus(403);
     }
@@ -267,10 +294,13 @@ pub const Response = struct {
             var resp = Response{
                 .inner = ziggurat.response.Response.text(""),
                 ._persistent_body = null,
+                ._custom_headers = null,
+                ._status_code = null,
             };
             return resp.withStatus(404);
         };
-        return Response.json(error_json).withStatus(404);
+        var resp = Response.json(error_json);
+        return resp.withStatus(404);
     }
 
     /// Create a 500 Internal Server Error response
@@ -283,6 +313,8 @@ pub const Response = struct {
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = null,
+            ._custom_headers = null,
+            ._status_code = null,
         };
         return resp.withStatus(500);
     }
@@ -382,12 +414,16 @@ pub const Response = struct {
             return Response{
                 .inner = ziggurat.response.Response.json(body),
                 ._persistent_body = self._persistent_body,
+                ._custom_headers = self._custom_headers,
+                ._status_code = self._status_code,
             };
         };
 
         return Response{
             .inner = ziggurat.response.Response.json(persistent_body),
             ._persistent_body = persistent_body,
+            ._custom_headers = self._custom_headers,
+            ._status_code = self._status_code,
         };
     }
 
@@ -438,6 +474,8 @@ pub const Response = struct {
             var resp = Response{
                 .inner = ziggurat.response.Response.text(""),
                 ._persistent_body = null,
+                ._custom_headers = null,
+                ._status_code = null,
             };
             return resp.withStatus(302);
         };
@@ -445,6 +483,8 @@ pub const Response = struct {
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = persistent_location,
+            ._custom_headers = null,
+            ._status_code = null,
         };
         resp = resp.withStatus(302);
         return resp.withHeader("Location", persistent_location);
@@ -460,6 +500,8 @@ pub const Response = struct {
         var resp = Response{
             .inner = ziggurat.response.Response.text(""),
             ._persistent_body = null,
+            ._custom_headers = null,
+            ._status_code = null,
         };
         return resp.withStatus(status_code);
     }
@@ -475,6 +517,8 @@ pub const Response = struct {
         return Response{
             .inner = self.inner.withContentType(content_type),
             ._persistent_body = self._persistent_body,
+            ._custom_headers = self._custom_headers,
+            ._status_code = self._status_code,
         };
     }
 
@@ -486,11 +530,12 @@ pub const Response = struct {
     /// return Response.text("error").withStatus(400);
     /// ```
     pub fn withStatus(self: Response, status_code: u16) Response {
-        // ziggurat may handle status codes differently
-        // For now, return self unchanged - status codes may need to be set during response creation
-        // TODO: Implement proper status code setting when ziggurat API is clarified
-        _ = status_code;
-        return self;
+        return Response{
+            .inner = self.inner,
+            ._persistent_body = self._persistent_body,
+            ._custom_headers = self._custom_headers,
+            ._status_code = status_code,
+        };
     }
 
     /// Add a custom header
@@ -523,6 +568,7 @@ pub const Response = struct {
                 .inner = self.inner,
                 ._persistent_body = self._persistent_body,
                 ._custom_headers = headers_mut,
+                ._status_code = self._status_code,
             };
         } else {
             // Create new headers map
@@ -532,6 +578,7 @@ pub const Response = struct {
                 .inner = self.inner,
                 ._persistent_body = self._persistent_body,
                 ._custom_headers = new_headers,
+                ._status_code = self._status_code,
             };
         }
     }
@@ -600,6 +647,8 @@ pub const Response = struct {
             return Response{
                 .inner = ziggurat.response.Response.text(data),
                 ._persistent_body = null,
+                ._custom_headers = null,
+                ._status_code = null,
             };
         };
 
@@ -627,6 +676,8 @@ pub const Response = struct {
             return Response{
                 .inner = ziggurat.response.Response.text(data),
                 ._persistent_body = null,
+                ._custom_headers = null,
+                ._status_code = null,
             };
         };
 
@@ -671,6 +722,7 @@ pub const Response = struct {
             .inner = ziggurat_response,
             ._persistent_body = null,
             ._custom_headers = null,
+            ._status_code = null,
         };
     }
 };

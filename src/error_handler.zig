@@ -33,35 +33,35 @@ pub const ErrorResponse = struct {
     method: ?[]const u8 = null,
     /// Error context (file, line, function) - only in development mode
     context: ?error_context.ErrorContext = null,
-    
+
     /// Convert error response to JSON
     /// include_context: whether to include error context (file, line, function)
     /// include_context should be false in production for security
     pub fn toJson(self: *const ErrorResponse, allocator: std.mem.Allocator, include_context: bool) ![]const u8 {
         var json = std.ArrayListUnmanaged(u8){};
         const writer = json.writer(allocator);
-        
+
         try writer.print(
             "{{\"error\":{{\"type\":\"{s}\",\"message\":\"{s}\",\"code\":\"{s}\",\"timestamp\":{d}",
             .{ @tagName(self.error_type), self.message, self.code, self.timestamp },
         );
-        
+
         if (self.details) |details| {
             try writer.print(",\"details\":\"{s}\"", .{details});
         }
-        
+
         if (self.request_id) |req_id| {
             try writer.print(",\"request_id\":\"{s}\"", .{req_id});
         }
-        
+
         if (self.path) |p| {
             try writer.print(",\"path\":\"{s}\"", .{p});
         }
-        
+
         if (self.method) |m| {
             try writer.print(",\"method\":\"{s}\"", .{m});
         }
-        
+
         // Include error context only if requested and available (development mode)
         if (include_context) {
             if (self.context) |ctx| {
@@ -71,17 +71,17 @@ pub const ErrorResponse = struct {
                 try writer.print(",\"context\":{s}", .{ctx_json});
             }
         }
-        
+
         try writer.print("}}}}", .{});
-        
+
         return json.toOwnedSlice(allocator);
     }
-    
+
     /// Convert error response to JSON (backward compatible - no context)
     pub fn toJsonSimple(self: *const ErrorResponse, allocator: std.mem.Allocator) ![]const u8 {
         return self.toJson(allocator, false);
     }
-    
+
     /// Create an error response from a request context
     /// Automatically includes request ID, path, and method
     /// include_context: whether to capture error context (should match environment - true for development)
@@ -97,20 +97,20 @@ pub const ErrorResponse = struct {
             .method = req.method(),
             .context = null,
         };
-        
+
         // Capture error context in development mode
         if (include_context) {
             err_resp.context = error_context.ErrorContext.here();
         }
-        
+
         return err_resp;
     }
-    
+
     /// Create an error response from a request context (backward compatible - no context)
     pub fn fromRequestSimple(req: *Request, error_type: ErrorType, message: []const u8, code: []const u8, details: ?[]const u8) ErrorResponse {
         return fromRequest(req, error_type, message, code, details, false);
     }
-    
+
     /// Create a validation error response
     pub fn validation(message: []const u8, details: ?[]const u8) ErrorResponse {
         return ErrorResponse{
@@ -121,7 +121,7 @@ pub const ErrorResponse = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     /// Create an authentication error response
     pub fn authentication(message: []const u8) ErrorResponse {
         return ErrorResponse{
@@ -132,7 +132,7 @@ pub const ErrorResponse = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     /// Create an authorization error response
     pub fn authorization(message: []const u8) ErrorResponse {
         return ErrorResponse{
@@ -143,7 +143,7 @@ pub const ErrorResponse = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     /// Create a not found error response
     pub fn notFound(message: []const u8) ErrorResponse {
         return ErrorResponse{
@@ -154,7 +154,7 @@ pub const ErrorResponse = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     /// Create a bad request error response
     pub fn badRequest(message: []const u8, details: ?[]const u8) ErrorResponse {
         return ErrorResponse{
@@ -165,7 +165,7 @@ pub const ErrorResponse = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     /// Create an internal error response
     pub fn internal(message: []const u8, details: ?[]const u8) ErrorResponse {
         return ErrorResponse{
@@ -176,7 +176,7 @@ pub const ErrorResponse = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     /// Create a rate limit error response
     pub fn rateLimit(message: []const u8) ErrorResponse {
         return ErrorResponse{
@@ -187,7 +187,7 @@ pub const ErrorResponse = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     /// Create a request too large error response
     pub fn requestTooLarge(message: []const u8) ErrorResponse {
         return ErrorResponse{
@@ -198,7 +198,7 @@ pub const ErrorResponse = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     /// Create a timeout error response
     pub fn timeout(message: []const u8) ErrorResponse {
         return ErrorResponse{
@@ -209,13 +209,13 @@ pub const ErrorResponse = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     /// Convert error response to HTTP response
     /// include_context: whether to include error context in response (should be false in production)
     pub fn toHttpResponse(self: *const ErrorResponse, allocator: std.mem.Allocator, include_context: bool) !Response {
         const json = try self.toJson(allocator, include_context);
         defer allocator.free(json);
-        
+
         const status_code: u16 = switch (self.error_type) {
             .validation_error, .bad_request => 400,
             .authentication_error => 401,
@@ -226,7 +226,7 @@ pub const ErrorResponse = struct {
             .timeout => 408,
             .internal_error, .unknown => 500,
         };
-        
+
         var resp = Response.json(json);
         resp = resp.withStatus(status_code);
         return resp;
@@ -240,16 +240,16 @@ pub const ErrorHandler = *const fn (*Request, ErrorResponse, std.mem.Allocator) 
 /// Determines if error context should be included based on environment
 pub fn defaultErrorHandler(req: *Request, err: ErrorResponse, allocator: std.mem.Allocator) Response {
     _ = req;
-    
+
     // Determine if we should include error context (development mode only)
     // Check if we're in development mode by checking if error context exists
     const include_context = err.context != null;
-    
+
     const json = err.toJson(allocator, include_context) catch {
-        return Response.internalError().json("{\"error\":\"Failed to serialize error\"}");
+        return Response.json("{\"error\":\"Failed to serialize error\"}").withStatus(500);
     };
     defer allocator.free(json);
-    
+
     const status_code: u16 = switch (err.error_type) {
         .validation_error, .bad_request => 400,
         .authentication_error => 401,
@@ -260,7 +260,7 @@ pub fn defaultErrorHandler(req: *Request, err: ErrorResponse, allocator: std.mem
         .timeout => 408,
         .internal_error, .unknown => 500,
     };
-    
+
     var resp = Response.json(json);
     resp = resp.withStatus(status_code);
     return resp;
@@ -270,19 +270,19 @@ pub fn defaultErrorHandler(req: *Request, err: ErrorResponse, allocator: std.mem
 pub const ErrorHandlerRegistry = struct {
     handler: ?ErrorHandler = null,
     allocator: std.mem.Allocator,
-    
+
     pub fn init(allocator: std.mem.Allocator) ErrorHandlerRegistry {
         return ErrorHandlerRegistry{
             .handler = null,
             .allocator = allocator,
         };
     }
-    
+
     /// Register a custom error handler
     pub fn register(self: *ErrorHandlerRegistry, handler_fn: ErrorHandler) void {
         self.handler = handler_fn;
     }
-    
+
     /// Handle an error using the registered handler or default
     pub fn handle(self: *const ErrorHandlerRegistry, req: *Request, err: ErrorResponse) Response {
         if (self.handler) |handler_fn| {
@@ -303,22 +303,28 @@ test "ErrorResponse toJson" {
     const err = ErrorResponse.badRequest("Invalid input", null);
     const json = try err.toJson(std.testing.allocator, false);
     defer std.testing.allocator.free(json);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, json, "BAD_REQUEST") != null);
 }
 
 test "ErrorHandlerRegistry default handler" {
     var registry = ErrorHandlerRegistry.init(std.testing.allocator);
     const err = ErrorResponse.notFound("Resource not found");
-    
-    var ziggurat_req = @import("ziggurat").request.Request{
+
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
-    
+
     const resp = registry.handle(&req, err);
     _ = resp;
 }
@@ -326,28 +332,28 @@ test "ErrorHandlerRegistry default handler" {
 test "ErrorResponse all error types" {
     const validation = ErrorResponse.validation("Validation failed", "Details");
     try std.testing.expectEqual(validation.error_type, ErrorType.validation_error);
-    
+
     const auth = ErrorResponse.authentication("Auth failed");
     try std.testing.expectEqual(auth.error_type, ErrorType.authentication_error);
-    
+
     const authz = ErrorResponse.authorization("Not authorized");
     try std.testing.expectEqual(authz.error_type, ErrorType.authorization_error);
-    
+
     const notFound = ErrorResponse.notFound("Not found");
     try std.testing.expectEqual(notFound.error_type, ErrorType.not_found);
-    
+
     const badReq = ErrorResponse.badRequest("Bad request", "Details");
     try std.testing.expectEqual(badReq.error_type, ErrorType.bad_request);
-    
+
     const internal = ErrorResponse.internal("Internal error", "Details");
     try std.testing.expectEqual(internal.error_type, ErrorType.internal_error);
-    
+
     const rateLimit = ErrorResponse.rateLimit("Rate limited");
     try std.testing.expectEqual(rateLimit.error_type, ErrorType.rate_limit_exceeded);
-    
+
     const tooLarge = ErrorResponse.requestTooLarge("Too large");
     try std.testing.expectEqual(tooLarge.error_type, ErrorType.request_too_large);
-    
+
     const timeout = ErrorResponse.timeout("Timeout");
     try std.testing.expectEqual(timeout.error_type, ErrorType.timeout);
 }
@@ -356,7 +362,7 @@ test "ErrorResponse toJson includes all fields" {
     const err = ErrorResponse.validation("Test message", "Test details");
     const json = try err.toJson(std.testing.allocator, false);
     defer std.testing.allocator.free(json);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, json, "validation_error") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "Test message") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "VALIDATION_ERROR") != null);
@@ -367,7 +373,7 @@ test "ErrorResponse toJson without details" {
     const err = ErrorResponse.notFound("Not found");
     const json = try err.toJson(std.testing.allocator, false);
     defer std.testing.allocator.free(json);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, json, "not_found") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "Not found") != null);
     // Should not include details field when null
@@ -381,45 +387,45 @@ test "ErrorResponse toJson with context" {
         .function = "testFunction",
         .stack_trace = null,
     };
-    
+
     const json = try err.toJson(std.testing.allocator, true);
     defer std.testing.allocator.free(json);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, json, "\"context\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "test.zig") != null);
 }
 
 test "ErrorResponse toHttpResponse maps error types correctly" {
     const allocator = std.testing.allocator;
-    
+
     const validation = ErrorResponse.validation("Test", null);
     const resp1 = try validation.toHttpResponse(allocator, false);
     _ = resp1;
-    
+
     const auth = ErrorResponse.authentication("Test");
     const resp2 = try auth.toHttpResponse(allocator, false);
     _ = resp2;
-    
+
     const authz = ErrorResponse.authorization("Test");
     const resp3 = try authz.toHttpResponse(allocator, false);
     _ = resp3;
-    
+
     const notFound = ErrorResponse.notFound("Test");
     const resp4 = try notFound.toHttpResponse(allocator, false);
     _ = resp4;
-    
+
     const rateLimit = ErrorResponse.rateLimit("Test");
     const resp5 = try rateLimit.toHttpResponse(allocator, false);
     _ = resp5;
-    
+
     const tooLarge = ErrorResponse.requestTooLarge("Test");
     const resp6 = try tooLarge.toHttpResponse(allocator, false);
     _ = resp6;
-    
+
     const timeout = ErrorResponse.timeout("Test");
     const resp7 = try timeout.toHttpResponse(allocator, false);
     _ = resp7;
-    
+
     const internal = ErrorResponse.internal("Test", null);
     const resp8 = try internal.toHttpResponse(allocator, false);
     _ = resp8;
@@ -427,7 +433,7 @@ test "ErrorResponse toHttpResponse maps error types correctly" {
 
 test "ErrorHandlerRegistry register custom handler" {
     var registry = ErrorHandlerRegistry.init(std.testing.allocator);
-    
+
     const custom_handler = struct {
         fn handler(req: *Request, err: ErrorResponse, allocator: std.mem.Allocator) Response {
             _ = req;
@@ -436,18 +442,24 @@ test "ErrorHandlerRegistry register custom handler" {
             return Response.text("Custom error");
         }
     }.handler;
-    
+
     registry.register(custom_handler);
-    
+
     const err = ErrorResponse.notFound("Test");
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
-    
+
     const resp = registry.handle(&req, err);
     _ = resp;
 }
@@ -455,7 +467,7 @@ test "ErrorHandlerRegistry register custom handler" {
 test "ErrorResponse timestamp is set" {
     const err = ErrorResponse.validation("Test", null);
     try std.testing.expect(err.timestamp > 0);
-    
+
     // Timestamp should be recent (within last second)
     const now = std.time.milliTimestamp();
     try std.testing.expect(err.timestamp <= now);
@@ -473,4 +485,3 @@ test "ErrorResponse error codes are correct" {
     try std.testing.expectEqualStrings(ErrorResponse.requestTooLarge("").code, "REQUEST_TOO_LARGE");
     try std.testing.expectEqualStrings(ErrorResponse.timeout("").code, "TIMEOUT");
 }
-

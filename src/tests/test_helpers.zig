@@ -1,8 +1,9 @@
 const std = @import("std");
-const Engine12 = @import("engine12").Engine12;
-const Request = @import("engine12").Request;
-const Response = @import("engine12").Response;
-const types = @import("engine12").types;
+const engine12 = @import("../engine12.zig");
+const Engine12 = engine12.Engine12;
+const Request = @import("../request.zig").Request;
+const Response = @import("../response.zig").Response;
+const types = @import("../types.zig");
 
 /// Test utilities and helpers for Engine12 tests
 pub const TestHelpers = struct {
@@ -16,17 +17,17 @@ pub const TestHelpers = struct {
     /// Create a mock request from a path and method
     pub fn createMockRequest(method: []const u8, path: []const u8) !Request {
         const ziggurat = @import("ziggurat");
-        const method_enum = if (std.mem.eql(u8, method, "GET")) ziggurat.request.Method.GET
-            else if (std.mem.eql(u8, method, "POST")) ziggurat.request.Method.POST
-            else if (std.mem.eql(u8, method, "PUT")) ziggurat.request.Method.PUT
-            else if (std.mem.eql(u8, method, "DELETE")) ziggurat.request.Method.DELETE
-            else if (std.mem.eql(u8, method, "PATCH")) ziggurat.request.Method.PATCH
-            else ziggurat.request.Method.GET;
-        
+        const method_enum = if (std.mem.eql(u8, method, "GET")) ziggurat.request.Method.GET else if (std.mem.eql(u8, method, "POST")) ziggurat.request.Method.POST else if (std.mem.eql(u8, method, "PUT")) ziggurat.request.Method.PUT else if (std.mem.eql(u8, method, "DELETE")) ziggurat.request.Method.DELETE else if (std.mem.eql(u8, method, "PATCH")) ziggurat.request.Method.PATCH else ziggurat.request.Method.GET;
+
+        const headers = std.StringHashMap([]const u8).init(allocator);
+        const user_data = std.StringHashMap([]const u8).init(allocator);
         var ziggurat_req = ziggurat.request.Request{
             .path = path,
             .method = method_enum,
             .body = "",
+            .headers = headers,
+            .allocator = allocator,
+            .user_data = user_data,
         };
         return Request.fromZiggurat(&ziggurat_req, allocator);
     }
@@ -34,17 +35,17 @@ pub const TestHelpers = struct {
     /// Create a mock request with body
     pub fn createMockRequestWithBody(method: []const u8, path: []const u8, body: []const u8) !Request {
         const ziggurat = @import("ziggurat");
-        const method_enum = if (std.mem.eql(u8, method, "GET")) ziggurat.request.Method.GET
-            else if (std.mem.eql(u8, method, "POST")) ziggurat.request.Method.POST
-            else if (std.mem.eql(u8, method, "PUT")) ziggurat.request.Method.PUT
-            else if (std.mem.eql(u8, method, "DELETE")) ziggurat.request.Method.DELETE
-            else if (std.mem.eql(u8, method, "PATCH")) ziggurat.request.Method.PATCH
-            else ziggurat.request.Method.GET;
-        
+        const method_enum = if (std.mem.eql(u8, method, "GET")) ziggurat.request.Method.GET else if (std.mem.eql(u8, method, "POST")) ziggurat.request.Method.POST else if (std.mem.eql(u8, method, "PUT")) ziggurat.request.Method.PUT else if (std.mem.eql(u8, method, "DELETE")) ziggurat.request.Method.DELETE else if (std.mem.eql(u8, method, "PATCH")) ziggurat.request.Method.PATCH else ziggurat.request.Method.GET;
+
+        const headers = std.StringHashMap([]const u8).init(allocator);
+        const user_data = std.StringHashMap([]const u8).init(allocator);
         var ziggurat_req = ziggurat.request.Request{
             .path = path,
             .method = method_enum,
             .body = body,
+            .headers = headers,
+            .allocator = allocator,
+            .user_data = user_data,
         };
         return Request.fromZiggurat(&ziggurat_req, allocator);
     }
@@ -62,10 +63,19 @@ pub const TestHelpers = struct {
         std.fs.cwd().deleteFile(path) catch {};
     }
 
-    /// Assert response status code (via ziggurat response)
+    /// Assert response status code (checks _status_code first, then ziggurat response)
     pub fn assertStatus(resp: Response, expected: u16) !void {
+        // Check if status code was set via withStatus()
+        if (resp._status_code) |status| {
+            if (status != expected) {
+                std.debug.print("Expected status {d}, got {d}\n", .{ expected, status });
+                return error.TestExpectedEqual;
+            }
+            return;
+        }
+        // Fall back to ziggurat response status
         const ziggurat_resp = resp.toZiggurat();
-        const actual = ziggurat_resp.status;
+        const actual = @intFromEnum(ziggurat_resp.status);
         if (actual != expected) {
             std.debug.print("Expected status {d}, got {d}\n", .{ expected, actual });
             return error.TestExpectedEqual;
@@ -106,14 +116,10 @@ pub const TestHelpers = struct {
     }
 
     /// Create a dummy handler that returns status code
-    pub fn dummyStatusHandler(status: u16) *const fn (*Request) Response {
-        const Handler = struct {
-            status_code: u16,
-            fn handle(_: *Request) Response {
-                return Response.text("").withStatus(status_code);
-            }
-        };
-        return Handler.handle;
+    /// Note: This is a simplified version that always returns 200
+    /// For custom status codes, create handlers inline in tests
+    pub fn dummyStatusHandler(_: *Request) Response {
+        return Response.text("").withStatus(200);
     }
 };
 
@@ -146,4 +152,3 @@ test "assertBodyContains" {
     const resp = Response.text("Hello World");
     try TestHelpers.assertBodyContains(resp, "Hello");
 }
-

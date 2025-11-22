@@ -205,10 +205,16 @@ test "RateLimiter check allows requests within limit" {
     });
     defer limiter.deinit();
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -231,10 +237,16 @@ test "RateLimiter check rejects requests exceeding limit" {
     });
     defer limiter.deinit();
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -256,10 +268,16 @@ test "RateLimiter check resets after window expires" {
     });
     defer limiter.deinit();
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -273,7 +291,7 @@ test "RateLimiter check resets after window expires" {
     try std.testing.expect(result1 != null);
 
     // Wait for window to expire
-    std.time.sleep(60 * std.time.ns_per_ms);
+    std.Thread.sleep(60 * std.time.ns_per_ms);
 
     // Should be allowed again
     const result2 = try limiter.check(&req, "/test");
@@ -292,10 +310,16 @@ test "RateLimiter setRouteConfig applies route-specific limits" {
         .window_ms = 1000,
     });
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -321,17 +345,23 @@ test "RateLimiter cleanup removes expired entries" {
     });
     defer limiter.deinit();
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
 
     _ = try limiter.check(&req, "/test");
 
-    std.time.sleep(60 * std.time.ns_per_ms);
+    std.Thread.sleep(60 * std.time.ns_per_ms);
 
     limiter.cleanup();
 

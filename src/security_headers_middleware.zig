@@ -42,7 +42,6 @@ pub const SecurityHeadersMiddleware = struct {
 
     /// Create a response middleware function
     pub fn responseMwFn(self: *const SecurityHeadersMiddleware) middleware.ResponseMiddlewareFn {
-        const Self = @This();
         return struct {
             fn mw(resp: Response, req: *Request) Response {
                 _ = req;
@@ -103,10 +102,10 @@ test "SecurityHeadersMiddleware adds headers" {
         .enable_xss_protection = true,
     };
     const mw = SecurityHeadersMiddleware.init(config);
-    
+
     const resp = Response.ok();
     const resp_with_headers = mw.addSecurityHeaders(resp);
-    
+
     const ziggurat_resp = resp_with_headers.toZiggurat();
     // Verify headers were added (checking via ziggurat response)
     _ = ziggurat_resp;
@@ -118,10 +117,9 @@ test "SecurityHeadersMiddleware respects config" {
         .enable_frame_options = false,
     };
     const mw = SecurityHeadersMiddleware.init(config);
-    
+
     const resp = Response.ok();
     const resp_with_headers = mw.addSecurityHeaders(resp);
-    
+
     _ = resp_with_headers;
 }
-

@@ -22,32 +22,32 @@ pub const ModelDef = struct {
     fields: []const Field,
 
     pub fn toCreateTableSQL(self: ModelDef, allocator: std.mem.Allocator) ![]const u8 {
-        var sql = std.ArrayList(u8).init(allocator);
-        errdefer sql.deinit();
+        var sql = std.ArrayListUnmanaged(u8){};
+        errdefer sql.deinit(allocator);
 
-        try sql.writer().print("CREATE TABLE IF NOT EXISTS {s} (", .{self.table_name});
+        try sql.writer(allocator).print("CREATE TABLE IF NOT EXISTS {s} (", .{self.table_name});
 
         for (self.fields, 0..) |field, i| {
-            if (i > 0) try sql.writer().print(", ", .{});
+            if (i > 0) try sql.writer(allocator).print(", ", .{});
 
-            try sql.writer().print("{s} ", .{field.name});
+            try sql.writer(allocator).print("{s} ", .{field.name});
 
             switch (field.field_type) {
-                .text => try sql.writer().print("TEXT", .{}),
-                .integer => try sql.writer().print("INTEGER", .{}),
-                .real => try sql.writer().print("REAL", .{}),
-                .blob => try sql.writer().print("BLOB", .{}),
-                .boolean => try sql.writer().print("INTEGER", .{}),
+                .text => try sql.writer(allocator).print("TEXT", .{}),
+                .integer => try sql.writer(allocator).print("INTEGER", .{}),
+                .real => try sql.writer(allocator).print("REAL", .{}),
+                .blob => try sql.writer(allocator).print("BLOB", .{}),
+                .boolean => try sql.writer(allocator).print("INTEGER", .{}),
             }
 
-            if (field.primary_key) try sql.writer().print(" PRIMARY KEY", .{});
-            if (field.auto_increment) try sql.writer().print(" AUTOINCREMENT", .{});
-            if (field.not_null) try sql.writer().print(" NOT NULL", .{});
-            if (field.unique) try sql.writer().print(" UNIQUE", .{});
+            if (field.primary_key) try sql.writer(allocator).print(" PRIMARY KEY", .{});
+            if (field.auto_increment) try sql.writer(allocator).print(" AUTOINCREMENT", .{});
+            if (field.not_null) try sql.writer(allocator).print(" NOT NULL", .{});
+            if (field.unique) try sql.writer(allocator).print(" UNIQUE", .{});
         }
 
-        try sql.writer().print(")", .{});
-        return sql.toOwnedSlice();
+        try sql.writer(allocator).print(")", .{});
+        return sql.toOwnedSlice(allocator);
     }
 };
 
@@ -86,31 +86,32 @@ pub fn toLowercaseTableName(allocator: std.mem.Allocator, table_name: []const u8
 }
 
 pub fn toSnakeCase(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var result = std.ArrayListUnmanaged(u8){};
+    errdefer result.deinit(allocator);
 
     for (input, 0..) |char, i| {
         if (i > 0 and char >= 'A' and char <= 'Z') {
-            try result.append('_');
-            try result.append(char + 32); // Convert to lowercase
+            try result.append(allocator, '_');
+            try result.append(allocator, char + 32); // Convert to lowercase
         } else if (char >= 'A' and char <= 'Z') {
-            try result.append(char + 32);
+            try result.append(allocator, char + 32);
         } else {
-            try result.append(char);
+            try result.append(allocator, char);
         }
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
-pub fn getFieldNames(comptime T: type) []const []const u8 {
+pub fn getFieldNames(comptime T: type) *const [std.meta.fields(T).len][]const u8 {
     const fields = std.meta.fields(T);
-    comptime var names: [fields.len][]const u8 = undefined;
-    comptime var i: usize = 0;
-    inline for (fields) |field| {
-        names[i] = field.name;
-        i += 1;
-    }
+    const names = comptime blk: {
+        var result: [fields.len][]const u8 = undefined;
+        for (fields, 0..) |field, i| {
+            result[i] = field.name;
+        }
+        break :blk result;
+    };
     return &names;
 }
 

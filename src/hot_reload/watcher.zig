@@ -159,7 +159,7 @@ test "FileWatcher watch and start" {
 
     // Create a test file
     const test_file = "test_watch.txt";
-    std.fs.cwd().writeFile(test_file, "test") catch {
+    std.fs.cwd().writeFile(.{ .sub_path = test_file, .data = "test" }) catch {
         // Skip test if file creation fails
         return;
     };
@@ -173,7 +173,7 @@ test "FileWatcher watch and start" {
     std.Thread.sleep(600_000_000); // 600ms
 
     // Modify the file
-    std.fs.cwd().writeFile(test_file, "modified") catch {
+    std.fs.cwd().writeFile(.{ .sub_path = test_file, .data = "modified" }) catch {
         return;
     };
 

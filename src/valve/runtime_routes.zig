@@ -75,8 +75,7 @@ pub const RuntimeRouteRegistry = struct {
 
         // Check if route already exists
         if (self.routes.contains(key)) {
-            self.allocator.free(key);
-            pattern.deinit(self.allocator);
+            // Don't free key or pattern here - errdefer will handle both
             return error.RouteAlreadyExists;
         }
 
@@ -148,6 +147,8 @@ pub const RuntimeRouteRegistry = struct {
         defer self.allocator.free(key);
 
         if (self.routes.fetchRemove(key)) |entry| {
+            // Free the key that was stored in the map
+            self.allocator.free(entry.key);
             var mutable_value = entry.value;
             mutable_value.deinit(self.allocator);
         } else {
@@ -254,7 +255,7 @@ test "RuntimeRouteRegistry register and find pattern match" {
         .route_params = route_params,
         ._query_params = null,
     };
-    defer req.context.deinit();
+    defer req.deinit();
 
     const route = try registry.findRoute("GET", "/todos/123", &req);
     try std.testing.expect(route != null);

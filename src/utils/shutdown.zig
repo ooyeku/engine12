@@ -32,7 +32,7 @@ pub const ShutdownHookRegistry = struct {
     pub fn execute(self: *ShutdownHookRegistry) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        
+
         for (self.hooks.items) |hook| {
             hook();
         }
@@ -40,8 +40,8 @@ pub const ShutdownHookRegistry = struct {
 
     /// Get number of registered hooks
     pub fn count(self: *const ShutdownHookRegistry) usize {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        (@constCast(self)).mutex.lock();
+        defer (@constCast(self)).mutex.unlock();
         return self.hooks.items.len;
     }
 };
@@ -79,17 +79,17 @@ pub const ActiveRequestTracker = struct {
     pub fn waitForCompletion(self: *const ActiveRequestTracker, timeout_ms: u32) bool {
         const start_time = std.time.milliTimestamp();
         const timeout_ns = @as(i64, timeout_ms) * std.time.ns_per_ms;
-        
+
         while (self.get() > 0) {
             const elapsed = std.time.nanoTimestamp() - start_time;
             if (elapsed >= timeout_ns) {
                 return false; // Timeout
             }
-            
+
             // Sleep for 10ms before checking again
             std.Thread.sleep(10 * std.time.ns_per_ms);
         }
-        
+
         return true; // All requests completed
     }
 };
@@ -114,7 +114,7 @@ test "ShutdownHookRegistry execute" {
     const allocator = std.testing.allocator;
     var registry = ShutdownHookRegistry.init(allocator);
     defer registry.deinit(allocator);
-    
+
     const hook = struct {
         fn testHook() void {
             // Test hook that doesn't need context
@@ -152,11 +152,10 @@ test "ActiveRequestTracker waitForCompletion with no requests" {
 test "ActiveRequestTracker waitForCompletion with timeout" {
     var tracker = ActiveRequestTracker.init();
     tracker.increment();
-    
+
     // Should timeout since request never completes
     const completed = tracker.waitForCompletion(50);
     try std.testing.expect(!completed);
-    
+
     tracker.decrement();
 }
-

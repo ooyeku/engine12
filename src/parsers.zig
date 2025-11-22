@@ -40,7 +40,14 @@ pub const QueryParser = struct {
                 const key = try percentDecode(allocator, key_raw);
                 const value = try percentDecode(allocator, value_raw);
                 
-                try params.put(key, value);
+                const gop = try params.getOrPut(key);
+                if (gop.found_existing) {
+                    allocator.free(key);
+                    allocator.free(gop.value_ptr.*);
+                    gop.value_ptr.* = value;
+                } else {
+                    gop.value_ptr.* = value;
+                }
             }
             
             // Move to next pair
@@ -136,7 +143,14 @@ pub const BodyParser = struct {
                 const key = try QueryParser.percentDecode(allocator, key_raw);
                 const value = try QueryParser.percentDecode(allocator, value_raw);
                 
-                try params.put(key, value);
+                const gop = try params.getOrPut(key);
+                if (gop.found_existing) {
+                    allocator.free(key);
+                    allocator.free(gop.value_ptr.*);
+                    gop.value_ptr.* = value;
+                } else {
+                    gop.value_ptr.* = value;
+                }
             }
             
             // Move to next pair
@@ -147,11 +161,21 @@ pub const BodyParser = struct {
     }
 };
 
+// Helper for tests to cleanup params
+fn freeParams(allocator: std.mem.Allocator, params: *std.StringHashMap([]const u8)) void {
+    var iter = params.iterator();
+    while (iter.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+        allocator.free(entry.value_ptr.*);
+    }
+    params.deinit();
+}
+
 // Tests
 test "QueryParser parse simple query" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/todos?limit=10&offset=20");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 2);
     try std.testing.expectEqualStrings(params.get("limit").?, "10");
@@ -161,7 +185,7 @@ test "QueryParser parse simple query" {
 test "QueryParser parse empty query" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/todos");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 0);
 }
@@ -169,7 +193,7 @@ test "QueryParser parse empty query" {
 test "QueryParser parse URL encoded" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/search?q=hello%20world&tag=test");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 2);
     try std.testing.expectEqualStrings(params.get("q").?, "hello world");
@@ -179,7 +203,7 @@ test "QueryParser parse URL encoded" {
 test "BodyParser formData" {
     const allocator = std.testing.allocator;
     var params = try BodyParser.formData(allocator, "title=Hello&completed=true");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 2);
     try std.testing.expectEqualStrings(params.get("title").?, "Hello");
@@ -189,7 +213,7 @@ test "BodyParser formData" {
 test "QueryParser parse with single parameter" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?key=value");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     try std.testing.expectEqualStrings(params.get("key").?, "value");
@@ -198,7 +222,7 @@ test "QueryParser parse with single parameter" {
 test "QueryParser parse with no equals sign" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?keyonly");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     try std.testing.expectEqualStrings(params.get("keyonly").?, "");
@@ -207,7 +231,7 @@ test "QueryParser parse with no equals sign" {
 test "QueryParser parse with multiple equals signs" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?key=value=extra");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     // Should take everything after first = as value
@@ -217,7 +241,7 @@ test "QueryParser parse with multiple equals signs" {
 test "QueryParser parse with special characters" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?q=hello%20world&tag=test%2Bvalue%26more");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 2);
     try std.testing.expectEqualStrings(params.get("q").?, "hello world");
@@ -227,7 +251,7 @@ test "QueryParser parse with special characters" {
 test "QueryParser parse with percent encoding edge cases" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?key=%41%42%43");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     try std.testing.expectEqualStrings(params.get("key").?, "ABC");
@@ -236,7 +260,7 @@ test "QueryParser parse with percent encoding edge cases" {
 test "QueryParser parse with invalid percent encoding" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?key=%XX");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     // Invalid hex should be treated as literal
@@ -246,7 +270,7 @@ test "QueryParser parse with invalid percent encoding" {
 test "QueryParser parse with incomplete percent encoding" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?key=%4");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     // Incomplete encoding should be treated as literal
@@ -256,7 +280,7 @@ test "QueryParser parse with incomplete percent encoding" {
 test "QueryParser parse with plus sign encoding" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?q=hello+world");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     try std.testing.expectEqualStrings(params.get("q").?, "hello world");
@@ -265,7 +289,7 @@ test "QueryParser parse with plus sign encoding" {
 test "QueryParser parse with empty query string" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 0);
 }
@@ -273,7 +297,7 @@ test "QueryParser parse with empty query string" {
 test "QueryParser parse with ampersand only" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?&");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 0);
 }
@@ -281,7 +305,7 @@ test "QueryParser parse with ampersand only" {
 test "QueryParser parse with duplicate keys" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?key=value1&key=value2");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     // Last value wins
@@ -291,7 +315,7 @@ test "QueryParser parse with duplicate keys" {
 test "BodyParser formData with empty values" {
     const allocator = std.testing.allocator;
     var params = try BodyParser.formData(allocator, "key1=&key2=value&key3=");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 3);
     try std.testing.expectEqualStrings(params.get("key1").?, "");
@@ -302,7 +326,7 @@ test "BodyParser formData with empty values" {
 test "BodyParser formData with URL encoded values" {
     const allocator = std.testing.allocator;
     var params = try BodyParser.formData(allocator, "name=John%20Doe&email=test%40example.com");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 2);
     try std.testing.expectEqualStrings(params.get("name").?, "John Doe");
@@ -312,7 +336,7 @@ test "BodyParser formData with URL encoded values" {
 test "BodyParser formData with no equals sign" {
     const allocator = std.testing.allocator;
     var params = try BodyParser.formData(allocator, "keyonly");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     try std.testing.expectEqualStrings(params.get("keyonly").?, "");
@@ -321,7 +345,7 @@ test "BodyParser formData with no equals sign" {
 test "BodyParser formData with duplicate keys" {
     const allocator = std.testing.allocator;
     var params = try BodyParser.formData(allocator, "key=value1&key=value2");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     // Last value wins
@@ -331,7 +355,7 @@ test "BodyParser formData with duplicate keys" {
 test "BodyParser formData with plus sign encoding" {
     const allocator = std.testing.allocator;
     var params = try BodyParser.formData(allocator, "name=John+Doe");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     try std.testing.expectEqualStrings(params.get("name").?, "John Doe");
@@ -340,7 +364,7 @@ test "BodyParser formData with plus sign encoding" {
 test "BodyParser formData with special characters" {
     const allocator = std.testing.allocator;
     var params = try BodyParser.formData(allocator, "msg=hello%26world%3Dtest");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 1);
     try std.testing.expectEqualStrings(params.get("msg").?, "hello&world=test");
@@ -349,7 +373,7 @@ test "BodyParser formData with special characters" {
 test "BodyParser formData with empty body" {
     const allocator = std.testing.allocator;
     var params = try BodyParser.formData(allocator, "");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 0);
 }
@@ -357,7 +381,7 @@ test "BodyParser formData with empty body" {
 test "QueryParser parse with many parameters" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?a=1&b=2&c=3&d=4&e=5");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 5);
     try std.testing.expectEqualStrings(params.get("a").?, "1");
@@ -370,11 +394,10 @@ test "QueryParser parse with many parameters" {
 test "QueryParser parse with mixed encoding" {
     const allocator = std.testing.allocator;
     var params = try QueryParser.parse(allocator, "/api/test?normal=value&encoded=hello%20world&plus=test+value");
-    defer params.deinit();
+    defer freeParams(allocator, &params);
     
     try std.testing.expect(params.count() == 3);
     try std.testing.expectEqualStrings(params.get("normal").?, "value");
     try std.testing.expectEqualStrings(params.get("encoded").?, "hello world");
     try std.testing.expectEqualStrings(params.get("plus").?, "test value");
 }
-

@@ -244,7 +244,7 @@ test "CSRFProtection generateToken produces different tokens" {
     const token1 = try csrf.generateToken();
     defer csrf.allocator.free(token1);
 
-    std.time.sleep(1 * std.time.ns_per_ms);
+    std.Thread.sleep(1 * std.time.ns_per_ms);
 
     const token2 = try csrf.generateToken();
     defer csrf.allocator.free(token2);

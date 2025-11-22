@@ -71,10 +71,16 @@ pub const Pagination = struct {
 
 // Tests
 test "Pagination fromRequest with defaults" {
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/api/todos",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -86,10 +92,16 @@ test "Pagination fromRequest with defaults" {
 }
 
 test "Pagination fromRequest with query params" {
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/api/todos?page=3&limit=10",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -101,10 +113,16 @@ test "Pagination fromRequest with query params" {
 }
 
 test "Pagination fromRequest invalid page" {
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/api/todos?page=0",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -113,10 +131,16 @@ test "Pagination fromRequest invalid page" {
 }
 
 test "Pagination fromRequest invalid limit" {
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/api/todos?limit=0",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();

@@ -272,6 +272,20 @@ pub const MiddlewareChain = struct {
 };
 
 // Tests
+fn createTestZigguratRequest(path: []const u8, method: @import("ziggurat").request.Method, body: []const u8) @import("ziggurat").request.Request {
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    return ziggurat.request.Request{
+        .path = path,
+        .method = method,
+        .body = body,
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
+    };
+}
+
 test "MiddlewareChain add and execute pre-request" {
     var chain = MiddlewareChain{};
 
@@ -284,10 +298,16 @@ test "MiddlewareChain add and execute pre-request" {
 
     try chain.addPreRequest(&middleware1.mw);
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -308,10 +328,16 @@ test "MiddlewareChain short-circuit on abort" {
 
     try chain.addPreRequest(&abortMw.mw);
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -341,10 +367,16 @@ test "MiddlewareChain execute multiple middleware in order" {
     try chain.addPreRequest(&mw1.mw);
     try chain.addPreRequest(&mw2.mw);
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -367,7 +399,10 @@ test "MiddlewareChain execute response middleware" {
     try chain.addResponse(&mw.mw);
 
     const original = Response.ok();
-    const transformed = chain.executeResponse(original);
+    var ziggurat_req = createTestZigguratRequest("/test", .GET, "");
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    const transformed = chain.executeResponse(original, &req);
     _ = transformed;
 }
 
@@ -464,10 +499,16 @@ test "MiddlewareChain execute multiple pre-request middleware in order" {
     try chain.addPreRequest(&mw2.mw);
     try chain.addPreRequest(&mw3.mw);
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -501,10 +542,16 @@ test "MiddlewareChain executePreRequest stops on first abort" {
     try chain.addPreRequest(&mw1.mw);
     try chain.addPreRequest(&mw2.mw);
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -533,7 +580,10 @@ test "MiddlewareChain executeResponse transforms through all middleware" {
     try chain.addResponse(&mw2.mw);
 
     const original = Response.ok();
-    const transformed = chain.executeResponse(original);
+    var ziggurat_req = createTestZigguratRequest("/test", .GET, "");
+    var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
+    defer req.deinit();
+    const transformed = chain.executeResponse(original, &req);
     _ = transformed;
 }
 
@@ -542,17 +592,23 @@ test "MiddlewareChain executePreRequest with rate limit context" {
 
     const mw = struct {
         fn mw(req: *Request) MiddlewareResult {
-            try req.context.put("rate_limited", "true");
+            req.context.put("rate_limited", "true") catch {};
             return .abort;
         }
     };
 
     try chain.addPreRequest(&mw.mw);
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -566,18 +622,24 @@ test "MiddlewareChain executePreRequest with body size exceeded context" {
 
     const mw = struct {
         fn mw(req: *Request) MiddlewareResult {
-            try req.context.put("body_size_exceeded", "true");
-            try req.context.put("body_size_limit", "1000");
+            req.context.put("body_size_exceeded", "true") catch {};
+            req.context.put("body_size_limit", "1000") catch {};
             return .abort;
         }
     };
 
     try chain.addPreRequest(&mw.mw);
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -591,17 +653,23 @@ test "MiddlewareChain executePreRequest with CSRF error context" {
 
     const mw = struct {
         fn mw(req: *Request) MiddlewareResult {
-            try req.context.put("csrf_error", "true");
+            req.context.put("csrf_error", "true") catch {};
             return .abort;
         }
     };
 
     try chain.addPreRequest(&mw.mw);
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -613,10 +681,16 @@ test "MiddlewareChain executePreRequest with CSRF error context" {
 test "MiddlewareChain executeResponse with cache hit" {
     var chain = MiddlewareChain{};
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -632,10 +706,16 @@ test "MiddlewareChain executeResponse with cache hit" {
 test "MiddlewareChain empty chain executes successfully" {
     var chain = MiddlewareChain{};
 
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/test",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
@@ -644,6 +724,9 @@ test "MiddlewareChain empty chain executes successfully" {
     try std.testing.expect(result == null);
 
     const resp = Response.ok();
-    const transformed = chain.executeResponse(resp);
+    var ziggurat_req2 = createTestZigguratRequest("/test", .GET, "");
+    var req2 = Request.fromZiggurat(&ziggurat_req2, std.testing.allocator);
+    defer req2.deinit();
+    const transformed = chain.executeResponse(resp, &req2);
     _ = transformed;
 }

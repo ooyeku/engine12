@@ -115,7 +115,7 @@ pub const ResponseCache = struct {
 
     /// Get a cached response if available and not expired
     /// Thread-safe: Uses mutex protection for concurrent access
-    /// 
+    ///
     /// Input validation:
     /// - Key must not be empty
     pub fn get(self: *ResponseCache, key: []const u8) ?*CacheEntry {
@@ -148,7 +148,7 @@ pub const ResponseCache = struct {
     /// Store a response in the cache
     /// Duplicates the key to ensure it persists beyond the request lifetime
     /// Thread-safe: Uses mutex protection for concurrent access
-    /// 
+    ///
     /// Input validation:
     /// - Key must not be empty
     /// - Body must not be empty
@@ -209,7 +209,7 @@ pub const ResponseCache = struct {
 
     /// Invalidate a cache entry
     /// Thread-safe: Uses mutex protection for concurrent access
-    /// 
+    ///
     /// Input validation:
     /// - Key must not be empty
     pub fn invalidate(self: *ResponseCache, key: []const u8) void {
@@ -229,10 +229,12 @@ pub const ResponseCache = struct {
 
     /// Invalidate all cache entries matching a prefix
     /// Thread-safe: Uses mutex protection for concurrent access
-    /// 
+    ///
     /// Input validation:
     /// - Prefix must not be null (empty prefix is valid and matches nothing)
     pub fn invalidatePrefix(self: *ResponseCache, prefix: []const u8) void {
+        if (prefix.len == 0) return;
+
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -398,7 +400,7 @@ test "ResponseCache expiration" {
     try std.testing.expect(cache.get("/test") != null);
 
     // Wait for expiration
-    std.time.sleep(20 * std.time.ns_per_ms);
+    std.Thread.sleep(20 * std.time.ns_per_ms);
 
     // Entry should be expired
     try std.testing.expect(cache.get("/test") == null);
@@ -478,7 +480,7 @@ test "ResponseCache cleanup removes expired entries" {
     try std.testing.expect(cache.get("/test1") != null);
     try std.testing.expect(cache.get("/test2") != null);
 
-    std.time.sleep(20 * std.time.ns_per_ms);
+    std.Thread.sleep(20 * std.time.ns_per_ms);
 
     cache.cleanup();
 
@@ -565,7 +567,7 @@ test "CacheEntry expiration check" {
 
     try std.testing.expect(!entry.isExpired());
 
-    std.time.sleep(15 * std.time.ns_per_ms);
+    std.Thread.sleep(15 * std.time.ns_per_ms);
 
     try std.testing.expect(entry.isExpired());
 }

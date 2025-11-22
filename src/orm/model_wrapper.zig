@@ -127,7 +127,7 @@ pub fn Model(comptime T: type) type {
         /// const fields = TodoModel.fieldNames();
         /// // Returns &[_][]const u8{"id", "title", "description", ...}
         /// ```
-        pub fn fieldNames() []const []const u8 {
+        pub fn fieldNames() *const [std.meta.fields(T).len][]const u8 {
             return model_utils.getFieldNames(T);
         }
     };

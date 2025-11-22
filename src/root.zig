@@ -106,3 +106,11 @@ pub const migration_discovery = @import("orm/migration_discovery.zig");
 
 // Re-export TemplateRegistry (from Engine12 struct)
 pub const TemplateRegistry = engine12.Engine12.TemplateRegistry;
+
+// Import test files to ensure all tests are discovered and run
+// These imports don't need to be used - they just need to be compiled
+// so Zig can discover the test declarations in these files
+comptime {
+    _ = @import("tests/integration.zig");
+    _ = @import("orm/orm_comprehensive_tests.zig");
+}

@@ -445,11 +445,11 @@ pub const Logger = struct {
 
     /// Cleanup logger resources
     pub fn deinit(self: *Logger) void {
+        self.destinations.deinit(self.allocator);
         if (self.file_handle) |handle| {
             handle.deinit();
             self.allocator.destroy(handle);
         }
-        self.destinations.deinit(self.allocator);
     }
 
     /// Create logger from environment (auto-selects format)
@@ -638,8 +638,8 @@ test "LogEntry init and toJson" {
     var entry = try LogEntry.init(std.testing.allocator, .info, "Test message");
     defer entry.deinit();
 
-    try entry.field("user_id", "123");
-    try entry.field("action", "login");
+    _ = try entry.field("user_id", "123");
+    _ = try entry.field("action", "login");
 
     const json = try entry.toJson(std.testing.allocator);
     defer std.testing.allocator.free(json);
@@ -650,6 +650,7 @@ test "LogEntry init and toJson" {
 
 test "Logger log levels" {
     var logger = Logger.init(std.testing.allocator, .info);
+    defer logger.deinit();
 
     var debug_entry = try logger.debug("Debug message");
     defer {
@@ -676,12 +677,9 @@ test "RouteRegistry getByMethod filters correctly" {
     try registry.register("PUT", "/api/users", "updateUser");
 
     var get_routes = std.ArrayListUnmanaged(RouteInfo){};
-    defer {
-        for (get_routes.items) |*route| {
-            route.deinit(std.testing.allocator);
-        }
-        get_routes.deinit(std.testing.allocator);
-    }
+    defer get_routes.deinit(std.testing.allocator);
+    // Note: Don't free individual routes - they're owned by the registry
+    // The registry.deinit() will free them
 
     try registry.getByMethod("GET", &get_routes);
 
@@ -720,8 +718,8 @@ test "LogEntry toJson with fields" {
     var entry = try LogEntry.init(std.testing.allocator, .info, "Test message");
     defer entry.deinit();
 
-    try entry.field("user_id", "123");
-    try entry.field("action", "login");
+    _ = try entry.field("user_id", "123");
+    _ = try entry.field("action", "login");
 
     const json = try entry.toJson(std.testing.allocator);
     defer std.testing.allocator.free(json);
@@ -745,6 +743,7 @@ test "LogEntry toJson without fields" {
 
 test "Logger all log levels" {
     var logger = Logger.init(std.testing.allocator, .debug);
+    defer logger.deinit();
 
     var debug_entry = try logger.debug("Debug");
     defer {
@@ -777,6 +776,7 @@ test "Logger all log levels" {
 
 test "Logger min level filtering" {
     var logger = Logger.init(std.testing.allocator, .warn);
+    defer logger.deinit();
 
     var debug_entry = try logger.debug("Debug");
     defer {
@@ -809,6 +809,7 @@ test "Logger min level filtering" {
 
 test "LogEntry builder pattern chaining" {
     var logger = Logger.init(std.testing.allocator, .debug);
+    defer logger.deinit();
 
     var entry = try logger.info("Test message");
     defer {
@@ -816,10 +817,10 @@ test "LogEntry builder pattern chaining" {
         logger.allocator.destroy(entry);
     }
 
-    try entry.field("key1", "value1");
-    try entry.field("key2", "value2");
-    try entry.fieldInt("count", 42);
-    try entry.fieldBool("enabled", true);
+    _ = try entry.field("key1", "value1");
+    _ = try entry.field("key2", "value2");
+    _ = try entry.fieldInt("count", 42);
+    _ = try entry.fieldBool("enabled", true);
 
     try std.testing.expectEqualStrings(entry.message, "Test message");
     try std.testing.expect(entry.fields.get("key1") != null);
@@ -832,6 +833,7 @@ test "LogEntry builder pattern chaining" {
 
 test "LogEntry JSON format" {
     var logger = Logger.init(std.testing.allocator, .info);
+    defer logger.deinit();
     logger.setFormat(.json);
 
     var entry = try logger.info("Test message");
@@ -840,7 +842,7 @@ test "LogEntry JSON format" {
         logger.allocator.destroy(entry);
     }
 
-    try entry.field("user_id", "123");
+    _ = try entry.field("user_id", "123");
 
     const json = try entry.toJson(std.testing.allocator);
     defer std.testing.allocator.free(json);
@@ -853,6 +855,7 @@ test "LogEntry JSON format" {
 
 test "LogEntry human-readable format" {
     var logger = Logger.init(std.testing.allocator, .info);
+    defer logger.deinit();
     logger.setFormat(.human);
 
     var entry = try logger.warn("Warning message");
@@ -861,7 +864,7 @@ test "LogEntry human-readable format" {
         logger.allocator.destroy(entry);
     }
 
-    try entry.field("error_code", "500");
+    _ = try entry.field("error_code", "500");
 
     const human = try entry.toHumanReadable(std.testing.allocator);
     defer std.testing.allocator.free(human);
@@ -872,27 +875,37 @@ test "LogEntry human-readable format" {
 }
 
 test "Logger fromEnvironment selects correct format" {
-    const dev_logger = Logger.fromEnvironment(std.testing.allocator, .development);
+    var dev_logger = Logger.fromEnvironment(std.testing.allocator, .development);
+    defer dev_logger.deinit();
     try std.testing.expectEqual(dev_logger.format, .human);
     try std.testing.expectEqual(dev_logger.min_level, .debug);
 
-    const prod_logger = Logger.fromEnvironment(std.testing.allocator, .production);
+    var prod_logger = Logger.fromEnvironment(std.testing.allocator, .production);
+    defer prod_logger.deinit();
     try std.testing.expectEqual(prod_logger.format, .json);
     try std.testing.expectEqual(prod_logger.min_level, .info);
 
-    const staging_logger = Logger.fromEnvironment(std.testing.allocator, .staging);
+    var staging_logger = Logger.fromEnvironment(std.testing.allocator, .staging);
+    defer staging_logger.deinit();
     try std.testing.expectEqual(staging_logger.format, .human);
     try std.testing.expectEqual(staging_logger.min_level, .info);
 }
 
 test "LogEntry withRequest captures request context" {
     var logger = Logger.init(std.testing.allocator, .info);
+    defer logger.deinit();
 
     // Create a mock request
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/api/todos",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();

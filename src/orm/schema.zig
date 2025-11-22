@@ -20,7 +20,7 @@ pub const ColumnInfo = struct {
 /// Provides functions to inspect database schema structure
 pub const Schema = struct {
     /// Check if a column exists in a table
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// const exists = try Schema.columnExists(&db, "Todo", "priority");
@@ -54,7 +54,7 @@ pub const Schema = struct {
 
     /// Get all columns for a table
     /// Returns an array of ColumnInfo structs
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// const columns = try Schema.getColumns(&db, "Todo", allocator);
@@ -85,9 +85,9 @@ pub const Schema = struct {
             // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
             const name = row.getText(1) orelse continue;
             const type_str = row.getText(2) orelse continue;
-            const notnull = row.getInt64(3) orelse 0;
+            const notnull = row.getInt64(3);
             const default_val = row.getText(4);
-            const pk = row.getInt64(5) orelse 0;
+            const pk = row.getInt64(5);
 
             const name_copy = try allocator.dupe(u8, name);
             errdefer allocator.free(name_copy);
@@ -109,7 +109,7 @@ pub const Schema = struct {
     }
 
     /// Check if a table exists in the database
-    /// 
+    ///
     /// Example:
     /// ```zig
     /// const exists = try Schema.tableExists(&db, "Todo");
@@ -136,17 +136,17 @@ pub const Schema = struct {
 test "Schema.tableExists" {
     const allocator = std.testing.allocator;
     const test_db_path = ":memory:";
-    
+
     var db = try Database.open(test_db_path, allocator);
     defer db.close();
-    
+
     // Create a test table
     try db.execute("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT)");
-    
+
     // Test table exists
     const exists = try Schema.tableExists(&db, "test_table");
     try std.testing.expect(exists);
-    
+
     // Test non-existent table
     const not_exists = try Schema.tableExists(&db, "nonexistent");
     try std.testing.expect(!not_exists);
@@ -155,20 +155,20 @@ test "Schema.tableExists" {
 test "Schema.columnExists" {
     const allocator = std.testing.allocator;
     const test_db_path = ":memory:";
-    
+
     var db = try Database.open(test_db_path, allocator);
     defer db.close();
-    
+
     // Create a test table
     try db.execute("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT)");
-    
+
     // Test column exists
     const id_exists = try Schema.columnExists(&db, "test_table", "id");
     try std.testing.expect(id_exists);
-    
+
     const name_exists = try Schema.columnExists(&db, "test_table", "name");
     try std.testing.expect(name_exists);
-    
+
     // Test non-existent column
     const not_exists = try Schema.columnExists(&db, "test_table", "nonexistent");
     try std.testing.expect(!not_exists);
@@ -177,13 +177,13 @@ test "Schema.columnExists" {
 test "Schema.getColumns" {
     const allocator = std.testing.allocator;
     const test_db_path = ":memory:";
-    
+
     var db = try Database.open(test_db_path, allocator);
     defer db.close();
-    
+
     // Create a test table
     try db.execute("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT 'default')");
-    
+
     const columns = try Schema.getColumns(&db, "test_table", allocator);
     defer {
         for (columns) |col| {
@@ -193,9 +193,9 @@ test "Schema.getColumns" {
         }
         allocator.free(columns);
     }
-    
+
     try std.testing.expect(columns.len == 2);
-    
+
     // Find id column
     var found_id = false;
     var found_name = false;
@@ -211,8 +211,7 @@ test "Schema.getColumns" {
             try std.testing.expect(col.default_value != null);
         }
     }
-    
+
     try std.testing.expect(found_id);
     try std.testing.expect(found_name);
 }
-

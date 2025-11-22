@@ -28,7 +28,7 @@ pub const ErrorContext = struct {
         defer buffer.deinit(allocator);
 
         try buffer.writer(allocator).print("{s}:{d} in {s}", .{ self.file, self.line, self.function });
-        
+
         if (self.stack_trace) |trace| {
             try buffer.writer(allocator).print("\nStack trace:\n{s}", .{trace});
         }
@@ -48,20 +48,20 @@ pub const ErrorContext = struct {
 
         if (include_stack) {
             if (self.stack_trace) |trace| {
-            // Escape JSON string
-            var escaped = std.ArrayListUnmanaged(u8){};
-            defer escaped.deinit(allocator);
-            for (trace) |byte| {
-                switch (byte) {
-                    '\n' => try escaped.appendSlice(allocator, "\\n"),
-                    '\r' => try escaped.appendSlice(allocator, "\\r"),
-                    '\t' => try escaped.appendSlice(allocator, "\\t"),
-                    '"' => try escaped.appendSlice(allocator, "\\\""),
-                    '\\' => try escaped.appendSlice(allocator, "\\\\"),
-                    else => try escaped.append(allocator, byte),
+                // Escape JSON string
+                var escaped = std.ArrayListUnmanaged(u8){};
+                defer escaped.deinit(allocator);
+                for (trace) |byte| {
+                    switch (byte) {
+                        '\n' => try escaped.appendSlice(allocator, "\\n"),
+                        '\r' => try escaped.appendSlice(allocator, "\\r"),
+                        '\t' => try escaped.appendSlice(allocator, "\\t"),
+                        '"' => try escaped.appendSlice(allocator, "\\\""),
+                        '\\' => try escaped.appendSlice(allocator, "\\\\"),
+                        else => try escaped.append(allocator, byte),
+                    }
                 }
-            }
-            try buffer.writer(allocator).print(",\"stack_trace\":\"{s}\"", .{escaped.items});
+                try buffer.writer(allocator).print(",\"stack_trace\":\"{s}\"", .{escaped.items});
             }
         }
 
@@ -75,14 +75,14 @@ pub const ErrorContext = struct {
 /// Stack traces are only captured in debug builds for performance
 pub fn captureErrorContext(allocator: std.mem.Allocator, include_stack: bool) !ErrorContext {
     const ctx = ErrorContext.here();
-    
+
     // In debug builds, we can capture stack traces
     // For now, we'll leave stack_trace as null since Zig's stack trace API is limited
     // Future: Use @errorReturnTrace() or similar when available
-    
+
     _ = allocator;
     _ = include_stack;
-    
+
     return ctx;
 }
 
@@ -101,10 +101,10 @@ test "ErrorContext format" {
         .function = "testFunction",
         .stack_trace = null,
     };
-    
+
     const formatted = try ctx.format(std.testing.allocator);
     defer std.testing.allocator.free(formatted);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, formatted, "test.zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, formatted, "42") != null);
     try std.testing.expect(std.mem.indexOf(u8, formatted, "testFunction") != null);
@@ -117,12 +117,11 @@ test "ErrorContext toJson" {
         .function = "testFunction",
         .stack_trace = null,
     };
-    
+
     const json = try ctx.toJson(std.testing.allocator, false);
     defer std.testing.allocator.free(json);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, json, "\"file\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"line\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"function\"") != null);
 }
-

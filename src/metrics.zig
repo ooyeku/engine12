@@ -16,7 +16,7 @@ pub const Metric = struct {
     labels: std.StringHashMap([]const u8),
     metric_type: MetricType,
     timestamp: i64,
-    
+
     pub fn init(allocator: std.mem.Allocator, name: []const u8, value: f64, metric_type: MetricType) Metric {
         return Metric{
             .name = name,
@@ -26,11 +26,11 @@ pub const Metric = struct {
             .timestamp = std.time.milliTimestamp(),
         };
     }
-    
+
     pub fn deinit(self: *Metric) void {
         self.labels.deinit();
     }
-    
+
     /// Add a label to the metric
     pub fn addLabel(self: *Metric, key: []const u8, value: []const u8) !void {
         try self.labels.put(key, value);
@@ -41,14 +41,14 @@ pub const Metric = struct {
 pub const MetricsCollector = struct {
     metrics: std.ArrayListUnmanaged(Metric),
     allocator: std.mem.Allocator,
-    
+
     // Route timing data
     route_timings: std.StringHashMap(RouteTiming),
-    
+
     // Request counters
     request_count: u64 = 0,
     error_count: u64 = 0,
-    
+
     pub fn init(allocator: std.mem.Allocator) MetricsCollector {
         return MetricsCollector{
             .metrics = std.ArrayListUnmanaged(Metric){},
@@ -56,22 +56,22 @@ pub const MetricsCollector = struct {
             .route_timings = std.StringHashMap(RouteTiming).init(allocator),
         };
     }
-    
+
     /// Record a metric
     pub fn record(self: *MetricsCollector, metric: Metric) !void {
         try self.metrics.append(self.allocator, metric);
     }
-    
+
     /// Increment request counter
     pub fn incrementRequest(self: *MetricsCollector) void {
         self.request_count += 1;
     }
-    
+
     /// Increment error counter
     pub fn incrementError(self: *MetricsCollector) void {
         self.error_count += 1;
     }
-    
+
     /// Record route timing
     pub fn recordRouteTiming(self: *MetricsCollector, route: []const u8, duration_ms: u64) !void {
         const timing_ptr = self.route_timings.getPtr(route);
@@ -91,39 +91,39 @@ pub const MetricsCollector = struct {
             try self.route_timings.put(route, new_timing);
         }
     }
-    
+
     /// Get Prometheus format metrics
     pub fn getPrometheusMetrics(self: *const MetricsCollector) ![]const u8 {
         var output = std.ArrayListUnmanaged(u8){};
         const writer = output.writer(self.allocator);
-        
+
         // Request counter
         try writer.print("http_requests_total {d}\n", .{self.request_count});
-        
+
         // Error counter
         try writer.print("http_errors_total {d}\n", .{self.error_count});
-        
+
         // Route timings
         var iterator = self.route_timings.iterator();
         while (iterator.next()) |entry| {
             const timing = entry.value_ptr;
             const avg_ms = if (timing.count > 0) @as(f64, @floatFromInt(timing.total_ms)) / @as(f64, @floatFromInt(timing.count)) else 0.0;
-            
+
             try writer.print("http_route_duration_ms{{route=\"{s}\"}} {d}\n", .{ timing.route, avg_ms });
             try writer.print("http_route_requests_total{{route=\"{s}\"}} {d}\n", .{ timing.route, timing.count });
             try writer.print("http_route_duration_min_ms{{route=\"{s}\"}} {d}\n", .{ timing.route, timing.min_ms });
             try writer.print("http_route_duration_max_ms{{route=\"{s}\"}} {d}\n", .{ timing.route, timing.max_ms });
         }
-        
+
         return output.toOwnedSlice(self.allocator);
     }
-    
+
     pub fn deinit(self: *MetricsCollector) void {
         for (self.metrics.items) |*metric| {
             metric.deinit();
         }
         self.metrics.deinit(self.allocator);
-        
+
         var iterator = self.route_timings.iterator();
         while (iterator.next()) |entry| {
             _ = entry;
@@ -145,19 +145,19 @@ pub const RouteTiming = struct {
 pub const RequestTiming = struct {
     start_time: i64,
     route: []const u8,
-    
+
     pub fn start(route: []const u8) RequestTiming {
         return RequestTiming{
             .start_time = std.time.milliTimestamp(),
             .route = route,
         };
     }
-    
+
     pub fn elapsed(self: *const RequestTiming) u64 {
         const now = std.time.milliTimestamp();
         return @intCast(now - self.start_time);
     }
-    
+
     pub fn finish(self: *const RequestTiming, collector: *MetricsCollector) !void {
         const duration = self.elapsed();
         try collector.recordRouteTiming(self.route, duration);
@@ -169,7 +169,7 @@ pub const RequestTiming = struct {
 test "MetricsCollector incrementRequest" {
     var collector = MetricsCollector.init(std.testing.allocator);
     defer collector.deinit();
-    
+
     try std.testing.expectEqual(collector.request_count, 0);
     collector.incrementRequest();
     try std.testing.expectEqual(collector.request_count, 1);
@@ -178,10 +178,10 @@ test "MetricsCollector incrementRequest" {
 test "MetricsCollector recordRouteTiming" {
     var collector = MetricsCollector.init(std.testing.allocator);
     defer collector.deinit();
-    
+
     try collector.recordRouteTiming("/api/todos", 100);
     try collector.recordRouteTiming("/api/todos", 200);
-    
+
     const timing = collector.route_timings.get("/api/todos");
     try std.testing.expect(timing != null);
     if (timing) |t| {
@@ -192,7 +192,7 @@ test "MetricsCollector recordRouteTiming" {
 
 test "RequestTiming elapsed" {
     var timing = RequestTiming.start("/test");
-    std.time.sleep(10 * std.time.ns_per_ms);
+    std.Thread.sleep(10 * std.time.ns_per_ms);
     const elapsed = timing.elapsed();
     try std.testing.expect(elapsed >= 10);
 }
@@ -200,7 +200,7 @@ test "RequestTiming elapsed" {
 test "MetricsCollector incrementError" {
     var collector = MetricsCollector.init(std.testing.allocator);
     defer collector.deinit();
-    
+
     try std.testing.expectEqual(collector.error_count, 0);
     collector.incrementError();
     try std.testing.expectEqual(collector.error_count, 1);
@@ -211,11 +211,11 @@ test "MetricsCollector incrementError" {
 test "MetricsCollector recordRouteTiming calculates stats correctly" {
     var collector = MetricsCollector.init(std.testing.allocator);
     defer collector.deinit();
-    
+
     try collector.recordRouteTiming("/api/todos", 100);
     try collector.recordRouteTiming("/api/todos", 200);
     try collector.recordRouteTiming("/api/todos", 150);
-    
+
     const timing = collector.route_timings.get("/api/todos");
     try std.testing.expect(timing != null);
     if (timing) |t| {
@@ -229,14 +229,14 @@ test "MetricsCollector recordRouteTiming calculates stats correctly" {
 test "MetricsCollector recordRouteTiming multiple routes" {
     var collector = MetricsCollector.init(std.testing.allocator);
     defer collector.deinit();
-    
+
     try collector.recordRouteTiming("/api/users", 50);
     try collector.recordRouteTiming("/api/posts", 100);
     try collector.recordRouteTiming("/api/users", 75);
-    
+
     try std.testing.expect(collector.route_timings.get("/api/users") != null);
     try std.testing.expect(collector.route_timings.get("/api/posts") != null);
-    
+
     const users_timing = collector.route_timings.get("/api/users");
     if (users_timing) |t| {
         try std.testing.expectEqual(t.count, 2);
@@ -246,15 +246,15 @@ test "MetricsCollector recordRouteTiming multiple routes" {
 test "MetricsCollector getPrometheusMetrics format" {
     var collector = MetricsCollector.init(std.testing.allocator);
     defer collector.deinit();
-    
+
     collector.incrementRequest();
     collector.incrementRequest();
     collector.incrementError();
     try collector.recordRouteTiming("/api/test", 100);
-    
+
     const metrics = try collector.getPrometheusMetrics();
     defer std.testing.allocator.free(metrics);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, metrics, "http_requests_total") != null);
     try std.testing.expect(std.mem.indexOf(u8, metrics, "http_errors_total") != null);
     try std.testing.expect(std.mem.indexOf(u8, metrics, "http_route_duration_ms") != null);
@@ -264,10 +264,10 @@ test "MetricsCollector getPrometheusMetrics format" {
 test "MetricsCollector getPrometheusMetrics with zero requests" {
     var collector = MetricsCollector.init(std.testing.allocator);
     defer collector.deinit();
-    
+
     const metrics = try collector.getPrometheusMetrics();
     defer std.testing.allocator.free(metrics);
-    
+
     try std.testing.expect(std.mem.indexOf(u8, metrics, "http_requests_total 0") != null);
     try std.testing.expect(std.mem.indexOf(u8, metrics, "http_errors_total 0") != null);
 }
@@ -275,11 +275,11 @@ test "MetricsCollector getPrometheusMetrics with zero requests" {
 test "RequestTiming finish records metrics" {
     var collector = MetricsCollector.init(std.testing.allocator);
     defer collector.deinit();
-    
+
     var timing = RequestTiming.start("/api/test");
-    std.time.sleep(10 * std.time.ns_per_ms);
+    std.Thread.sleep(10 * std.time.ns_per_ms);
     try timing.finish(&collector);
-    
+
     try std.testing.expectEqual(collector.request_count, 1);
     try std.testing.expect(collector.route_timings.get("/api/test") != null);
 }
@@ -287,10 +287,10 @@ test "RequestTiming finish records metrics" {
 test "Metric init and addLabel" {
     var metric = Metric.init(std.testing.allocator, "test_metric", 42.0, MetricType.counter);
     defer metric.deinit();
-    
+
     try metric.addLabel("env", "production");
     try metric.addLabel("service", "api");
-    
+
     try std.testing.expectEqualStrings(metric.name, "test_metric");
     try std.testing.expectEqual(metric.value, 42.0);
     try std.testing.expectEqual(metric.metric_type, MetricType.counter);
@@ -300,12 +300,11 @@ test "Metric init and addLabel" {
 test "MetricsCollector record metric" {
     var collector = MetricsCollector.init(std.testing.allocator);
     defer collector.deinit();
-    
+
     var metric = Metric.init(std.testing.allocator, "test", 1.0, MetricType.counter);
     defer metric.deinit();
-    
+
     try collector.record(metric);
-    
+
     try std.testing.expectEqual(collector.metrics.items.len, 1);
 }
-

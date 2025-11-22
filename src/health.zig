@@ -32,12 +32,12 @@ pub fn handleHealth(req: *Request) Response {
 /// Checks if the service is ready to accept traffic (database, dependencies, etc.)
 pub fn handleReady(req: *Request) Response {
     _ = req;
-    
+
     var checks = std.ArrayListUnmanaged(HealthCheckResult.CheckResult){};
     defer checks.deinit(std.heap.page_allocator);
-    
+
     var overall_status: types.HealthStatus = .healthy;
-    
+
     // Check database connectivity (if ORM is initialized)
     const db_check = checkDatabase();
     checks.append(std.heap.page_allocator, db_check) catch {
@@ -46,7 +46,7 @@ pub fn handleReady(req: *Request) Response {
     if (db_check.status != .healthy) {
         overall_status = .unhealthy;
     }
-    
+
     // Check cache (if available)
     const cache_check = checkCache();
     checks.append(std.heap.page_allocator, cache_check) catch {
@@ -57,19 +57,19 @@ pub fn handleReady(req: *Request) Response {
     } else if (cache_check.status == .unhealthy) {
         overall_status = .unhealthy;
     }
-    
+
     const result = HealthCheckResult{
         .status = overall_status,
         .message = if (overall_status == .healthy) "Service is ready" else "Service is not ready",
         .checks = checks.items,
     };
-    
+
     const status_code: u16 = switch (overall_status) {
         .healthy => 200,
         .degraded => 200, // Still accept traffic but indicate degraded state
         .unhealthy => 503, // Service Unavailable
     };
-    
+
     var resp = formatHealthResponse(result);
     resp = resp.withStatus(status_code);
     return resp;
@@ -101,21 +101,21 @@ fn checkCache() HealthCheckResult.CheckResult {
 fn formatHealthResponse(result: HealthCheckResult) Response {
     var json_buffer = std.ArrayListUnmanaged(u8){};
     defer json_buffer.deinit(std.heap.page_allocator);
-    
+
     const writer = json_buffer.writer(std.heap.page_allocator);
-    
+
     writer.print("{{\"status\":\"{s}\",\"message\":\"{s}\"", .{
         @tagName(result.status),
         result.message,
     }) catch {
         return Response.internalError();
     };
-    
+
     if (result.checks) |checks| {
         writer.print(",\"checks\":[", .{}) catch {
             return Response.internalError();
         };
-        
+
         for (checks, 0..) |check, i| {
             if (i > 0) {
                 writer.print(",", .{}) catch {
@@ -130,21 +130,21 @@ fn formatHealthResponse(result: HealthCheckResult) Response {
                 return Response.internalError();
             };
         }
-        
+
         writer.print("]", .{}) catch {
             return Response.internalError();
         };
     }
-    
+
     writer.print("}}", .{}) catch {
         return Response.internalError();
     };
-    
+
     const json = json_buffer.toOwnedSlice(std.heap.page_allocator) catch {
         return Response.internalError();
     };
     defer std.heap.page_allocator.free(json);
-    
+
     return Response.json(json);
 }
 
@@ -160,30 +160,41 @@ test "checkCacheHealth returns healthy" {
 }
 
 test "handleHealth returns healthy response" {
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/health",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
-    
+
     const resp = handleHealth(&req);
     const ziggurat_resp = resp.toZiggurat();
-    try std.testing.expectEqual(ziggurat_resp.status, 200);
+    try std.testing.expectEqual(@intFromEnum(ziggurat_resp.status), 200);
 }
 
 test "handleReady returns ready response" {
-    var ziggurat_req = @import("ziggurat").request.Request{
+    const ziggurat = @import("ziggurat");
+    const headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    const user_data = std.StringHashMap([]const u8).init(std.testing.allocator);
+    var ziggurat_req = ziggurat.request.Request{
         .path = "/ready",
         .method = .GET,
         .body = "",
+        .headers = headers,
+        .allocator = std.testing.allocator,
+        .user_data = user_data,
     };
     var req = Request.fromZiggurat(&ziggurat_req, std.testing.allocator);
     defer req.deinit();
-    
+
     const resp = handleReady(&req);
     const ziggurat_resp = resp.toZiggurat();
-    try std.testing.expect(ziggurat_resp.status == 200 or ziggurat_resp.status == 503);
+    try std.testing.expect(@intFromEnum(ziggurat_resp.status) == 200 or @intFromEnum(ziggurat_resp.status) == 503);
 }
-

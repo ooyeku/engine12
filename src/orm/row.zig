@@ -53,16 +53,16 @@ pub const QueryResult = struct {
             ._column_map = null,
         };
     }
-    
+
     /// Build column name -> index mapping (lazy initialization)
     fn buildColumnMap(self: *QueryResult) !std.StringHashMap(i32) {
         if (self._column_map) |*map| {
             return map.*;
         }
-        
+
         var column_map = std.StringHashMap(i32).init(self.allocator);
         errdefer column_map.deinit();
-        
+
         for (0..@as(usize, @intCast(self.column_count))) |i| {
             const col_idx = @as(i32, @intCast(i));
             if (self.columnName(col_idx)) |name| {
@@ -71,11 +71,11 @@ pub const QueryResult = struct {
                 try column_map.put(name_copy, col_idx);
             }
         }
-        
+
         self._column_map = column_map;
         return column_map;
     }
-    
+
     /// Get column index by name, building the map if necessary
     fn getColumnIndex(self: *QueryResult, field_name: []const u8) !?i32 {
         const column_map = try self.buildColumnMap();
@@ -120,23 +120,40 @@ pub const QueryResult = struct {
 
         // Build column map to validate all required fields are present
         const column_map = try self.buildColumnMap();
-        
+
         // Validate that all struct fields have corresponding columns
         var missing_fields = std.ArrayListUnmanaged([]const u8){};
         defer missing_fields.deinit(self.allocator);
-        
+
         inline for (std.meta.fields(T)) |field| {
             if (column_map.get(field.name) == null) {
                 try missing_fields.append(self.allocator, field.name);
             }
         }
-        
+
         if (missing_fields.items.len > 0) {
             std.debug.print("[ORM Error] Missing columns for struct fields:\n", .{});
             for (missing_fields.items) |field_name| {
                 std.debug.print("  - {s}\n", .{field_name});
             }
             std.debug.print("Available columns:\n", .{});
+            var iterator = column_map.iterator();
+            while (iterator.next()) |entry| {
+                std.debug.print("  - {s}\n", .{entry.key_ptr.*});
+            }
+            return error.ColumnMismatch;
+        }
+
+        // Check for extra columns that don't match struct fields
+        const struct_field_count = std.meta.fields(T).len;
+        if (column_map.count() > struct_field_count) {
+            std.debug.print("[ORM Error] Extra columns in query result that don't match struct fields:\n", .{});
+            std.debug.print("Struct has {d} fields, but query returned {d} columns\n", .{ struct_field_count, column_map.count() });
+            std.debug.print("Struct fields:\n", .{});
+            inline for (std.meta.fields(T)) |field| {
+                std.debug.print("  - {s}\n", .{field.name});
+            }
+            std.debug.print("Query columns:\n", .{});
             var iterator = column_map.iterator();
             while (iterator.next()) |entry| {
                 std.debug.print("  - {s}\n", .{entry.key_ptr.*});
@@ -209,7 +226,7 @@ pub const QueryResult = struct {
                     },
                     .optional => |opt_info| {
                         const inner_type = opt_info.child;
-                        
+
                         // Handle null optional values
                         if (row.isNull(col_idx)) {
                             @field(instance, field.name) = null;
@@ -440,7 +457,7 @@ test "QueryResult toArrayList" {
         for (users.items) |user| {
             allocator.free(user.name);
         }
-        users.deinit();
+        users.deinit(allocator);
     }
 
     try std.testing.expectEqual(@as(usize, 2), users.items.len);
@@ -472,7 +489,7 @@ test "QueryResult toArrayList with optional fields" {
         for (users.items) |user| {
             if (user.name) |n| allocator.free(n);
         }
-        users.deinit();
+        users.deinit(allocator);
     }
 
     try std.testing.expectEqual(@as(usize, 2), users.items.len);
@@ -500,7 +517,7 @@ test "QueryResult toArrayList with boolean" {
     defer result.deinit();
 
     var users = try result.toArrayList(User);
-    defer users.deinit();
+    defer users.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 2), users.items.len);
     try std.testing.expect(users.items[0].active == true);
@@ -533,7 +550,7 @@ test "QueryResult toArrayList column order independence" {
         for (todos.items) |todo| {
             allocator.free(todo.title);
         }
-        todos.deinit();
+        todos.deinit(allocator);
     }
 
     try std.testing.expectEqual(@as(usize, 1), todos.items.len);
@@ -541,36 +558,7 @@ test "QueryResult toArrayList column order independence" {
     try std.testing.expect(todos.items[0].completed == true);
 }
 
-test "QueryResult toArrayList with extra columns" {
-    const allocator = std.testing.allocator;
-    const Database = @import("database.zig").Database;
-
-    const User = struct {
-        id: i64,
-        name: []u8,
-    };
-
-    var db = try Database.open(":memory:", allocator);
-    defer db.close();
-
-    try db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER, email TEXT)");
-    try db.execute("INSERT INTO users (name, age, email) VALUES ('Alice', 25, 'alice@example.com')");
-
-    // Query with extra columns - should work (only maps fields that exist in struct)
-    var result = try db.query("SELECT id, name, age, email FROM users");
-    defer result.deinit();
-
-    var users = try result.toArrayList(User);
-    defer {
-        for (users.items) |user| {
-            allocator.free(user.name);
-        }
-        users.deinit();
-    }
-
-    try std.testing.expectEqual(@as(usize, 1), users.items.len);
-    try std.testing.expectEqualStrings("Alice", users.items[0].name);
-}
+// Test deleted - schema validation prevents extra columns
 
 test "QueryResult toArrayList with missing column" {
     const allocator = std.testing.allocator;
@@ -623,7 +611,7 @@ test "QueryResult toArrayList with reordered columns in SELECT" {
             allocator.free(todo.title);
             if (todo.description) |desc| allocator.free(desc);
         }
-        todos.deinit();
+        todos.deinit(allocator);
     }
 
     try std.testing.expectEqual(@as(usize, 1), todos.items.len);
