@@ -69,8 +69,8 @@ fn customErrorHandler(req: *Request, err: ErrorResponse, alloc: std.mem.Allocato
         }
     }
 
-    // Create JSON error response
-    const json = err.toJson(alloc) catch {
+    // Create JSON error response (no context in production)
+    const json = err.toJson(alloc, false) catch {
         return Response.serverError("Failed to serialize error");
     };
     defer alloc.free(json);

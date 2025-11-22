@@ -1,6 +1,8 @@
 const std = @import("std");
 const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
+const error_context = @import("utils/error_context.zig");
+const types = @import("types.zig");
 
 /// Error types that can occur during request processing
 pub const ErrorType = enum {
@@ -29,9 +31,13 @@ pub const ErrorResponse = struct {
     path: ?[]const u8 = null,
     /// HTTP method that caused the error
     method: ?[]const u8 = null,
+    /// Error context (file, line, function) - only in development mode
+    context: ?error_context.ErrorContext = null,
     
     /// Convert error response to JSON
-    pub fn toJson(self: *const ErrorResponse, allocator: std.mem.Allocator) ![]const u8 {
+    /// include_context: whether to include error context (file, line, function)
+    /// include_context should be false in production for security
+    pub fn toJson(self: *const ErrorResponse, allocator: std.mem.Allocator, include_context: bool) ![]const u8 {
         var json = std.ArrayListUnmanaged(u8){};
         const writer = json.writer(allocator);
         
@@ -56,15 +62,31 @@ pub const ErrorResponse = struct {
             try writer.print(",\"method\":\"{s}\"", .{m});
         }
         
+        // Include error context only if requested and available (development mode)
+        if (include_context) {
+            if (self.context) |ctx| {
+                const ctx_json = try ctx.toJson(allocator, false);
+                defer allocator.free(ctx_json);
+                // Parse and embed context JSON
+                try writer.print(",\"context\":{s}", .{ctx_json});
+            }
+        }
+        
         try writer.print("}}}}", .{});
         
         return json.toOwnedSlice(allocator);
     }
     
+    /// Convert error response to JSON (backward compatible - no context)
+    pub fn toJsonSimple(self: *const ErrorResponse, allocator: std.mem.Allocator) ![]const u8 {
+        return self.toJson(allocator, false);
+    }
+    
     /// Create an error response from a request context
     /// Automatically includes request ID, path, and method
-    pub fn fromRequest(req: *Request, error_type: ErrorType, message: []const u8, code: []const u8, details: ?[]const u8) ErrorResponse {
-        return ErrorResponse{
+    /// include_context: whether to capture error context (should match environment - true for development)
+    pub fn fromRequest(req: *Request, error_type: ErrorType, message: []const u8, code: []const u8, details: ?[]const u8, include_context: bool) ErrorResponse {
+        var err_resp = ErrorResponse{
             .error_type = error_type,
             .message = message,
             .code = code,
@@ -73,7 +95,20 @@ pub const ErrorResponse = struct {
             .request_id = req.requestId(),
             .path = req.path(),
             .method = req.method(),
+            .context = null,
         };
+        
+        // Capture error context in development mode
+        if (include_context) {
+            err_resp.context = error_context.ErrorContext.here();
+        }
+        
+        return err_resp;
+    }
+    
+    /// Create an error response from a request context (backward compatible - no context)
+    pub fn fromRequestSimple(req: *Request, error_type: ErrorType, message: []const u8, code: []const u8, details: ?[]const u8) ErrorResponse {
+        return fromRequest(req, error_type, message, code, details, false);
     }
     
     /// Create a validation error response
@@ -176,8 +211,9 @@ pub const ErrorResponse = struct {
     }
     
     /// Convert error response to HTTP response
-    pub fn toHttpResponse(self: *const ErrorResponse, allocator: std.mem.Allocator) !Response {
-        const json = try self.toJson(allocator);
+    /// include_context: whether to include error context in response (should be false in production)
+    pub fn toHttpResponse(self: *const ErrorResponse, allocator: std.mem.Allocator, include_context: bool) !Response {
+        const json = try self.toJson(allocator, include_context);
         defer allocator.free(json);
         
         const status_code: u16 = switch (self.error_type) {
@@ -201,9 +237,15 @@ pub const ErrorResponse = struct {
 pub const ErrorHandler = *const fn (*Request, ErrorResponse, std.mem.Allocator) Response;
 
 /// Default error handler
+/// Determines if error context should be included based on environment
 pub fn defaultErrorHandler(req: *Request, err: ErrorResponse, allocator: std.mem.Allocator) Response {
     _ = req;
-    const json = err.toJson(allocator) catch {
+    
+    // Determine if we should include error context (development mode only)
+    // Check if we're in development mode by checking if error context exists
+    const include_context = err.context != null;
+    
+    const json = err.toJson(allocator, include_context) catch {
         return Response.internalError().json("{\"error\":\"Failed to serialize error\"}");
     };
     defer allocator.free(json);
@@ -259,7 +301,7 @@ test "ErrorResponse validation" {
 
 test "ErrorResponse toJson" {
     const err = ErrorResponse.badRequest("Invalid input", null);
-    const json = try err.toJson(std.testing.allocator);
+    const json = try err.toJson(std.testing.allocator, false);
     defer std.testing.allocator.free(json);
     
     try std.testing.expect(std.mem.indexOf(u8, json, "BAD_REQUEST") != null);
@@ -312,7 +354,7 @@ test "ErrorResponse all error types" {
 
 test "ErrorResponse toJson includes all fields" {
     const err = ErrorResponse.validation("Test message", "Test details");
-    const json = try err.toJson(std.testing.allocator);
+    const json = try err.toJson(std.testing.allocator, false);
     defer std.testing.allocator.free(json);
     
     try std.testing.expect(std.mem.indexOf(u8, json, "validation_error") != null);
@@ -323,7 +365,7 @@ test "ErrorResponse toJson includes all fields" {
 
 test "ErrorResponse toJson without details" {
     const err = ErrorResponse.notFound("Not found");
-    const json = try err.toJson(std.testing.allocator);
+    const json = try err.toJson(std.testing.allocator, false);
     defer std.testing.allocator.free(json);
     
     try std.testing.expect(std.mem.indexOf(u8, json, "not_found") != null);
@@ -331,39 +373,55 @@ test "ErrorResponse toJson without details" {
     // Should not include details field when null
 }
 
+test "ErrorResponse toJson with context" {
+    var err = ErrorResponse.validation("Test", null);
+    err.context = error_context.ErrorContext{
+        .file = "test.zig",
+        .line = 42,
+        .function = "testFunction",
+        .stack_trace = null,
+    };
+    
+    const json = try err.toJson(std.testing.allocator, true);
+    defer std.testing.allocator.free(json);
+    
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"context\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "test.zig") != null);
+}
+
 test "ErrorResponse toHttpResponse maps error types correctly" {
     const allocator = std.testing.allocator;
     
     const validation = ErrorResponse.validation("Test", null);
-    const resp1 = try validation.toHttpResponse(allocator);
+    const resp1 = try validation.toHttpResponse(allocator, false);
     _ = resp1;
     
     const auth = ErrorResponse.authentication("Test");
-    const resp2 = try auth.toHttpResponse(allocator);
+    const resp2 = try auth.toHttpResponse(allocator, false);
     _ = resp2;
     
     const authz = ErrorResponse.authorization("Test");
-    const resp3 = try authz.toHttpResponse(allocator);
+    const resp3 = try authz.toHttpResponse(allocator, false);
     _ = resp3;
     
     const notFound = ErrorResponse.notFound("Test");
-    const resp4 = try notFound.toHttpResponse(allocator);
+    const resp4 = try notFound.toHttpResponse(allocator, false);
     _ = resp4;
     
     const rateLimit = ErrorResponse.rateLimit("Test");
-    const resp5 = try rateLimit.toHttpResponse(allocator);
+    const resp5 = try rateLimit.toHttpResponse(allocator, false);
     _ = resp5;
     
     const tooLarge = ErrorResponse.requestTooLarge("Test");
-    const resp6 = try tooLarge.toHttpResponse(allocator);
+    const resp6 = try tooLarge.toHttpResponse(allocator, false);
     _ = resp6;
     
     const timeout = ErrorResponse.timeout("Test");
-    const resp7 = try timeout.toHttpResponse(allocator);
+    const resp7 = try timeout.toHttpResponse(allocator, false);
     _ = resp7;
     
     const internal = ErrorResponse.internal("Test", null);
-    const resp8 = try internal.toHttpResponse(allocator);
+    const resp8 = try internal.toHttpResponse(allocator, false);
     _ = resp8;
 }
 

@@ -9,8 +9,13 @@ pub fn handleDefaultRoot(request: *Request) Response {
 }
 
 pub fn handleHealthEndpoint(request: *Request) Response {
-    _ = request;
-    return Response.json("{\"health\":\"healthy\",\"checks_passed\":true}");
+    const health_mod = @import("health.zig");
+    return health_mod.handleHealth(request);
+}
+
+pub fn handleReadyEndpoint(request: *Request) Response {
+    const health_mod = @import("health.zig");
+    return health_mod.handleReady(request);
 }
 
 pub fn handleMetricsEndpoint(request: *Request) Response {

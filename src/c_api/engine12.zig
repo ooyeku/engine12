@@ -2184,14 +2184,14 @@ export fn e12_register_error_handler(app: ?*CEngine12Handle, handler: ?*const fn
         fn wrap(req: *Request, err: error_handler.ErrorResponse, alloc: std.mem.Allocator) Response {
             // Get app from request registry
             const app_for_req = getAppForRequest(req) orelse {
-                return err.toHttpResponse(alloc) catch Response.status(500);
+                return err.toHttpResponse(alloc, false) catch Response.status(500);
             };
             const app_ptr_val = @intFromPtr(app_for_req);
             initErrorHandlerRegistry();
             error_handler_registry_mutex.lock();
             defer error_handler_registry_mutex.unlock();
             const entry = error_handler_registry.get(app_ptr_val) orelse {
-                return err.toHttpResponse(alloc) catch Response.status(500);
+                return err.toHttpResponse(alloc, false) catch Response.status(500);
             };
 
             // Convert error response to error code
@@ -2211,8 +2211,8 @@ export fn e12_register_error_handler(app: ?*CEngine12Handle, handler: ?*const fn
             if (c_resp) |resp| {
                 return resp.response;
             }
-            // Fallback to default error response
-            return err.toHttpResponse(alloc) catch Response.status(500);
+            // Fallback to default error response (no context in C API)
+            return err.toHttpResponse(alloc, false) catch Response.status(500);
         }
     }.wrap;
 

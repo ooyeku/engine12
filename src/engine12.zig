@@ -24,6 +24,7 @@ const script_injector_mod = @import("hot_reload/script_injector.zig");
 const rest_api_mod = @import("rest_api.zig");
 const openapi = @import("openapi.zig");
 const validation = @import("validation.zig");
+const shutdown_utils = @import("utils/shutdown.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -120,6 +121,14 @@ pub var global_error_handler: ?*error_handler.ErrorHandlerRegistry = null;
 /// - Multiple threads can safely register/lookup routes concurrently
 pub var global_runtime_routes: ?*runtime_routes_mod.RuntimeRouteRegistry = null;
 
+/// Global active request tracker pointer
+/// This is set when engine12 is initialized and accessed at runtime
+///
+/// Thread Safety:
+/// - Active request tracker uses atomic operations for thread-safe counting
+/// - Multiple threads can safely increment/decrement concurrently
+pub var global_active_request_tracker: ?*shutdown_utils.ActiveRequestTracker = null;
+
 /// Global OpenAPI generator pointer (for documentation handlers)
 var global_openapi_generator: ?*openapi.OpenAPIGenerator = null;
 
@@ -129,6 +138,12 @@ var global_openapi_generator: ?*openapi.OpenAPIGenerator = null;
 pub fn createRuntimeRouteWrapper() fn (*ziggurat.request.Request) ziggurat.response.Response {
     return struct {
         fn wrapper(ziggurat_request: *ziggurat.request.Request) ziggurat.response.Response {
+            // Track active request
+            if (global_active_request_tracker) |tracker| {
+                tracker.increment();
+                defer tracker.decrement();
+            }
+
             // Access runtime route registry from global
             const runtime_registry = global_runtime_routes orelse {
                 return Response.text("Runtime routes not available").withStatus(500).toZiggurat();
@@ -229,6 +244,12 @@ pub fn wrapHandler(comptime handler_fn: types.HttpHandler, comptime route_patter
         const pattern = route_pattern;
 
         fn wrapper(ziggurat_request: *ziggurat.request.Request) ziggurat.response.Response {
+            // Track active request
+            if (global_active_request_tracker) |tracker| {
+                tracker.increment();
+                defer tracker.decrement();
+            }
+
             // Access middleware from global (set when route is registered)
             const mw_chain = global_middleware orelse {
                 // No middleware, proceed directly
@@ -387,6 +408,10 @@ pub const Engine12 = struct {
     supervisor: ?*anyopaque = null,
     http_server: ?*anyopaque = null,
 
+    // Graceful shutdown
+    active_request_tracker: shutdown_utils.ActiveRequestTracker,
+    shutdown_hooks: shutdown_utils.ShutdownHookRegistry,
+
     pub fn initWithProfile(profile: types.ServerProfile) !Engine12 {
         var app = Engine12{
             .allocator = allocator,
@@ -396,9 +421,12 @@ pub const Engine12 = struct {
             .metrics_collector = metrics.MetricsCollector.init(allocator),
             .logger = dev_tools.Logger.fromEnvironment(allocator, profile.environment),
             .runtime_routes = runtime_routes_mod.RuntimeRouteRegistry.init(allocator),
+            .active_request_tracker = shutdown_utils.ActiveRequestTracker.init(),
+            .shutdown_hooks = shutdown_utils.ShutdownHookRegistry.init(allocator),
         };
-        // Set global logger reference
+        // Set global references
         global_logger = &app.logger;
+        global_active_request_tracker = &app.active_request_tracker;
         return app;
     }
 
@@ -460,6 +488,9 @@ pub const Engine12 = struct {
 
         // Cleanup runtime routes
         self.runtime_routes.deinit();
+
+        // Cleanup shutdown hooks
+        self.shutdown_hooks.deinit(self.allocator);
     }
 
     /// Register a valve with this engine12 instance
@@ -540,6 +571,7 @@ pub const Engine12 = struct {
                 try server.get("/", wrapHandler(handlers.handleDefaultRoot, "/"));
             }
             try server.get("/health", wrapHandler(handlers.handleHealthEndpoint, "/health"));
+            try server.get("/ready", wrapHandler(handlers.handleReadyEndpoint, "/ready"));
             try server.get("/metrics", wrapHandler(handlers.handleMetricsEndpoint, "/metrics"));
 
             self.built_server = server;
@@ -667,6 +699,7 @@ pub const Engine12 = struct {
                 try server.get("/", wrapHandler(handlers.handleDefaultRoot, "/"));
             }
             try server.get("/health", wrapHandler(handlers.handleHealthEndpoint, "/health"));
+            try server.get("/ready", wrapHandler(handlers.handleReadyEndpoint, "/ready"));
             try server.get("/metrics", wrapHandler(handlers.handleMetricsEndpoint, "/metrics"));
 
             self.built_server = server;
@@ -716,6 +749,7 @@ pub const Engine12 = struct {
                 try server.get("/", wrapHandler(handlers.handleDefaultRoot, "/"));
             }
             try server.get("/health", wrapHandler(handlers.handleHealthEndpoint, "/health"));
+            try server.get("/ready", wrapHandler(handlers.handleReadyEndpoint, "/ready"));
             try server.get("/metrics", wrapHandler(handlers.handleMetricsEndpoint, "/metrics"));
 
             self.built_server = server;
@@ -765,6 +799,7 @@ pub const Engine12 = struct {
                 try server.get("/", wrapHandler(handlers.handleDefaultRoot, "/"));
             }
             try server.get("/health", wrapHandler(handlers.handleHealthEndpoint, "/health"));
+            try server.get("/ready", wrapHandler(handlers.handleReadyEndpoint, "/ready"));
             try server.get("/metrics", wrapHandler(handlers.handleMetricsEndpoint, "/metrics"));
 
             self.built_server = server;
@@ -1417,6 +1452,7 @@ pub const Engine12 = struct {
                 try server.get("/", wrapHandler(handlers.handleDefaultRoot, "/"));
             }
             try server.get("/health", wrapHandler(handlers.handleHealthEndpoint, "/health"));
+            try server.get("/ready", wrapHandler(handlers.handleReadyEndpoint, "/ready"));
             try server.get("/metrics", wrapHandler(handlers.handleMetricsEndpoint, "/metrics"));
 
             self.built_server = server;
@@ -1690,8 +1726,29 @@ pub const Engine12 = struct {
     }
 
     /// Stop the entire system gracefully
+    /// Waits for in-flight requests to complete (with timeout)
     pub fn stop(self: *Engine12) !void {
         std.debug.print("\n[System] Initiating graceful shutdown...\n", .{});
+
+        // Mark as not accepting new requests
+        self.is_running = false;
+
+        // Wait for in-flight requests to complete
+        const timeout_ms = self.profile.graceful_shutdown_timeout_ms;
+        const active_count = self.active_request_tracker.get();
+        if (active_count > 0) {
+            std.debug.print("[System] Waiting for {d} active request(s) to complete (timeout: {d}ms)...\n", .{ active_count, timeout_ms });
+            const completed = self.active_request_tracker.waitForCompletion(timeout_ms);
+            if (!completed) {
+                std.debug.print("[System] Warning: Timeout waiting for requests. Proceeding with shutdown.\n", .{});
+            } else {
+                std.debug.print("[System] All requests completed.\n", .{});
+            }
+        }
+
+        // Execute shutdown hooks
+        std.debug.print("[System] Executing shutdown hooks...\n", .{});
+        self.shutdown_hooks.execute();
 
         // Call onAppStop for all registered valves
         if (self.valve_registry) |*registry| {
@@ -1703,9 +1760,18 @@ pub const Engine12 = struct {
         try self.stopHttpServer();
         try self.stopBackgroundTasks();
 
-        self.is_running = false;
         const uptime = self.getUptimeMs();
         std.debug.print("[System] Shutdown complete. Uptime: {d}ms\n", .{uptime});
+    }
+
+    /// Register a shutdown hook for cleanup operations
+    pub fn registerShutdownHook(self: *Engine12, hook: shutdown_utils.ShutdownHook) !void {
+        try self.shutdown_hooks.register(hook, self.allocator);
+    }
+
+    /// Get number of active requests
+    pub fn getActiveRequestCount(self: *const Engine12) u64 {
+        return self.active_request_tracker.get();
     }
 
     fn startHttpServer(self: *Engine12) !void {
