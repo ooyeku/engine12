@@ -1,16 +1,49 @@
 # Engine12 Project Layout Best Practices
 
-This document outlines the recommended project structure and organization patterns for Engine12 applications, optimized to leverage Engine12's powerful features including `restApi`, `HandlerCtx`, Valves, and built-in middleware.
+This document outlines the recommended project structure and organization patterns for Engine12 applications, optimized to leverage Engine12's powerful features including `restApi`, `HandlerCtx`, Valves, built-in middleware, and **auto-discovery features**.
 
 ## Overview
 
 The recommended structure emphasizes:
 
 - **Separation of concerns** - Clear boundaries between handlers, models, utilities, and frontend assets
-- **Leveraging Engine12 features** - Maximize use of `restApi`, `HandlerCtx`, Valves, and built-in middleware
+- **Leveraging Engine12 features** - Maximize use of `restApi`, `HandlerCtx`, Valves, built-in middleware, and auto-discovery
 - **Scalability** - Easy to add new features without restructuring
 - **Maintainability** - Intuitive organization that new developers can understand quickly
 - **Modularity** - Reusable components and utilities
+- **Convention over configuration** - Use auto-discovery to reduce boilerplate
+
+## Quick Start: Project Scaffolding
+
+Engine12 provides a CLI tool to scaffold new projects with the recommended structure:
+
+```bash
+# Create a new project with recommended structure
+e12 new my-app
+
+# The project will be created with:
+# - Recommended directory structure
+# - Example models, validators, auth helpers
+# - Database setup with migration discovery
+# - Static file and template discovery configured
+# - Example handlers using HandlerCtx
+# - Ready-to-run main.zig with auto-discovery
+```
+
+The scaffolded project includes:
+- Complete directory structure matching best practices
+- Example code demonstrating Engine12 features
+- Auto-discovery configured for migrations, static files, and templates
+- Ready-to-use `restApi` setup
+- Example custom handlers using `HandlerCtx`
+
+**Next Steps After Scaffolding**:
+1. Review generated files to understand the structure
+2. Customize models in `src/models.zig`
+3. Update migrations in `src/migrations/init.zig`
+4. Add your handlers in `src/handlers/`
+5. Customize templates in `src/templates/`
+6. Run `zig build run` to start development
 
 ## Directory Structure
 
@@ -465,11 +498,35 @@ pub const migrations = [_]Migration{
 
 **Running Migrations**:
 
+**Option 1: Manual Import (Recommended for Comptime Safety)**:
 ```zig
 // In database.zig or main.zig
 const migrations = @import("migrations/init.zig");
 try orm.runMigrations(migrations.migrations);
 ```
+
+**Option 2: Auto-Discovery (Convenient for Development)**:
+```zig
+// In database.zig
+const migration_discovery = @import("engine12").orm.migration_discovery;
+
+pub fn initDatabase() !void {
+    // ... database setup ...
+    
+    // Auto-discover migrations
+    var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+    defer registry.deinit();
+    
+    // Run discovered migrations
+    try orm.runMigrationsFromRegistry(&registry);
+}
+```
+
+**Migration Auto-Discovery**:
+- Scans `migrations/` directory for numbered files: `{number}_{name}.zig`
+- Automatically sorts by version number
+- Falls back gracefully if directory doesn't exist
+- Works alongside `init.zig` convention (detects but doesn't conflict)
 
 ## Route Organization in main.zig
 
@@ -493,55 +550,68 @@ try orm.runMigrations(migrations.migrations);
 
 ```zig
 pub fn main() !void {
+    // 1. Initialize database and ORM (with migration auto-discovery)
+    try database.initDatabase();
+    const orm = try database.getORM();
+    
+    // 2. Create app
     var app = try Engine12.initDevelopment();
     defer app.deinit();
-
-    // 1. Initialize database and ORM
-    const orm = try initDatabase();
     
-    // 2. Enable OpenAPI docs (before restApi calls)
+    // 3. Enable OpenAPI docs (before restApi calls)
     try app.enableOpenApiDocs("/docs", .{
         .title = "My API",
         .version = "1.0.0",
     });
 
-    // 3. Middleware
+    // 4. Middleware
     try app.usePreRequest(cors_middleware.preflightMwFn());
     try app.usePreRequest(request_id_middleware.middlewareFn());
     try app.usePreRequest(csrf.middlewareFn());
 
-    // 4. Root route
+    // 5. Auto-discover static files
+    app.discoverStaticFiles("static") catch |err| {
+        std.debug.print("[Engine12] Warning: Static file discovery failed: {}\n", .{err});
+    };
+    // Automatically registers:
+    // - static/css/ -> /css/*
+    // - static/js/ -> /js/*
+    // - static/images/ -> /images/*
+    
+    // 6. Auto-discover templates (development mode only)
+    const templates = app.discoverTemplates("src/templates") catch |err| {
+        std.debug.print("[Engine12] Warning: Template discovery failed: {}\n", .{err});
+    };
+    defer templates.deinit();
+
+    // 7. Root route
     try app.get("/", handleRoot);
 
-    // 5. Static files
-    try app.get("/static/css/:file", handleStatic);
-    try app.get("/static/js/:file", handleStatic);
-
-    // 6. restApi routes (automatic CRUD)
+    // 8. restApi routes (automatic CRUD)
     try app.restApi("/api/todos", Todo, RestApiConfig(Todo){...});
     try app.restApi("/api/users", User, RestApiConfig(User){...});
 
-    // 7. Custom API routes
+    // 9. Custom API routes
     try app.get("/api/todos/search", handlers.search.handleSearchTodos);
     try app.get("/api/todos/stats", handlers.stats.handleGetStats);
 
-    // 8. View routes
+    // 10. View routes
     try app.get("/todos/:id", handlers.views.handleTodoView);
     try app.get("/users/:id", handlers.views.handleUserView);
 
-    // 9. System routes (auto-registered)
+    // 11. System routes (auto-registered)
     // /health and /metrics are automatically available
 
-    // 10. WebSocket routes
+    // 12. WebSocket routes
     try app.websocket("/ws", handlers.websocket.handleWebSocket);
 
-    // 11. Register Valves
+    // 13. Register Valves
     try app.registerValve(&my_plugin_valve);
 
-    // 12. Background tasks
+    // 14. Background tasks
     try app.schedulePeriodicTask("cleanup", &cleanupTask, 3600000);
 
-    // 13. Health checks
+    // 15. Health checks
     try app.registerHealthCheck(&checkDatabaseHealth);
 
     // Start server
@@ -820,6 +890,77 @@ my-app/
 └── [database files]
 ```
 
+## Auto-Discovery Features
+
+Engine12 provides auto-discovery features that reduce boilerplate and follow conventions:
+
+### Migration Auto-Discovery
+
+Automatically discover and load migrations from the `migrations/` directory:
+
+```zig
+// In database.zig
+const migration_discovery = @import("engine12").orm.migration_discovery;
+
+pub fn initDatabase() !void {
+    // ... database setup ...
+    
+    // Auto-discover migrations
+    var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+    defer registry.deinit();
+    
+    try orm.runMigrationsFromRegistry(&registry);
+}
+```
+
+**Benefits**:
+- No manual migration registration
+- Automatic version sorting
+- Easy to add new migrations (just create a file)
+- Works with numbered migration files: `1_create_users.zig`, `2_add_email.zig`
+
+### Static File Auto-Discovery
+
+Automatically register static file routes from directory structure:
+
+```zig
+// In main.zig
+try app.discoverStaticFiles("static");
+// Automatically registers:
+// - static/css/ -> /css/*
+// - static/js/ -> /js/*
+// - static/images/ -> /images/*
+```
+
+**Benefits**:
+- No manual route registration for static files
+- Follows convention: directory name becomes route path
+- Handles missing directories gracefully
+
+### Template Auto-Discovery
+
+Automatically load templates from the `templates/` directory:
+
+```zig
+// In main.zig (development mode only)
+const template_registry = try app.discoverTemplates("src/templates");
+defer template_registry.deinit();
+
+// Access templates by name
+if (template_registry.get("index")) |template| {
+    const html = try template.render(Context, context, allocator);
+    return Response.html(html);
+}
+```
+
+**Benefits**:
+- No manual template loading
+- Automatic hot reloading in development
+- Template names extracted from filenames
+- Returns registry for easy template access
+
+**Note**: Template discovery only works in development mode (requires hot reload).
+
 ## Key Takeaways
 
 1. **Use `restApi` for CRUD** - Reduces code by 80-90% and provides built-in features
@@ -827,11 +968,13 @@ my-app/
 3. **Leverage built-in middleware** - CORS, CSRF, rate limiting, logging, etc.
 4. **Enable OpenAPI docs** - Automatic documentation for all `restApi` endpoints
 5. **Use Valves for extensibility** - Create reusable plugins with controlled capabilities
-6. **Register background tasks** - For periodic operations
-7. **Register health checks** - For monitoring and observability
-8. **Keep it flat** - Avoid deep nesting until necessary
-9. **Separate concerns** - Validators, auth helpers, handlers, views
-10. **Start simple** - Begin with flat structure, refactor when needed
+6. **Use auto-discovery** - Reduce boilerplate with migration, static file, and template discovery
+7. **Register background tasks** - For periodic operations
+8. **Register health checks** - For monitoring and observability
+9. **Keep it flat** - Avoid deep nesting until necessary
+10. **Separate concerns** - Validators, auth helpers, handlers, views
+11. **Start simple** - Begin with flat structure, refactor when needed
+12. **Use project scaffolding** - Start new projects with `e12 new` for best practices
 
 ## Migration from Other Structures
 
@@ -847,6 +990,8 @@ If migrating from a different structure:
 8. **Update imports** - Fix all import paths to match new structure
 9. **Enable OpenAPI** - Add OpenAPI documentation for automatic API docs
 10. **Register middleware** - Use Engine12's built-in middleware instead of custom implementations
+11. **Use auto-discovery** - Replace manual registration with `discoverStaticFiles()`, `discoverTemplates()`, and migration discovery
+12. **Use project scaffolding** - Consider using `e12 new` to generate a new project and migrate code incrementally
 
 ## Engine12-Specific Best Practices
 
@@ -877,9 +1022,15 @@ pub fn initDatabase() !void {
     const db = try Database.init("app.db");
     global_orm = try ORM.initPtr(db);
     
-    // Run migrations
-    const migrations = @import("migrations/init.zig");
-    try global_orm.?.runMigrations(migrations.migrations);
+    // Run migrations (using auto-discovery)
+    const migration_discovery = @import("engine12").orm.migration_discovery;
+    var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+    defer registry.deinit();
+    try global_orm.?.runMigrationsFromRegistry(&registry);
+    
+    // Or use manual import for comptime safety:
+    // const migrations = @import("migrations/init.zig");
+    // try global_orm.?.runMigrations(migrations.migrations);
 }
 ```
 

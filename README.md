@@ -4,9 +4,20 @@ A professional backend framework for Zig, designed for building high-performance
 
 ## Quick Start
 
+**Option 1: Use CLI Tool (Recommended)**
+
+```bash
+# Create a new project with recommended structure
+e12 new myapp
+cd myapp
+zig build run
+```
+
+**Option 2: Manual Setup**
+
 ```zig
 const std = @import("std");
-const Engine12 = @import("Engine12");
+const Engine12 = @import("engine12");
 
 fn handleRoot(req: *Engine12.Request) Engine12.Response {
     _ = req;
@@ -70,6 +81,8 @@ exe.linkLibC();
 - **HTTP Routing** - GET, POST, PUT, DELETE, PATCH with route parameters
 - **WebSocket Support** - Real-time bidirectional communication with room management
 - **Hot Reloading** - Automatic template and static file reloading in development mode
+- **Auto-Discovery** - Automatic migration, static file, and template discovery to reduce boilerplate
+- **Project Scaffolding** - CLI tool (`e12 new`) to generate projects with recommended structure
 - **Structured Logging** - JSON and human-readable logging with multiple destinations (stdout, file, syslog)
 - **Middleware System** - Pre-request and response middleware chains
 - **SQLite ORM** - Type-safe database operations with migrations

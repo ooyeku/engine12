@@ -325,6 +325,82 @@ var todos = try query_result.toArrayList(Todo);
 2. Check if migration was already applied
 3. Verify migration version exists in `schema_migrations` table
 
+**Problem**: Migration auto-discovery: "Failed to parse migration file" error.
+
+**Solution**:
+1. Check migration file format matches expected pattern: `{number}_{name}.zig`
+   - Example: `1_create_todos.zig`, `2_add_priority.zig`
+   - Version number must be at the start, followed by underscore
+2. Verify migration file contains `Migration.init()` call:
+   ```zig
+   const Migration = @import("engine12").orm.Migration;
+
+   pub const migration = Migration.init(
+       1,  // version
+       "create_todos",  // name
+       "CREATE TABLE ...",  // up SQL
+       "DROP TABLE ..."    // down SQL
+   );
+   ```
+3. Check SQL strings are properly quoted (use `"..."` or `\\...\\` for multi-line)
+4. Ensure migration directory exists and is readable:
+   ```zig
+   var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+   // If directory doesn't exist, returns empty registry (no error)
+   ```
+5. For manual migration approach, use `@import("migrations/init.zig")`:
+   ```zig
+   const migrations = @import("migrations/init.zig");
+   try orm.runMigrations(migrations.migrations);
+   ```
+
+## Auto-Discovery Issues
+
+**Problem**: Auto-discovery features not working.
+
+**Solution**:
+1. **Template Discovery**: Requires development mode (hot reload enabled):
+   ```zig
+   var app = try Engine12.initDevelopment(); // Required
+   const templates = try app.discoverTemplates("src/templates");
+   ```
+2. **Static File Discovery**: Works in all modes:
+   ```zig
+   try app.discoverStaticFiles("static");
+   // Gracefully handles missing directory (logs warning, continues)
+   ```
+3. **Migration Discovery**: Works in all modes:
+   ```zig
+   var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+   // Returns empty registry if directory doesn't exist (no error)
+   ```
+4. All auto-discovery features are opt-in and fail gracefully:
+   - Missing directories log warnings but don't crash
+   - Invalid files are skipped with warnings
+   - Empty results return empty registries/collections
+
+**Problem**: Auto-discovery works but templates/files not accessible.
+
+**Solution**:
+1. **Templates**: Must manually register routes that use discovered templates:
+   ```zig
+   const templates = try app.discoverTemplates("src/templates");
+   defer templates.deinit();
+   
+   // Register route that uses the template
+   try app.get("/", handleIndex); // Handler must use templates.get("index")
+   ```
+2. **Static Files**: Routes are automatically registered, but check:
+   - Mount paths match your HTML references (`/css/style.css`)
+   - Files exist in the expected directories
+   - No route conflicts with custom routes
+3. **Migrations**: Must explicitly run discovered migrations:
+   ```zig
+   var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+   defer registry.deinit();
+   try orm.runMigrationsFromRegistry(&registry);
+   ```
+
 ## Template Issues
 
 **Problem**: Template compilation error.
@@ -342,6 +418,64 @@ var todos = try query_result.toArrayList(Todo);
 1. Verify context struct fields match template references
 2. Check field names are correct (case-sensitive)
 3. Ensure data is populated before rendering
+
+**Problem**: Template discovery: "Template not found" error when using `discoverTemplates()`.
+
+**Solution**:
+1. Check template filename matches expected pattern: `{name}.zt.html`
+   - `index.zt.html` → accessible as `"index"` (not `"index."`)
+   - Template names are extracted by removing `.zt.html` extension
+2. Verify template registry is properly initialized:
+   ```zig
+   const templates = try app.discoverTemplates("src/templates");
+   defer templates.deinit();
+   
+   // Access template by name (filename without .zt.html)
+   if (templates.get("index")) |template| {
+       // Use template
+   }
+   ```
+3. Ensure template discovery is called in development mode (requires hot reload):
+   ```zig
+   var app = try Engine12.initDevelopment(); // Required for template discovery
+   const templates = try app.discoverTemplates("src/templates");
+   ```
+4. Check debug output for discovered templates:
+   ```
+   [Engine12] Discovered template: src/templates/index.zt.html (stored as: 'index', route: /)
+   ```
+
+**Problem**: Template name has trailing period (e.g., `'index.'` instead of `'index'`).
+
+**Solution**: This was a bug that has been fixed. Ensure you're using the latest version of Engine12. Template names are now correctly extracted without trailing periods.
+
+## Static File Issues
+
+**Problem**: Static files not loading or 404 errors.
+
+**Solution**:
+1. Verify static file discovery is called:
+   ```zig
+   try app.discoverStaticFiles("static");
+   // Or manually register:
+   try app.serveStatic("/css", "static/css");
+   ```
+2. Check directory structure matches convention:
+   - `static/css/style.css` → accessible at `/css/style.css`
+   - `static/js/app.js` → accessible at `/js/app.js`
+3. Ensure static files are registered before routes that might conflict
+4. Check file paths in HTML templates match registered mount paths
+
+**Problem**: Segmentation fault when serving static files.
+
+**Solution**: This was a memory management issue that has been fixed. Ensure you're using the latest version of Engine12. The framework now properly manages memory for static file mount paths and FileServer instances.
+
+**Problem**: Static files work initially but fail after some requests.
+
+**Solution**: This indicates a memory management issue. Ensure:
+1. You're using the latest version of Engine12 (fixes have been applied)
+2. Static file discovery is called during initialization, not in request handlers
+3. FileServer instances are properly stored and not freed prematurely
 
 ## Middleware Issues
 
@@ -496,6 +630,23 @@ while (result.nextRow()) |row| {
 
 **"Query failed"**
 - Solution: Check SQL syntax and database state
+
+**"Template not loaded" or "Template 'index' not found"**
+- Solution: 
+  1. Check template was discovered: Look for `[Engine12] Discovered template:` in logs
+  2. Verify template name matches (filename without `.zt.html` extension)
+  3. Ensure template registry is properly stored and accessible
+  4. Check template discovery was called in development mode
+
+**Segmentation fault when serving static files**
+- Solution: This was a memory management bug that has been fixed. Ensure you're using the latest version. The framework now properly duplicates and manages mount path strings.
+
+**"Failed to parse migration file"**
+- Solution:
+  1. Check migration file format: `{number}_{name}.zig`
+  2. Verify `Migration.init()` call syntax
+  3. Ensure SQL strings are properly formatted
+  4. Check file encoding and line endings
 
 **"QueryParameterMissing"**
 - Solution: Query parameter is required but not provided. Use `queryOptional()` if parameter is optional, or ensure client sends the parameter.

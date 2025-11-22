@@ -3,6 +3,7 @@ const E12 = @import("engine12");
 const Request = E12.Request;
 const Response = E12.Response;
 const database = @import("../database.zig");
+const getGlobalTemplateRegistry = database.getGlobalTemplateRegistry;
 const getGlobalTemplate = database.getGlobalTemplate;
 
 const allocator = std.heap.page_allocator;
@@ -11,9 +12,28 @@ const allocator = std.heap.page_allocator;
 pub fn handleIndex(request: *Request) Response {
     _ = request;
 
-    // Use runtime template for hot reloading (development mode)
-    // Template content is automatically reloaded when file changes
-    const template = getGlobalTemplate() orelse {
+    // Use template registry (from auto-discovery) if available, fall back to global template
+    var template: ?*E12.RuntimeTemplate = null;
+    if (getGlobalTemplateRegistry()) |registry| {
+        // Try "index" first
+        template = registry.get("index");
+        if (template == null) {
+            // Debug: list all available templates to see what's actually stored
+            var iter = registry.templates.iterator();
+            std.debug.print("[Todo] Template 'index' not found. Available templates: ", .{});
+            var first = true;
+            while (iter.next()) |entry| {
+                if (!first) std.debug.print(", ", .{});
+                std.debug.print("'{s}'", .{entry.key_ptr.*});
+                first = false;
+            }
+            std.debug.print("\n", .{});
+        }
+    }
+    if (template == null) {
+        template = getGlobalTemplate();
+    }
+    const final_template = template orelse {
         return Response.text("Template not loaded").withStatus(500);
     };
 
@@ -45,7 +65,7 @@ pub fn handleIndex(request: *Request) Response {
 
     // Render template using runtime renderer (supports hot reloading)
     // Template automatically reloads if file changes
-    const html = template.render(IndexContext, context, allocator) catch {
+    const html = final_template.render(IndexContext, context, allocator) catch {
         return Response.text("Internal server error: template rendering failed").withStatus(500);
     };
 
@@ -54,4 +74,3 @@ pub fn handleIndex(request: *Request) Response {
         .withHeader("Pragma", "no-cache")
         .withHeader("Expires", "0");
 }
-

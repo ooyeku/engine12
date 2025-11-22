@@ -14,6 +14,10 @@ Complete reference for Engine12's public APIs.
 - [ORM API](#orm-api)
 - [Database API](#database-api)
 - [Migration API](#migration-api)
+- [Auto-Discovery Features](#auto-discovery-features)
+  - [Migration Auto-Discovery](#migration-auto-discovery)
+  - [Static File Auto-Discovery](#static-file-auto-discovery)
+  - [Template Auto-Discovery](#template-auto-discovery)
 - [Query Builder](#query-builder)
 - [Template Engine](#template-engine)
 - [File Server](#file-server)
@@ -843,6 +847,51 @@ try app.serveStatic("/css", "frontend/css"); // Handles nested paths like /css/s
 ```
 
 **Note**: The route limit is 5000 routes.
+
+#### `discoverStaticFiles(static_dir: []const u8) !void`
+
+Auto-discover and register static files from a directory structure. Scans the `static/` directory for subdirectories and automatically registers them as static routes.
+
+**Convention**: `static/css/` → `/css/*`, `static/js/` → `/js/*`, `static/images/` → `/images/*`
+
+```zig
+// Auto-discover all static directories
+try app.discoverStaticFiles("static");
+// Automatically registers:
+// - static/css/ -> /css/*
+// - static/js/ -> /js/*
+// - static/images/ -> /images/*
+```
+
+**Behavior**:
+- Only processes subdirectories (skips files)
+- Skips hidden directories (starting with `.`)
+- Creates mount paths based on directory names
+- Uses existing `serveStatic()` internally
+- Fails gracefully if directory doesn't exist (logs warning, continues)
+
+**Example Directory Structure**:
+```
+static/
+├── css/
+│   └── style.css
+├── js/
+│   └── app.js
+└── images/
+    └── logo.png
+```
+
+After calling `discoverStaticFiles("static")`, these routes are automatically registered:
+- `/css/style.css` → serves `static/css/style.css`
+- `/js/app.js` → serves `static/js/app.js`
+- `/images/logo.png` → serves `static/images/logo.png`
+
+**Error Handling**:
+- Missing `static/` directory: logs warning, returns without error
+- Permission errors: logs warning, skips problematic directories
+- Individual directory registration failures: logs warning, continues with others
+
+**Best Practice**: Call `discoverStaticFiles()` early in your application setup, before registering custom routes that might conflict.
 
 ### Configuration
 
@@ -2513,6 +2562,199 @@ Rollback a specific migration.
 try runner.rollbackMigration(1, &migrations);
 ```
 
+## Auto-Discovery Features
+
+Engine12 provides auto-discovery features that reduce boilerplate by automatically discovering and registering migrations, static files, and templates based on directory structure and naming conventions. All features are opt-in and gracefully handle missing directories/files.
+
+### Migration Auto-Discovery
+
+Engine12 provides automatic migration discovery to simplify migration management. This feature scans your migrations directory and automatically loads migrations, reducing boilerplate code.
+
+#### `discoverMigrations(allocator: Allocator, migrations_dir: []const u8) !MigrationRegistry`
+
+Automatically discover and load migrations from a directory. Supports two approaches:
+
+1. **Convention-based**: If `migrations/init.zig` exists, it's detected (though you should use `@import()` for comptime safety)
+2. **File scanning**: Scans for numbered migration files matching pattern `{number}_{name}.zig`
+
+```zig
+const migration_discovery = @import("engine12").orm.migration_discovery;
+
+// Discover migrations from directory
+var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+defer registry.deinit();
+
+// Run discovered migrations
+try orm.runMigrationsFromRegistry(&registry);
+```
+
+**Migration File Naming Convention**:
+- Files must match pattern: `{number}_{name}.zig`
+- Example: `1_create_users.zig`, `2_add_email.zig`
+- Files are automatically sorted by version number
+- `init.zig` is skipped during scanning (use it for manual imports)
+
+**Migration File Format**:
+Each migration file should export a migration constant:
+
+```zig
+// migrations/1_create_users.zig
+pub const migration = Migration.init(
+    1,
+    "create_users",
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);",
+    "DROP TABLE users;"
+);
+```
+
+**Error Handling**:
+- Missing directories return empty registry (no error)
+- Invalid migration files are skipped with warnings
+- Continues processing even if individual migrations fail to parse
+
+**Benefits**:
+- No manual migration registration
+- Automatic version sorting
+- Easy to add new migrations (just create a file)
+- Works alongside manual migration management
+
+### Static File Auto-Discovery
+
+#### `discoverStaticFiles(static_dir: []const u8) !void`
+
+Auto-discover and register static files from a directory structure. Scans the `static/` directory for subdirectories and automatically registers them as static routes.
+
+**Convention**: `static/css/` → `/css/*`, `static/js/` → `/js/*`, `static/images/` → `/images/*`
+
+```zig
+// Auto-discover all static directories
+try app.discoverStaticFiles("static");
+// Automatically registers:
+// - static/css/ -> /css/*
+// - static/js/ -> /js/*
+// - static/images/ -> /images/*
+```
+
+**Behavior**:
+- Only processes subdirectories (skips files)
+- Skips hidden directories (starting with `.`)
+- Creates mount paths based on directory names
+- Uses existing `serveStatic()` internally
+- Fails gracefully if directory doesn't exist (logs warning, continues)
+
+**Example Directory Structure**:
+```
+static/
+├── css/
+│   └── style.css
+├── js/
+│   └── app.js
+└── images/
+    └── logo.png
+```
+
+After calling `discoverStaticFiles("static")`, these routes are automatically registered:
+- `/css/style.css` → serves `static/css/style.css`
+- `/js/app.js` → serves `static/js/app.js`
+- `/images/logo.png` → serves `static/images/logo.png`
+
+**Error Handling**:
+- Missing `static/` directory: logs warning, returns without error
+- Permission errors: logs warning, skips problematic directories
+- Individual directory registration failures: logs warning, continues with others
+
+**Best Practice**: Call `discoverStaticFiles()` early in your application setup, before registering custom routes that might conflict.
+
+### Template Auto-Discovery
+
+#### `discoverTemplates(templates_dir: []const u8) !TemplateRegistry`
+
+Auto-discover and load templates from a directory. Scans the `templates/` directory for `.zt.html` files and loads them automatically.
+
+**Convention**: 
+- `index.zt.html` → available as `"index"` in registry
+- `about.zt.html` → available as `"about"` in registry
+- `contact.zt.html` → available as `"contact"` in registry
+
+```zig
+// Auto-discover all templates
+const template_registry = try app.discoverTemplates("src/templates");
+defer template_registry.deinit();
+
+// Access templates by name
+if (template_registry.get("index")) |template| {
+    const html = try template.render(Context, context, allocator);
+    return Response.html(html);
+}
+```
+
+**TemplateRegistry API**:
+
+```zig
+pub const TemplateRegistry = struct {
+    /// Get a template by name
+    pub fn get(self: *TemplateRegistry, name: []const u8) ?*RuntimeTemplate;
+    
+    /// Check if a template exists
+    pub fn has(self: *TemplateRegistry, name: []const u8) bool;
+    
+    /// Clean up registry (templates are owned by HotReloadManager)
+    pub fn deinit(self: *TemplateRegistry) void;
+};
+```
+
+**Requirements**:
+- Only works in development mode (requires hot reload)
+- Returns empty registry if hot reload is disabled
+- Template names are extracted from filenames (without `.zt.html` extension)
+
+**Error Handling**:
+- Missing `templates/` directory: returns empty registry (no error)
+- Invalid template files: logs warning, skips file
+- Hot reload disabled: logs warning, returns empty registry
+
+**Example Usage**:
+
+```zig
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+    
+    // Discover templates
+    const templates = try app.discoverTemplates("src/templates");
+    defer templates.deinit();
+    
+    // Register route that uses discovered template
+    try app.get("/", handleIndex);
+    
+    try app.start();
+}
+
+fn handleIndex(req: *Request) Response {
+    _ = req;
+    
+    // Get template from registry
+    const template = templates.get("index") orelse {
+        return Response.text("Template not found").withStatus(500);
+    };
+    
+    // Render template
+    const context = struct {
+        title: []const u8,
+        message: []const u8,
+    }{
+        .title = "Welcome",
+        .message = "Hello from Engine12!",
+    };
+    
+    const html = template.render(@TypeOf(context), context, allocator) catch {
+        return Response.text("Rendering failed").withStatus(500);
+    };
+    
+    return Response.html(html);
+}
+```
+
 ## Query Builder
 
 ### Initialization
@@ -3012,6 +3254,94 @@ const content = try template.getContentString();
 ```
 
 **Note:** Since Engine12 templates use comptime compilation, runtime templates provide the content string. For full type safety, use comptime templates with `@embedFile` in production.
+
+#### `discoverTemplates(templates_dir: []const u8) !TemplateRegistry`
+
+Auto-discover and load templates from a directory. Scans the `templates/` directory for `.zt.html` files and loads them automatically.
+
+**Convention**: 
+- `index.zt.html` → available as `"index"` in registry
+- `about.zt.html` → available as `"about"` in registry
+- `contact.zt.html` → available as `"contact"` in registry
+
+```zig
+// Auto-discover all templates
+const template_registry = try app.discoverTemplates("src/templates");
+defer template_registry.deinit();
+
+// Access templates by name
+if (template_registry.get("index")) |template| {
+    const html = try template.render(Context, context, allocator);
+    return Response.html(html);
+}
+```
+
+**TemplateRegistry API**:
+
+```zig
+pub const TemplateRegistry = struct {
+    /// Get a template by name
+    pub fn get(self: *TemplateRegistry, name: []const u8) ?*RuntimeTemplate;
+    
+    /// Check if a template exists
+    pub fn has(self: *TemplateRegistry, name: []const u8) bool;
+    
+    /// Clean up registry (templates are owned by HotReloadManager)
+    pub fn deinit(self: *TemplateRegistry) void;
+};
+```
+
+**Requirements**:
+- Only works in development mode (requires hot reload)
+- Returns empty registry if hot reload is disabled
+- Template names are extracted from filenames (without `.zt.html` extension)
+
+**Error Handling**:
+- Missing `templates/` directory: returns empty registry (no error)
+- Invalid template files: logs warning, skips file
+- Hot reload disabled: logs warning, returns empty registry
+
+**Example Usage**:
+
+```zig
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+    
+    // Discover templates
+    const templates = try app.discoverTemplates("src/templates");
+    defer templates.deinit();
+    
+    // Register route that uses discovered template
+    try app.get("/", handleIndex);
+    
+    try app.start();
+}
+
+fn handleIndex(req: *Request) Response {
+    _ = req;
+    
+    // Get template from registry
+    const template = templates.get("index") orelse {
+        return Response.text("Template not found").withStatus(500);
+    };
+    
+    // Render template
+    const context = struct {
+        title: []const u8,
+        message: []const u8,
+    }{
+        .title = "Welcome",
+        .message = "Hello from Engine12!",
+    };
+    
+    const html = template.render(@TypeOf(context), context, allocator) catch {
+        return Response.text("Rendering failed").withStatus(500);
+    };
+    
+    return Response.html(html);
+}
+```
 
 ### RuntimeTemplate
 

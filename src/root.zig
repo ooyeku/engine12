@@ -98,3 +98,9 @@ pub const AuthUser = rest_api.AuthUser;
 pub const handler_context = @import("handler_context.zig");
 pub const HandlerCtx = handler_context.HandlerCtx;
 pub const HandlerCtxError = handler_context.HandlerCtxError;
+
+// Re-export migration discovery
+pub const migration_discovery = @import("orm/migration_discovery.zig");
+
+// Re-export TemplateRegistry (from Engine12 struct)
+pub const TemplateRegistry = engine12.Engine12.TemplateRegistry;

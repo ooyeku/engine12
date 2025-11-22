@@ -68,12 +68,33 @@ This tutorial will guide you through building a complete web application with En
 - Zig 0.15.1 or later
 - Basic understanding of Zig syntax
 - A text editor or IDE
+- (Optional) Engine12 CLI tool for project scaffolding: `e12 new`
 
 ## Step 1: Setup Project
 
 ### 1.1 Create Project Structure
 
-Create a new directory for your project:
+**Option 1: Use Engine12 CLI (Recommended)**
+
+The easiest way to start a new Engine12 project is using the CLI tool:
+
+```bash
+# Create a new project with recommended structure
+e12 new myapp
+cd myapp
+
+# The project will be created with:
+# - Complete directory structure
+# - Example models, validators, auth helpers
+# - Database setup with migration discovery
+# - Static file and template discovery configured
+# - Example handlers using HandlerCtx
+# - Ready-to-run main.zig
+```
+
+**Option 2: Manual Setup**
+
+If you prefer to set up manually:
 
 ```bash
 mkdir myapp
@@ -294,15 +315,15 @@ pub fn init() !void {
     global_db = try Database.open("todos.db", std.heap.page_allocator);
     global_orm = try ORM.initPtr(global_db.?, std.heap.page_allocator);
 
-    // Create table
-    try global_db.?.execute(
-        \\CREATE TABLE IF NOT EXISTS todos (
-        \\  id INTEGER PRIMARY KEY AUTOINCREMENT,
-        \\  title TEXT NOT NULL,
-        \\  completed INTEGER NOT NULL DEFAULT 0,
-        \\  created_at INTEGER NOT NULL
-        \\)
-    );
+    // Option 1: Use migration auto-discovery (recommended)
+    const migration_discovery = @import("engine12").orm.migration_discovery;
+    var registry = try migration_discovery.discoverMigrations(std.heap.page_allocator, "src/migrations");
+    defer registry.deinit();
+    try global_orm.?.runMigrationsFromRegistry(&registry);
+    
+    // Option 2: Manual migration (alternative)
+    // const migrations = @import("migrations/init.zig");
+    // try global_orm.?.runMigrations(migrations.migrations);
 }
 
 pub fn getORM() !*ORM {
@@ -581,10 +602,83 @@ try app.serveStatic("/", "./frontend");
 
 ### When to Use Hot Reloading
 
-- **Development**: Use `loadTemplate()` for rapid iteration during development
+- **Development**: Use `loadTemplate()` or `discoverTemplates()` for rapid iteration during development
 - **Production**: Use `@embedFile` with comptime templates for type safety and performance
 
 **Note**: Hot reloading only works for templates and static files. Code changes still require server restart.
+
+**Tip**: Use `discoverTemplates()` to automatically load all templates from a directory instead of manually loading each one.
+
+### Using Template Auto-Discovery
+
+Instead of manually loading each template, you can use auto-discovery:
+
+```zig
+pub fn main() !void {
+    var app = try E12.Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Auto-discover all templates
+    const templates = try app.discoverTemplates("src/templates");
+    defer templates.deinit();
+
+    // Register route that uses discovered template
+    try app.get("/", handleIndex);
+    try app.start();
+}
+
+fn handleIndex(req: *E12.Request) E12.Response {
+    _ = req;
+    
+    // Get template from registry
+    const template = templates.get("index") orelse {
+        return E12.Response.text("Template not found").withStatus(500);
+    };
+    
+    const context = struct {
+        title: []const u8,
+        message: []const u8,
+    }{
+        .title = "Welcome",
+        .message = "Hello from Engine12!",
+    };
+    
+    const html = template.render(@TypeOf(context), context, allocator) catch {
+        return E12.Response.text("Rendering failed").withStatus(500);
+    };
+    
+    return E12.Response.html(html);
+}
+```
+
+**Benefits**:
+- No manual template loading
+- Automatic hot reloading
+- Template names extracted from filenames
+- Easy template access via registry
+
+### Using Static File Auto-Discovery
+
+Instead of manually registering each static directory:
+
+```zig
+// Old way (manual)
+try app.serveStatic("/css", "static/css");
+try app.serveStatic("/js", "static/js");
+try app.serveStatic("/images", "static/images");
+
+// New way (auto-discovery)
+try app.discoverStaticFiles("static");
+// Automatically registers all subdirectories:
+// - static/css/ -> /css/*
+// - static/js/ -> /js/*
+// - static/images/ -> /images/*
+```
+
+**Benefits**:
+- No manual route registration
+- Follows convention: directory name becomes route path
+- Handles missing directories gracefully
 
 ## Step 6: Middleware
 
@@ -1507,12 +1601,124 @@ try app.get("/api/todos/stats", handleGetStats);
 5. **Leverage Caching**: Use `cacheKey()` to automatically include user context in cache keys
 6. **Gradual Migration**: HandlerCtx is optional - migrate handlers incrementally
 
+## Step 12: Using Auto-Discovery Features
+
+Engine12 provides auto-discovery features that reduce boilerplate and follow conventions. These features are opt-in and gracefully handle missing directories.
+
+### 12.1 Migration Auto-Discovery
+
+Instead of manually importing migrations, use auto-discovery:
+
+```zig
+// In database.zig
+const migration_discovery = @import("engine12").orm.migration_discovery;
+
+pub fn initDatabase() !void {
+    // ... database setup ...
+    
+    // Auto-discover migrations from directory
+    var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+    defer registry.deinit();
+    
+    // Run discovered migrations
+    try orm.runMigrationsFromRegistry(&registry);
+}
+```
+
+**Migration File Naming**: Use pattern `{number}_{name}.zig`:
+- `1_create_users.zig`
+- `2_add_email.zig`
+- `3_add_indexes.zig`
+
+Files are automatically sorted by version number.
+
+### 12.2 Static File Auto-Discovery
+
+Automatically register static file routes:
+
+```zig
+// In main.zig
+try app.discoverStaticFiles("static");
+// Automatically registers all subdirectories:
+// - static/css/ -> /css/*
+// - static/js/ -> /js/*
+// - static/images/ -> /images/*
+```
+
+**Benefits**:
+- No manual route registration
+- Follows convention: directory name becomes route path
+- Handles missing directories gracefully
+
+### 12.3 Template Auto-Discovery
+
+Automatically load templates from directory:
+
+```zig
+// In main.zig (development mode only)
+const templates = try app.discoverTemplates("src/templates");
+defer templates.deinit();
+
+// Access templates by name (filename without .zt.html)
+if (templates.get("index")) |template| {
+    const html = try template.render(Context, context, allocator);
+    return Response.html(html);
+}
+```
+
+**Template Naming**: Filename becomes template name:
+- `index.zt.html` → `templates.get("index")`
+- `about.zt.html` → `templates.get("about")`
+- `contact.zt.html` → `templates.get("contact")`
+
+**Note**: Template discovery only works in development mode (requires hot reload).
+
+### 12.4 Complete Example with Auto-Discovery
+
+```zig
+pub fn main() !void {
+    // Initialize database with migration auto-discovery
+    try database.initDatabase();
+    const orm = try database.getORM();
+    
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+    
+    // Auto-discover static files
+    app.discoverStaticFiles("static") catch |err| {
+        std.debug.print("Warning: Static discovery failed: {}\n", .{err});
+    };
+    
+    // Auto-discover templates
+    const templates = app.discoverTemplates("src/templates") catch |err| {
+        std.debug.print("Warning: Template discovery failed: {}\n", .{err});
+    };
+    defer templates.deinit();
+    
+    // Register routes
+    try app.get("/", handleIndex);
+    try app.restApi("/api/items", Item, config);
+    
+    try app.start();
+}
+
+fn handleIndex(req: *Request) Response {
+    const template = templates.get("index") orelse {
+        return Response.text("Template not found").withStatus(500);
+    };
+    
+    const html = try template.render(Context, context, allocator);
+    return Response.html(html);
+}
+```
+
 ## Next Steps
 
 - Add validation for request data
 - Implement authentication with sessions
 - Add rate limiting
 - Set up error handling
+- Use auto-discovery features to reduce boilerplate
 - Add more routes and features
 - Deploy to production
 

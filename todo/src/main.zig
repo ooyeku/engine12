@@ -355,12 +355,25 @@ pub fn createApp() !E12.Engine12 {
         // All routes registered by basic_auth would be automatically removed
     }
 
-    // Load template for hot reloading (development mode only)
-    // Template will automatically reload when file changes
-    // Path is relative to the engine12 root directory (where the app is run from)
-    const template_path = "todo/src/templates/index.zt.html";
-    const template = try app.loadTemplate(template_path);
-    database.setGlobalTemplate(template);
+    // Use template auto-discovery to automatically load templates
+    // Scans templates/ directory for .zt.html files
+    const template_registry_result = app.discoverTemplates("todo/src/templates");
+    if (template_registry_result) |template_registry| {
+        // Store template registry globally for handlers to access
+        database.setGlobalTemplateRegistry(template_registry);
+        std.debug.print("[Todo] Template registry set with {} templates\n", .{template_registry.count()});
+    } else |err| {
+        std.debug.print("[Todo] Warning: Template discovery failed: {}\n", .{err});
+        // Fall back to manual template loading if discovery fails
+        const template_path = "todo/src/templates/index.zt.html";
+        if (app.loadTemplate(template_path)) |template| {
+            database.setGlobalTemplate(template);
+            std.debug.print("[Todo] Fallback: Loaded template manually\n", .{});
+        } else |load_err| {
+            std.debug.print("[Todo] Error: Failed to load template manually: {}\n", .{load_err});
+            // Continue without template - handler will return error
+        }
+    }
 
     // Register root route FIRST to prevent default handler from being registered
     // This must be done before any other routes that might build the server
@@ -441,10 +454,15 @@ pub fn createApp() !E12.Engine12 {
     // Metrics endpoint
     try app.get("/metrics", handlers.metrics.handleMetrics);
 
-    // Static file serving - register AFTER root route so it doesn't override it
-    // Serve static files from static/ directory
-    try app.serveStatic("/css", "todo/static/css");
-    try app.serveStatic("/js", "todo/static/js");
+    // Use static file auto-discovery to automatically register static routes
+    // Scans static/ directory for subdirectories and registers them
+    // Convention: static/css/ -> /css/*, static/js/ -> /js/*
+    app.discoverStaticFiles("todo/static") catch |err| {
+        std.debug.print("[Todo] Warning: Static file discovery failed: {}\n", .{err});
+        // Fall back to manual static file registration if discovery fails
+        try app.serveStatic("/css", "todo/static/css");
+        try app.serveStatic("/js", "todo/static/js");
+    };
 
     // API routes
     // Note: Route groups require comptime evaluation, so we register routes directly

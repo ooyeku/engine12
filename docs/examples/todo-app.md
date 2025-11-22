@@ -677,6 +677,27 @@ try orm.transaction(void, struct {
 
 ### Migrations
 
+**Option 1: Auto-Discovery (Recommended for Development)**
+
+Use migration auto-discovery to automatically load migrations:
+
+```zig
+// In database.zig
+const migration_discovery = @import("engine12").orm.migration_discovery;
+
+pub fn initDatabase() !void {
+    // ... database setup ...
+    
+    // Auto-discover migrations
+    var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+    defer registry.deinit();
+    
+    try orm.runMigrationsFromRegistry(&registry);
+}
+```
+
+**Option 2: Manual Migration Registry**
+
 Use `MigrationRegistry` for schema management:
 
 ```zig

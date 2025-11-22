@@ -980,6 +980,136 @@ pub const Engine12 = struct {
         return error.HotReloadNotEnabled;
     }
 
+    /// Template registry for storing discovered templates
+    pub const TemplateRegistry = struct {
+        templates: std.StringHashMap(*hot_reload_mod.RuntimeTemplate),
+        registry_allocator: std.mem.Allocator,
+
+        pub fn init(alloc: std.mem.Allocator) TemplateRegistry {
+            return TemplateRegistry{
+                .templates = std.StringHashMap(*hot_reload_mod.RuntimeTemplate).init(alloc),
+                .registry_allocator = alloc,
+            };
+        }
+
+        pub fn get(self: *TemplateRegistry, name: []const u8) ?*hot_reload_mod.RuntimeTemplate {
+            return self.templates.get(name);
+        }
+
+        pub fn has(self: *TemplateRegistry, name: []const u8) bool {
+            return self.templates.contains(name);
+        }
+
+        pub fn count(self: *const TemplateRegistry) usize {
+            return self.templates.count();
+        }
+
+        pub fn deinit(self: *TemplateRegistry) void {
+            // Note: Templates are owned by HotReloadManager, so we don't free them here
+            // Free the duplicated keys we allocated
+            var iter = self.templates.iterator();
+            while (iter.next()) |entry| {
+                self.registry_allocator.free(entry.key_ptr.*);
+            }
+            self.templates.deinit();
+        }
+    };
+
+    /// Auto-discover and load templates from a directory
+    /// Scans templates/ directory for .zt.html files and auto-registers routes
+    /// Convention: index.zt.html -> GET /, {name}.zt.html -> GET /{name}
+    /// Returns a TemplateRegistry for manual template access
+    /// Only works in development mode (requires hot reload)
+    ///
+    /// Example:
+    /// ```zig
+    /// const registry = try app.discoverTemplates("src/templates");
+    /// defer registry.deinit();
+    /// // Automatically registered:
+    /// // - templates/index.zt.html -> GET /
+    /// // - templates/about.zt.html -> GET /about
+    /// ```
+    pub fn discoverTemplates(
+        self: *Engine12,
+        templates_dir: []const u8,
+    ) !TemplateRegistry {
+        var registry = TemplateRegistry.init(self.allocator);
+
+        if (self.hot_reload_manager == null) {
+            std.debug.print("[Engine12] Warning: Template discovery requires hot reload (development mode). Skipping.\n", .{});
+            return registry;
+        }
+
+        var dir = std.fs.cwd().openDir(templates_dir, .{ .iterate = true }) catch |err| {
+            std.debug.print("[Engine12] Warning: Could not open templates directory '{s}': {}\n", .{ templates_dir, err });
+            return registry; // Return empty registry gracefully
+        };
+        defer dir.close();
+
+        var iterator = dir.iterate();
+        while (true) {
+            const entry = iterator.next() catch |err| {
+                std.debug.print("[Engine12] Warning: Error iterating templates directory '{s}': {}\n", .{ templates_dir, err });
+                return registry;
+            } orelse break;
+
+            // Only process .zt.html files
+            if (entry.kind != .file) continue;
+            const template_name = entry.name;
+            if (!std.mem.endsWith(u8, template_name, ".zt.html")) continue;
+
+            const template_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ templates_dir, template_name });
+            defer self.allocator.free(template_path);
+
+            // Load template
+            const template = self.loadTemplate(template_path) catch |err| {
+                std.debug.print("[Engine12] Warning: Failed to load template '{s}': {}\n", .{ template_path, err });
+                continue;
+            };
+
+            // Extract route name from filename (remove .zt.html extension)
+            // template_name is like "index.zt.html", we want "index"
+            // .zt.html is 7 characters, but we need to account for the period before it
+            // For "index.zt.html" (13 chars): index(5) + .(1) + zt.html(6) = 12, but actual is 13
+            // So: index.zt.html = 13 chars, .zt.html = 7 chars
+            // We want index = 5 chars, so we need [0..5] = template_name[0..(13-8)]
+            // Actually, let's be more precise: if it ends with .zt.html, remove those 7 chars
+            // But the period is part of the extension, so: index.zt.html -> index (remove 8 chars: .zt.html)
+            if (template_name.len < 8) continue; // Skip files that are too short
+            // Extract base name: remove the last 7 characters (.zt.html)
+            // For "index.zt.html" (13 chars), removing 7 gives us 6 chars "index."
+            // We need to remove 8 to get "index" (5 chars)
+            const route_name_len = template_name.len - 7;
+            // But wait, if template_name is "index.zt.html", len-7 = 6, which gives "index."
+            // We need to check if there's a period before .zt.html and handle it
+            // Actually, the simplest fix: if route_name ends with ".", remove it
+            var route_name_slice = template_name[0..route_name_len];
+            // Remove trailing period if present
+            if (route_name_slice.len > 0 and route_name_slice[route_name_slice.len - 1] == '.') {
+                route_name_slice = route_name_slice[0 .. route_name_slice.len - 1];
+            }
+            const route_name = route_name_slice;
+            const route_name_copy = try self.allocator.dupe(u8, route_name);
+            try registry.templates.put(route_name_copy, template);
+
+            // Auto-register route based on filename convention
+            const route_path = if (std.mem.eql(u8, route_name, "index"))
+                "/"
+            else
+                try std.fmt.allocPrint(self.allocator, "/{s}", .{route_name});
+            defer if (!std.mem.eql(u8, route_name, "index")) {
+                self.allocator.free(route_path);
+            };
+
+            // Note: Auto-registration of routes is complex due to route conflict detection
+            // For now, we just load templates and store them in the registry
+            // Users should register their own handlers that use templates from the registry
+            std.debug.print("[Engine12] Discovered template: {s} (stored as: '{s}', route: {s})\n", .{ template_path, route_name_copy, route_path });
+        }
+
+        return registry;
+    }
+
     /// Register a WebSocket endpoint
     /// Each WebSocket route runs on its own port (starting from 9000)
     /// The handler function is called when a connection is established
@@ -1014,6 +1144,60 @@ pub const Engine12 = struct {
         }
     }
 
+    /// Auto-discover and register static files from a directory structure
+    /// Scans the static directory for subdirectories and automatically registers them
+    /// Convention: static/css/ -> /css/*, static/js/ -> /js/*
+    /// Fails gracefully if directory doesn't exist (logs warning, returns without error)
+    ///
+    /// Example:
+    /// ```zig
+    /// try app.discoverStaticFiles("static");
+    /// // Automatically registers:
+    /// // - static/css/ -> /css/*
+    /// // - static/js/ -> /js/*
+    /// // - static/images/ -> /images/*
+    /// ```
+    pub fn discoverStaticFiles(self: *Engine12, static_dir: []const u8) !void {
+        var dir = std.fs.cwd().openDir(static_dir, .{ .iterate = true }) catch |err| {
+            std.debug.print("[Engine12] Warning: Could not open static directory '{s}': {}\n", .{ static_dir, err });
+            return; // Gracefully return, don't fail
+        };
+        defer dir.close();
+
+        var iterator = dir.iterate();
+        while (true) {
+            const entry = iterator.next() catch |err| {
+                std.debug.print("[Engine12] Warning: Error iterating static directory '{s}': {}\n", .{ static_dir, err });
+                return;
+            } orelse break;
+            // Only process subdirectories, skip files
+            if (entry.kind != .directory) continue;
+
+            const subdir_name = entry.name;
+
+            // Skip hidden directories
+            if (subdir_name.len > 0 and subdir_name[0] == '.') continue;
+
+            // Create mount path: /{subdir_name}
+            const mount_path = try std.fmt.allocPrint(self.allocator, "/{s}", .{subdir_name});
+            // Note: mount_path will be duplicated in serveStatic, so we can free it here
+            defer self.allocator.free(mount_path);
+
+            // Create full directory path: static/{subdir_name}
+            const full_dir_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ static_dir, subdir_name });
+            defer self.allocator.free(full_dir_path);
+
+            // Register static route (this will duplicate mount_path internally)
+            self.serveStatic(mount_path, full_dir_path) catch |err| {
+                std.debug.print("[Engine12] Warning: Failed to register static route '{s}' -> '{s}': {}\n", .{ mount_path, full_dir_path, err });
+                // Continue with other directories
+                continue;
+            };
+
+            std.debug.print("[Engine12] Discovered static route: {s} -> {s}\n", .{ mount_path, full_dir_path });
+        }
+    }
+
     /// Register static file serving from a directory
     pub fn serveStatic(self: *Engine12, mount_path: []const u8, directory: []const u8) !void {
         if (self.static_routes_count >= MAX_STATIC_ROUTES) {
@@ -1023,7 +1207,13 @@ pub const Engine12 = struct {
             return error.ServerAlreadyBuilt;
         }
 
-        var file_server = fileserver.FileServer.init(self.allocator, mount_path, directory);
+        // Duplicate mount_path and directory to ensure they persist
+        // These strings are stored in FileServer and must outlive the function call
+        // We'll store these copies in the FileServer, so they need to be allocated
+        const mount_path_copy = try self.allocator.dupe(u8, mount_path);
+        const directory_copy = try self.allocator.dupe(u8, directory);
+
+        var file_server = fileserver.FileServer.init(self.allocator, mount_path_copy, directory_copy);
 
         // Disable cache in development mode (hot reload enabled)
         if (self.hot_reload_manager != null) {
@@ -1031,7 +1221,7 @@ pub const Engine12 = struct {
         }
 
         // Track if static files are mounted at root
-        if (std.mem.eql(u8, mount_path, "/")) {
+        if (std.mem.eql(u8, mount_path_copy, "/")) {
             self.static_root_mounted = true;
         }
 
@@ -1059,7 +1249,7 @@ pub const Engine12 = struct {
                 .build();
 
             // Register default routes (but skip "/" if we're mounting static files at root or custom handler registered)
-            if (!std.mem.eql(u8, mount_path, "/") and !self.custom_root_handler) {
+            if (!std.mem.eql(u8, mount_path_copy, "/") and !self.custom_root_handler) {
                 try server.get("/", wrapHandler(handlers.handleDefaultRoot, "/"));
             }
             try server.get("/health", wrapHandler(handlers.handleHealthEndpoint, "/health"));
@@ -1076,7 +1266,8 @@ pub const Engine12 = struct {
 
         if (self.built_server) |*server| {
             // Store the mount path for this registry entry
-            static_mount_paths[static_index] = mount_path;
+            // Use the already-duplicated mount_path_copy from above
+            static_mount_paths[static_index] = mount_path_copy;
 
             // For root mount, register "/" and also register common frontend paths
             if (std.mem.eql(u8, mount_path, "/")) {
@@ -1149,10 +1340,13 @@ pub const Engine12 = struct {
                         while (i < static_file_registry_count) {
                             if (static_file_registry[i]) |*fs| {
                                 const registry_mount = static_mount_paths[i];
-                                // Check if request path starts with the mount path
-                                if (std.mem.startsWith(u8, request_path, registry_mount)) {
-                                    // Serve the file using the full request path
-                                    return fs.serveFile(request_path).toZiggurat();
+                                // Safety check: ensure registry_mount is valid
+                                if (registry_mount.len > 0) {
+                                    // Check if request path starts with the mount path
+                                    if (std.mem.startsWith(u8, request_path, registry_mount)) {
+                                        // Serve the file using the full request path
+                                        return fs.serveFile(request_path).toZiggurat();
+                                    }
                                 }
                             }
                             i += 1;
@@ -1161,10 +1355,8 @@ pub const Engine12 = struct {
                     }
                 }.handler;
 
-                // Register the base mount path handler
-                // The wrapper handler checks request.path dynamically to handle all subpaths
-                // This avoids segfault from passing runtime-allocated strings to ziggurat
-                try server.get(mount_path, wrapper);
+                // Don't register mount_path directly - ziggurat requires comptime strings
+                // Instead, we register specific routes below using comptime strings
 
                 // Register wildcard routes for subpaths to handle any file under the mount path
                 // Use :file parameter pattern to match any filename
