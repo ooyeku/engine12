@@ -231,6 +231,28 @@ pub fn build(b: *std.Build) void {
     const run_todo_tests = b.addRunArtifact(todo_test_exe);
     todo_test_step.dependOn(&run_todo_tests.step);
 
+    // Read version from build.zig.zon with robust error handling
+    const build_zon_content = @embedFile("build.zig.zon");
+    const version_prefix = ".version = \"";
+    const version_start = std.mem.indexOf(u8, build_zon_content, version_prefix) orelse {
+        @panic("FATAL: Could not find '.version = \"' in build.zig.zon. Please ensure build.zig.zon contains a version field.");
+    };
+    const version_value_start = version_start + version_prefix.len;
+    if (version_value_start >= build_zon_content.len) {
+        @panic("FATAL: Invalid version format in build.zig.zon. Version value appears to be empty.");
+    }
+    const version_end = std.mem.indexOfScalar(u8, build_zon_content[version_value_start..], '"') orelse {
+        @panic("FATAL: Could not find closing quote for version in build.zig.zon. Please check the version field format.");
+    };
+    if (version_end == 0) {
+        @panic("FATAL: Version string is empty in build.zig.zon.");
+    }
+    const version = build_zon_content[version_value_start..][0..version_end];
+
+    // Create options module for CLI with version
+    const cli_options = b.addOptions();
+    cli_options.addOption([]const u8, "version", version);
+
     // CLI executable
     const cli_exe = b.addExecutable(.{
         .name = "e12",
@@ -240,6 +262,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    cli_exe.root_module.addOptions("build_options", cli_options);
 
     // Install CLI executable
     b.installArtifact(cli_exe);

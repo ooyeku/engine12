@@ -821,10 +821,25 @@ pub fn scaffoldProject(
     };
 
     // Change to project directory for zig fetch
-    const original_cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const original_cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch |err| {
+        std.debug.print("Error: Failed to get current directory: {}\n", .{err});
+        // Cleanup project directory
+        var cleanup_path_buf: [512]u8 = undefined;
+        const abs_project_path = std.fmt.bufPrint(&cleanup_path_buf, "./{s}", .{project_name}) catch {
+            std.process.exit(1);
+        };
+        std.fs.cwd().deleteTree(abs_project_path) catch {};
+        return err;
+    };
 
     std.posix.chdir(project_name) catch |err| {
-        std.debug.print("Error: Failed to change to project directory: {}\n", .{err});
+        std.debug.print("Error: Failed to change to project directory '{s}': {}\n", .{ project_name, err });
+        // Cleanup project directory
+        var cleanup_path_buf: [512]u8 = undefined;
+        const abs_project_path = std.fmt.bufPrint(&cleanup_path_buf, "{s}/{s}", .{ original_cwd, project_name }) catch {
+            std.process.exit(1);
+        };
+        std.fs.cwd().deleteTree(abs_project_path) catch {};
         return err;
     };
 
@@ -865,10 +880,32 @@ pub fn scaffoldProject(
         .{ ".gitignore", GITIGNORE_TEMPLATE },
     };
 
+    // Write all template files with error handling
     for (files) |file_info| {
-        const processed = try cli_utils.processTemplate(allocator, file_info[1], project_name, engine12_hash);
+        const processed = cli_utils.processTemplate(allocator, file_info[1], project_name, engine12_hash) catch |err| {
+            std.debug.print("Error: Failed to process template for '{s}': {}\n", .{ file_info[0], err });
+            // Cleanup on failure
+            std.posix.chdir(original_cwd) catch {};
+            var cleanup_path_buf: [512]u8 = undefined;
+            const abs_project_path = std.fmt.bufPrint(&cleanup_path_buf, "{s}/{s}", .{ original_cwd, project_name }) catch {
+                std.process.exit(1);
+            };
+            std.fs.cwd().deleteTree(abs_project_path) catch {};
+            std.process.exit(1);
+        };
         // Note: processed is allocated with page_allocator, so we don't free it
-        try cli_utils.writeFile(allocator, ".", file_info[0], processed);
+
+        cli_utils.writeFile(allocator, ".", file_info[0], processed) catch |err| {
+            std.debug.print("Error: Failed to write file '{s}': {}\n", .{ file_info[0], err });
+            // Cleanup on failure
+            std.posix.chdir(original_cwd) catch {};
+            var cleanup_path_buf: [512]u8 = undefined;
+            const abs_project_path = std.fmt.bufPrint(&cleanup_path_buf, "{s}/{s}", .{ original_cwd, project_name }) catch {
+                std.process.exit(1);
+            };
+            std.fs.cwd().deleteTree(abs_project_path) catch {};
+            std.process.exit(1);
+        };
     }
 
     // Change back to original directory (defer will handle this, but explicit is clearer)

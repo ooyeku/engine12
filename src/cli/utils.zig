@@ -1,4 +1,12 @@
 const std = @import("std");
+const build_options = @import("build_options");
+
+/// Engine12 version - extracted from build.zig.zon via build options
+/// Falls back to "unknown" if version cannot be determined (should never happen in normal builds)
+pub const ENGINE12_VERSION = if (@hasDecl(build_options, "version"))
+    build_options.version
+else
+    "unknown";
 
 /// Process a template string by replacing placeholders
 /// Placeholders: {PROJECT_NAME}, {ENGINE12_HASH}, {ENGINE12_VERSION}
@@ -30,7 +38,7 @@ pub fn processTemplate(
                 else if (std.mem.eql(u8, placeholder, "ENGINE12_HASH"))
                     engine12_hash
                 else if (std.mem.eql(u8, placeholder, "ENGINE12_VERSION"))
-                    "0.2.1"
+                    ENGINE12_VERSION
                 else
                     null;
 
@@ -111,16 +119,15 @@ pub fn fetchEngine12Hash(
     const term = try process.wait();
 
     if (term.Exited != 0) {
-        std.debug.print("Error: zig fetch failed with exit code {}\n", .{term.Exited});
-        std.debug.print("Trying alternative approach...\n", .{});
-
-        // Fallback: try without --save flag to at least get diagnostic info
-        var process2 = std.process.Child.init(&[_][]const u8{ "zig", "fetch", "git+https://github.com/ooyeku/Engine12.git" }, std.heap.page_allocator);
-        process2.stdout_behavior = .Ignore;
-        process2.stderr_behavior = .Ignore;
-        _ = process2.spawn() catch {};
-        _ = process2.wait() catch {};
-
+        std.debug.print("\nError: 'zig fetch' failed with exit code {}\n", .{term.Exited});
+        std.debug.print("This usually means:\n", .{});
+        std.debug.print("  - Network connectivity issues\n", .{});
+        std.debug.print("  - GitHub is unreachable\n", .{});
+        std.debug.print("  - Zig is not installed or not in PATH\n\n", .{});
+        std.debug.print("Please ensure:\n", .{});
+        std.debug.print("  1. You have internet connectivity\n", .{});
+        std.debug.print("  2. Zig is installed and available in your PATH\n", .{});
+        std.debug.print("  3. GitHub (github.com) is accessible\n\n", .{});
         return error.FetchFailed;
     }
 
@@ -131,37 +138,59 @@ pub fn fetchEngine12Hash(
     const build_zon_content = try cwd.readFileAlloc(std.heap.page_allocator, "build.zig.zon", 1024 * 1024);
     // Note: page_allocator doesn't support free(), so we don't defer it
 
-    // Find and extract the hash value
+    // Find and extract the hash value with robust error handling
     const engine12_prefix = ".engine12 =";
     const engine12_start = std.mem.indexOf(u8, build_zon_content, engine12_prefix) orelse {
-        std.debug.print("Error: Could not find engine12 dependency in build.zig.zon\n", .{});
+        std.debug.print("Error: Could not find '.engine12 =' dependency in build.zig.zon\n", .{});
+        std.debug.print("The build.zig.zon file may be malformed or missing the engine12 dependency.\n", .{});
         return error.HashNotFound;
     };
 
     const hash_prefix = ".hash = \"";
     const hash_start = std.mem.indexOfPos(u8, build_zon_content, engine12_start, hash_prefix) orelse {
-        std.debug.print("Error: Could not find hash field in engine12 dependency\n", .{});
+        std.debug.print("Error: Could not find '.hash = \"' field in engine12 dependency\n", .{});
+        std.debug.print("The engine12 dependency in build.zig.zon may be missing the hash field.\n", .{});
         return error.HashNotFound;
     };
 
     const hash_value_start = hash_start + hash_prefix.len;
+    if (hash_value_start >= build_zon_content.len) {
+        std.debug.print("Error: Hash value appears to be empty or malformed\n", .{});
+        return error.HashNotFound;
+    }
+
     const hash_end = std.mem.indexOfScalar(u8, build_zon_content[hash_value_start..], '"') orelse {
-        std.debug.print("Error: Could not find end of hash value\n", .{});
+        std.debug.print("Error: Could not find closing quote for hash value\n", .{});
+        std.debug.print("The hash value in build.zig.zon may be malformed.\n", .{});
         return error.HashNotFound;
     };
 
+    if (hash_end == 0) {
+        std.debug.print("Error: Hash value is empty\n", .{});
+        return error.HashNotFound;
+    }
+
     const hash = build_zon_content[hash_value_start..][0..hash_end];
+    if (hash.len == 0) {
+        std.debug.print("Error: Extracted hash is empty\n", .{});
+        return error.HashNotFound;
+    }
+
     return try allocator.dupe(u8, hash);
 }
 
 /// Write a file, creating parent directories if needed
+/// Returns error if file cannot be written
 pub fn writeFile(
     _: std.mem.Allocator,
     base_path: []const u8,
     file_path: []const u8,
     content: []const u8,
 ) !void {
-    var base_dir = try std.fs.cwd().openDir(base_path, .{});
+    var base_dir = std.fs.cwd().openDir(base_path, .{}) catch |err| {
+        std.debug.print("Error: Cannot open base directory '{s}': {}\n", .{ base_path, err });
+        return err;
+    };
     defer base_dir.close();
 
     // Split file path into directory and filename
@@ -170,22 +199,44 @@ pub fn writeFile(
         const dir_path = file_path[0..slash_idx];
         const filename = file_path[slash_idx + 1 ..];
 
+        if (filename.len == 0) {
+            std.debug.print("Error: Invalid file path '{s}' (empty filename)\n", .{file_path});
+            return error.InvalidPath;
+        }
+
         // Create directory structure
         var dir = base_dir;
         var path_iter = std.mem.splitScalar(u8, dir_path, '/');
         while (path_iter.next()) |segment| {
             if (segment.len == 0) continue;
             dir.makeDir(segment) catch |err| {
-                if (err != error.PathAlreadyExists) return err;
+                if (err != error.PathAlreadyExists) {
+                    std.debug.print("Error: Cannot create directory '{s}': {}\n", .{ segment, err });
+                    return err;
+                }
             };
-            dir = try dir.openDir(segment, .{});
+            dir = dir.openDir(segment, .{}) catch |err| {
+                std.debug.print("Error: Cannot open directory '{s}': {}\n", .{ segment, err });
+                return err;
+            };
         }
 
-        try dir.writeFile(.{ .sub_path = filename, .data = content });
+        dir.writeFile(.{ .sub_path = filename, .data = content }) catch |err| {
+            std.debug.print("Error: Cannot write file '{s}': {}\n", .{ file_path, err });
+            dir.close();
+            return err;
+        };
         dir.close();
     } else {
         // No directory, just write file
-        try base_dir.writeFile(.{ .sub_path = file_path, .data = content });
+        if (file_path.len == 0) {
+            std.debug.print("Error: Invalid file path (empty)\n", .{});
+            return error.InvalidPath;
+        }
+        base_dir.writeFile(.{ .sub_path = file_path, .data = content }) catch |err| {
+            std.debug.print("Error: Cannot write file '{s}': {}\n", .{ file_path, err });
+            return err;
+        };
     }
 }
 
