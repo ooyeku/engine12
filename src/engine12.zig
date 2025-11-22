@@ -603,39 +603,38 @@ pub const Engine12 = struct {
         };
         self.template_routes_count += 1;
 
-        // Create handler that captures app pointer and route index
-        const HandlerData = struct {
-            app_ptr: *Engine12,
-            route_idx: usize,
-        };
-        const handler_data = HandlerData{
-            .app_ptr = self,
-            .route_idx = route_index,
-        };
+        // Create handler function that captures route_index
+        // Store route_index in a way accessible to the handler
+        const captured_route_idx = route_index;
+        const captured_app_ptr = self;
 
-        // Create wrapper struct that captures the values as a const field
-        const Wrapper = struct {
-            const data: HandlerData = handler_data;
-            fn handler(req: *Request) Response {
-                const route_info = data.app_ptr.template_routes[data.route_idx];
-                const template_path_ptr = route_info.path;
-                const context_fn_ptr = @as(ContextFn, @ptrCast(@alignCast(route_info.context_fn)));
+        // Create a function that returns a handler, capturing the route index
+        const createHandler = struct {
+            fn create(route_idx: usize, app: *Engine12) fn (*Request) Response {
+                const Handler = struct {
+                    fn handler(req: *Request) Response {
+                        const route_info = app.template_routes[route_idx];
+                        const template_path_ptr = route_info.path;
+                        const context_fn_ptr = @as(ContextFn, @ptrCast(@alignCast(route_info.context_fn)));
 
-                const context = context_fn_ptr(req);
-                const templates_simple_mod = @import("templates/simple.zig");
-                const html = templates_simple_mod.renderSimple(template_path_ptr, context, data.app_ptr.allocator) catch |err| {
-                    return switch (err) {
-                        error.TemplateNotFound => Response.text("Template not found").withStatus(404),
-                        error.TemplateTooLarge => Response.text("Template too large").withStatus(500),
-                        else => Response.text("Template rendering error").withStatus(500),
-                    };
+                        const context = context_fn_ptr(req);
+                        const templates_simple_mod = @import("templates/simple.zig");
+                        const html = templates_simple_mod.renderSimple(template_path_ptr, context, app.allocator) catch |err| {
+                            return switch (err) {
+                                error.TemplateNotFound => Response.text("Template not found").withStatus(404),
+                                error.TemplateTooLarge => Response.text("Template too large").withStatus(500),
+                                else => Response.text("Template rendering error").withStatus(500),
+                            };
+                        };
+                        defer app.allocator.free(html);
+                        return Response.html(html);
+                    }
                 };
-                defer data.app_ptr.allocator.free(html);
-                return Response.html(html);
+                return Handler.handler;
             }
-        };
+        }.create(captured_route_idx, captured_app_ptr);
 
-        try self.get(path_pattern, Wrapper.handler);
+        try self.get(path_pattern, createHandler);
     }
 
     /// Register a POST endpoint
@@ -987,7 +986,6 @@ pub const Engine12 = struct {
         const OverrideType = @TypeOf(overrides);
 
         // Check if validator is provided in overrides
-        var validator_provided = false;
         var validator_fn: ?*const fn (*Request, Model) anyerror!validation.ValidationErrors = null;
         comptime {
             const type_info = @typeInfo(OverrideType);
@@ -995,7 +993,7 @@ pub const Engine12 = struct {
                 .@"struct" => |struct_info| {
                     for (struct_info.fields) |field| {
                         if (std.mem.eql(u8, field.name, "validator")) {
-                            validator_provided = true;
+                            validator_fn = overrides.validator;
                             break;
                         }
                     }
@@ -1003,9 +1001,7 @@ pub const Engine12 = struct {
                 else => {},
             }
         }
-        if (validator_provided) {
-            validator_fn = overrides.validator;
-        }
+        const validator_provided = validator_fn != null;
 
         // Validator is required, so provide a default no-op validator if not provided
         const default_validator = struct {
