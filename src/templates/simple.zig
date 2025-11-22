@@ -173,4 +173,3 @@ test "renderSimple with boolean variable" {
 
     try std.testing.expect(std.mem.indexOf(u8, html, "true") != null);
 }
-

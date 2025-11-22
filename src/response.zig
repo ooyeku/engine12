@@ -128,7 +128,7 @@ pub const Response = struct {
     /// ```
     pub fn serveFile(file_path: []const u8, contents: []const u8) Response {
         const mime_type = getMimeTypeFromPath(file_path);
-        
+
         const persistent_body = persistent_allocator.dupe(u8, contents) catch {
             // Fallback to original contents if allocation fails
             const response = Response.text(contents);
@@ -153,7 +153,7 @@ pub const Response = struct {
     fn getMimeTypeFromPath(file_path: []const u8) []const u8 {
         if (std.mem.lastIndexOf(u8, file_path, ".")) |dot_index| {
             const ext = file_path[dot_index + 1 ..];
-            
+
             if (std.mem.eql(u8, ext, "html")) return "text/html";
             if (std.mem.eql(u8, ext, "css")) return "text/css";
             if (std.mem.eql(u8, ext, "js")) return "application/javascript";
@@ -168,7 +168,7 @@ pub const Response = struct {
             if (std.mem.eql(u8, ext, "txt")) return "text/plain";
             if (std.mem.eql(u8, ext, "xml")) return "application/xml";
         }
-        
+
         return "application/octet-stream";
     }
 

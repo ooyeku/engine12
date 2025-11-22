@@ -237,11 +237,7 @@ pub const HandlerCtx = struct {
     /// Pattern should use {d} placeholder for user_id
     pub fn cacheKey(self: *HandlerCtx, comptime pattern: []const u8) ![]const u8 {
         const user_id = if (self.user) |u| u.id else 0;
-        return std.fmt.allocPrint(
-            self.request.arena.allocator(),
-            pattern,
-            .{user_id}
-        );
+        return std.fmt.allocPrint(self.request.arena.allocator(), pattern, .{user_id});
     }
 
     /// Check cache and return cache entry if hit
@@ -329,4 +325,3 @@ pub const HandlerCtx = struct {
         return self.errorResponse(message, 500);
     }
 };
-

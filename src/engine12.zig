@@ -586,9 +586,14 @@ pub const Engine12 = struct {
         context_fn: anytype,
     ) !void {
         const ContextFn = @TypeOf(context_fn);
-        const context_fn_type_info = @typeInfo(ContextFn);
-        if (context_fn_type_info != .Fn) {
-            return error.InvalidContextFunction;
+        // Validate that context_fn is a function type
+        // In Zig 0.15+, @typeInfo returns a union(enum), so we check the tag
+        comptime {
+            const type_info = @typeInfo(ContextFn);
+            switch (type_info) {
+                .Fn => {}, // Valid function type
+                else => @compileError("templateRoute context_fn must be a function"),
+            }
         }
 
         // Duplicate template_path to ensure it persists
@@ -614,7 +619,7 @@ pub const Engine12 = struct {
                 const route_info = self.app_ptr.template_routes[self.route_idx];
                 const template_path_ptr = route_info.path;
                 const context_fn_ptr = @as(ContextFn, @ptrCast(@alignCast(route_info.context_fn)));
-                
+
                 const context = context_fn_ptr(req);
                 const templates_simple_mod = @import("templates/simple.zig");
                 const html = templates_simple_mod.renderSimple(template_path_ptr, context, allocator) catch |err| {
@@ -979,11 +984,11 @@ pub const Engine12 = struct {
         overrides: anytype,
     ) !void {
         const orm_instance = try self.getORM();
-        
+
         // Build config with defaults, allowing overrides
         const ConfigType = rest_api_mod.RestApiConfig(Model);
         const OverrideType = @TypeOf(overrides);
-        
+
         // Check if validator is provided in overrides
         var validator_provided = false;
         var validator_fn: ?*const fn (*Request, Model) anyerror!validation.ValidationErrors = null;
@@ -996,7 +1001,7 @@ pub const Engine12 = struct {
                 }
             }
         }
-        
+
         // Validator is required, so provide a default no-op validator if not provided
         const default_validator = struct {
             fn validate(_: *Request, _: Model) anyerror!validation.ValidationErrors {
@@ -1004,7 +1009,7 @@ pub const Engine12 = struct {
                 return errors;
             }
         }.validate;
-        
+
         var config: ConfigType = undefined;
         config.orm = orm_instance;
         config.validator = if (validator_provided) validator_fn.? else default_validator;
@@ -1014,7 +1019,7 @@ pub const Engine12 = struct {
         config.authenticator = null;
         config.authorization = null;
         config.cache_ttl_ms = null;
-        
+
         // Apply overrides if provided
         if (@typeInfo(OverrideType) == .Struct) {
             inline for (@typeInfo(OverrideType).Struct.fields) |field| {
@@ -1023,7 +1028,7 @@ pub const Engine12 = struct {
                 }
             }
         }
-        
+
         return rest_api_mod.restApi(self, prefix, Model, config);
     }
 
@@ -1564,7 +1569,7 @@ pub const Engine12 = struct {
             // Try direct import of init.zig as fallback
             const init_path = try std.fmt.allocPrint(self.allocator, "{s}/init.zig", .{migrations_dir});
             defer self.allocator.free(init_path);
-            
+
             const init_file = std.fs.cwd().openFile(init_path, .{}) catch {
                 return; // No migrations to run
             };

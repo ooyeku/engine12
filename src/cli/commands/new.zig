@@ -29,42 +29,11 @@ const BUILD_ZIG_TEMPLATE =
     \\    const target = b.standardTargetOptions(.{});
     \\    const optimize = b.standardOptimizeOption(.{});
     \\
-    \\    // Try to use local Engine12 if available (for development)
-    \\    // Checks for ../Engine12/src/root.zig relative to project directory
-    \\    var use_local_engine12 = false;
-    \\    {
-    \\        const local_path = "../Engine12/src/root.zig";
-    \\        const cwd = std.fs.cwd();
-    \\        const file = cwd.openFile(local_path, .{}) catch null;
-    \\        if (file) |f| {
-    \\            f.close();
-    \\            use_local_engine12 = true;
-    \\        }
-    \\    }
-    \\
-    \\    const engine12_module = if (use_local_engine12) blk: {
-    \\        // Use local Engine12
-    \\        const mod = b.addModule("engine12", .{
-    \\            .root_source_file = b.path("../Engine12/src/root.zig"),
-    \\            .target = target,
-    \\            .optimize = optimize,
-    \\        });
-    \\        // Add dependencies that local Engine12 needs
-    \\        const vigil_dep = b.dependency("vigil", .{ .target = target, .optimize = optimize });
-    \\        const ziggurat_dep = b.dependency("ziggurat", .{ .target = target, .optimize = optimize });
-    \\        const websocket_dep = b.dependency("websocket", .{ .target = target, .optimize = optimize });
-    \\        mod.addImport("vigil", vigil_dep.module("vigil"));
-    \\        mod.addImport("ziggurat", ziggurat_dep.module("ziggurat"));
-    \\        mod.addImport("websocket", websocket_dep.module("websocket"));
-    \\        break :blk mod;
-    \\    } else blk: {
-    \\        // Use published Engine12 from package cache
-    \\        const engine12_dep = b.dependency("engine12", .{
-    \\            .target = target,
-    \\            .optimize = optimize,
-    \\        });
-    \\        break :blk engine12_dep.module("engine12");
-    \\    };
+    \\    // Use Engine12 dependency (will use local path if specified in build.zig.zon)
+    \\    const engine12_dep = b.dependency("engine12", .{
+    \\        .target = target,
+    \\        .optimize = optimize,
+    \\    });
     \\
     \\    const exe = b.addExecutable(.{
     \\        .name = "{PROJECT_NAME}",
@@ -75,7 +44,7 @@ const BUILD_ZIG_TEMPLATE =
     \\        }),
     \\    });
     \\
-    \\    exe.root_module.addImport("engine12", engine12_module);
+    \\    exe.root_module.addImport("engine12", engine12_dep.module("engine12"));
     \\    exe.linkLibC(); // Required for ORM
     \\
     \\    b.installArtifact(exe);
@@ -140,14 +109,6 @@ const README_TEMPLATE =
     \\```
     \\
     \\The server will start on http://127.0.0.1:8080
-    \\
-    \\## Using Local Engine12 (Development)
-    \\
-    \\If you're developing Engine12 locally and want to use the latest features:
-    \\
-    \\1. Ensure Engine12 is in a sibling directory: `../Engine12/`
-    \\2. The build system will automatically detect and use the local Engine12
-    \\3. If Engine12 is in a different location, edit `build.zig` to update the path
     \\
 ;
 
@@ -839,4 +800,3 @@ pub fn scaffoldProject(
     // Exit immediately to avoid allocator cleanup issues
     std.process.exit(0);
 }
-
