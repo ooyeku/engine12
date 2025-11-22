@@ -644,12 +644,87 @@ const MAIN_ZIG_RECOMMENDED_TEMPLATE =
     \\
     \\const allocator = std.heap.page_allocator;
     \\
-    \\fn getIndexContext(req: *Request) struct { title: []const u8, message: []const u8 } {
+    \\fn handleIndex(req: *Request) Response {
     \\    _ = req;
-    \\    return .{
-    \\        .title = "Welcome to {PROJECT_NAME}",
-    \\        .message = "This is a sample Engine12 application",
+    \\    // Read and render template
+    \\    const template_file = std.fs.cwd().openFile("src/templates/index.zt.html", .{}) catch {
+    \\        return Response.text("Template not found").withStatus(404);
     \\    };
+    \\    defer template_file.close();
+    \\
+    \\    const template_content = template_file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+    \\        return Response.text("Template too large").withStatus(500);
+    \\    };
+    \\    defer allocator.free(template_content);
+    \\
+    \\    // Simple template variable replacement
+    \\    const title = "Welcome to {PROJECT_NAME}";
+    \\    const message = "This is a sample Engine12 application";
+    \\    
+    \\    // Use ArrayList to build the result dynamically
+    \\    var result = std.ArrayList(u8).initCapacity(allocator, template_content.len * 2) catch {
+    \\        return Response.text("Template rendering error").withStatus(500);
+    \\    };
+    \\    defer result.deinit(allocator);
+    \\    
+    \\    var i: usize = 0;
+    \\    while (i < template_content.len) {
+    \\        // Check for {{ .title }} (with spaces) - 12 characters: {{ .title }}
+    \\        if (i + 12 <= template_content.len and std.mem.eql(u8, template_content[i..i+12], "{{ .title }}")) {
+    \\            result.appendSlice(allocator, title) catch {
+    \\                return Response.text("Template rendering error").withStatus(500);
+    \\            };
+    \\            i += 12;
+    \\        }
+    \\        // Check for {{.title }} (space after dot) - 12 characters: {{.title }}
+    \\        else if (i + 12 <= template_content.len and std.mem.eql(u8, template_content[i..i+12], "{{.title }}")) {
+    \\            result.appendSlice(allocator, title) catch {
+    \\                return Response.text("Template rendering error").withStatus(500);
+    \\            };
+    \\            i += 12;
+    \\        }
+    \\        // Check for {{.title}} (no spaces) - 10 characters: {{.title}}
+    \\        else if (i + 10 <= template_content.len and std.mem.eql(u8, template_content[i..i+10], "{{.title}}")) {
+    \\            result.appendSlice(allocator, title) catch {
+    \\                return Response.text("Template rendering error").withStatus(500);
+    \\            };
+    \\            i += 10;
+    \\        }
+    \\        // Check for {{ .message }} (with spaces) - 14 characters: {{ .message }}
+    \\        else if (i + 14 <= template_content.len and std.mem.eql(u8, template_content[i..i+14], "{{ .message }}")) {
+    \\            result.appendSlice(allocator, message) catch {
+    \\                return Response.text("Template rendering error").withStatus(500);
+    \\            };
+    \\            i += 14;
+    \\        }
+    \\        // Check for {{.message }} (space after dot) - 13 characters: {{.message }}
+    \\        else if (i + 13 <= template_content.len and std.mem.eql(u8, template_content[i..i+13], "{{.message }}")) {
+    \\            result.appendSlice(allocator, message) catch {
+    \\                return Response.text("Template rendering error").withStatus(500);
+    \\            };
+    \\            i += 13;
+    \\        }
+    \\        // Check for {{.message}} (no spaces) - 12 characters: {{.message}}
+    \\        else if (i + 12 <= template_content.len and std.mem.eql(u8, template_content[i..i+12], "{{.message}}")) {
+    \\            result.appendSlice(allocator, message) catch {
+    \\                return Response.text("Template rendering error").withStatus(500);
+    \\            };
+    \\            i += 12;
+    \\        }
+    \\        // Copy character as-is
+    \\        else {
+    \\            result.append(allocator, template_content[i]) catch {
+    \\                return Response.text("Template rendering error").withStatus(500);
+    \\            };
+    \\            i += 1;
+    \\        }
+    \\    }
+    \\    
+    \\    const rendered = result.toOwnedSlice(allocator) catch {
+    \\        return Response.text("Template rendering error").withStatus(500);
+    \\    };
+    \\    
+    \\    return Response.html(rendered);
     \\}
     \\
     \\pub fn main() !void {
@@ -658,17 +733,24 @@ const MAIN_ZIG_RECOMMENDED_TEMPLATE =
     \\
     \\    try app.initDatabaseWithMigrations("app.db", "src/migrations");
     \\
-    \\    try app.serveStaticDirectory("static");
+    \\    // Register routes before static files to ensure they take precedence
+    \\    try app.get("/", handleIndex);
     \\
-    \\    try app.templateRoute("/", "src/templates/index.zt.html", getIndexContext);
+    \\    try app.serveStaticDirectory("static");
     \\
     \\    try app.get("/api/items/search", handlers.search.handleSearch);
     \\
-    \\    try app.restApiDefault("/api/items", Item, .{
-    \\        .validator = validators.validateItem,
-    \\        .authenticator = auth.requireAuthForRestApi,
-    \\        .authorization = auth.canAccessItem,
-    \\    });
+    \\    // REST API example - uncomment when ready
+    \\    // const orm = try app.getORM();
+    \\    // try app.restApi("/api/items", Item, .{
+    \\    //     .orm = orm,
+    \\    //     .validator = validators.validateItem,
+    \\    //     .authenticator = auth.requireAuthForRestApi,
+    \\    //     .authorization = auth.canAccessItem,
+    \\    //     .enable_pagination = true,
+    \\    //     .enable_filtering = true,
+    \\    //     .enable_sorting = true,
+    \\    // });
     \\
     \\    std.debug.print("Server starting on http://127.0.0.1:8080\n", .{});
     \\    std.debug.print("Press Ctrl+C to stop\n", .{});
