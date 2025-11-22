@@ -599,7 +599,7 @@ pub const Engine12 = struct {
         const route_index = self.template_routes_count;
         self.template_routes[route_index] = .{
             .path = template_path_copy,
-            .context_fn = @ptrCast(context_fn),
+            .context_fn = @ptrCast(&context_fn),
         };
         self.template_routes_count += 1;
 
