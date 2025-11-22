@@ -1,6 +1,6 @@
 # Engine12
 
-A professional backend framework for Zig, designed for building high-performance web applications and APIs.
+A backend framework for Zig, designed for building high-performance web applications and APIs.
 
 ## Quick Start
 

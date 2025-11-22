@@ -88,8 +88,8 @@ try app.get("/", handleRoot);
 try app.get("/todos/:id", handleTodo);
 ```
 
-#### `templateRoute(path_pattern: []const u8, template_path: []const u8, context_fn: fn(*Request) anytype) !void`
-Register a template route that automatically renders a template file. Context function is called for each request to provide template variables.
+#### `templateRoute(comptime path_pattern: []const u8, template_path: []const u8, context_fn: fn(*Request) anytype) !void`
+Register a template route that automatically renders a template file. Context function is called for each request to provide template variables. The `path_pattern` must be comptime-known.
 
 ```zig
 fn getIndexContext(req: *Request) struct { title: []const u8, message: []const u8 } {
@@ -456,21 +456,21 @@ Initialize a HandlerCtx from a request with optional requirements.
 - `require_orm: bool = false` - If true, ORM must be available (returns error if not available)
 - `get_orm: ?*const fn () anyerror!*ORM = null` - Optional function to get ORM instance
 
-#### `initOrRespond(req: *Request, options: struct) HandlerCtxError!HandlerCtx`
-Initialize HandlerCtx or return error. Convenience method that eliminates repetitive error handling. Returns the same as `init()` - use with standard error handling.
+#### `initOrRespond(req: *Request, options: struct) ?HandlerCtx`
+Initialize HandlerCtx or return null if initialization fails. Convenience method that eliminates repetitive error handling. Returns `null` if initialization fails (authentication required, database not initialized, etc.). The caller should check for null and return an appropriate error response.
 
 ```zig
 const ctx = HandlerCtx.initOrRespond(request, .{
     .require_auth = true,
     .require_orm = true,
     .get_orm = getORM,
-}) catch |err| {
-    return switch (err) {
-        error.AuthenticationRequired => Response.errorResponse("Authentication required", 401),
-        error.DatabaseNotInitialized => Response.serverError("Database not initialized"),
-        else => Response.serverError("Internal error"),
-    };
+}) orelse {
+    return Response.errorResponse("Authentication required", 401);
 };
+
+// ctx is guaranteed to be non-null here
+const user = ctx.user.?;
+const orm = ctx.orm() catch unreachable;
 ```
 
 **Example: Basic Usage**

@@ -298,13 +298,36 @@ Now let's add persistent storage with SQLite.
 
 **Note**: The ORM maps columns to struct fields by name, not by position. This means column order in your queries doesn't need to match struct field order - the ORM will automatically match columns by name.
 
-### 4.1 Create Database Module
+### 4.1 Initialize Database
 
-Create `src/database.zig`:
+**Recommended**: Use Engine12's built-in database initialization:
+
+```zig
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Initialize database and run migrations automatically
+    try app.initDatabaseWithMigrations("todos.db", "src/migrations");
+
+    // Get ORM instance when needed
+    const orm = try app.getORM();
+    
+    // ... rest of code
+}
+```
+
+**Benefits**:
+- No need for a separate `database.zig` file
+- Automatic migration discovery and execution
+- Thread-safe singleton pattern
+- Idempotent (safe to call multiple times)
+
+**Alternative**: If you need more control, you can still create a `database.zig` file:
 
 ```zig
 const std = @import("std");
-const Engine12 = @import("Engine12");
+const Engine12 = @import("engine12");
 const Database = Engine12.orm.Database;
 const ORM = Engine12.orm.ORM;
 
@@ -315,15 +338,11 @@ pub fn init() !void {
     global_db = try Database.open("todos.db", std.heap.page_allocator);
     global_orm = try ORM.initPtr(global_db.?, std.heap.page_allocator);
 
-    // Option 1: Use migration auto-discovery (recommended)
+    // Use migration auto-discovery
     const migration_discovery = @import("engine12").orm.migration_discovery;
     var registry = try migration_discovery.discoverMigrations(std.heap.page_allocator, "src/migrations");
     defer registry.deinit();
     try global_orm.?.runMigrationsFromRegistry(&registry);
-    
-    // Option 2: Manual migration (alternative)
-    // const migrations = @import("migrations/init.zig");
-    // try global_orm.?.runMigrations(migrations.migrations);
 }
 
 pub fn getORM() !*ORM {
@@ -374,7 +393,9 @@ const Todo = struct {
 ```zig
 fn handleGetTodos(req: *Request) Response {
     _ = req;
-    const orm = database.getORM() catch {
+    // Get ORM from app singleton (requires database to be initialized)
+    const E12 = @import("engine12");
+    const orm = E12.Engine12.getORM() catch {
         return Response.status(500).withJson("{\"error\":\"Database error\"}");
     };
 
@@ -415,7 +436,9 @@ fn handleCreateTodo(req: *Request) Response {
         return Response.badRequest().withJson("{\"error\":\"Invalid JSON\"}");
     };
 
-    const orm = database.getORM() catch {
+    // Get ORM from app singleton (requires database to be initialized)
+    const E12 = @import("engine12");
+    const orm = E12.Engine12.getORM() catch {
         return Response.status(500).withJson("{\"error\":\"Database error\"}");
     };
 
@@ -452,15 +475,17 @@ Update `main()`:
 
 ```zig
 pub fn main() !void {
-    try database.init();
-    defer database.deinit();
-
     var app = try Engine12.initDevelopment();
     defer app.deinit();
+
+    // Initialize database and run migrations automatically
+    try app.initDatabaseWithMigrations("todos.db", "src/migrations");
 
     // ... rest of code
 }
 ```
+
+**Note**: With the recommended approach, you don't need a separate `database.zig` file. The database is managed by Engine12's singleton pattern, and you can access the ORM using `app.getORM()` anywhere in your handlers.
 
 ## Step 5: Templates
 
@@ -663,9 +688,17 @@ Instead of manually registering each static directory:
 
 ```zig
 // Old way (manual)
-try app.serveStatic("/css", "static/css");
-try app.serveStatic("/js", "static/js");
-try app.serveStatic("/images", "static/images");
+// Recommended: Auto-discover and serve all static directories
+try app.serveStaticDirectory("static");
+// This automatically registers:
+// - static/css/ -> /css/*
+// - static/js/ -> /js/*
+// - static/images/ -> /images/*
+
+// Alternative: Manual registration (if you need more control)
+// try app.serveStatic("/css", "static/css");
+// try app.serveStatic("/js", "static/js");
+// try app.serveStatic("/images", "static/images");
 
 // New way (auto-discovery)
 try app.discoverStaticFiles("static");

@@ -58,6 +58,25 @@ const Todo = struct {
 
 ### Database Initialization
 
+**Recommended**: Use Engine12's built-in database management:
+
+```zig
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Initialize database and run migrations automatically
+    try app.initDatabaseWithMigrations("todo.db", "src/migrations");
+    
+    // Get ORM instance when needed
+    const orm = try app.getORM();
+    
+    // ... rest of code
+}
+```
+
+**Alternative**: Manual database initialization (if you need more control):
+
 ```zig
 fn initDatabase() !void {
     db_mutex.lock();
@@ -316,7 +335,9 @@ fn handleIndex(request: *Request) Response {
 ```zig
 fn handleGetTodos(request: *Request) Response {
     _ = request;
-    const orm = getORM() catch {
+    // Get ORM from app singleton (requires database to be initialized)
+    const E12 = @import("engine12");
+    const orm = E12.Engine12.getORM() catch {
         return Response.serverError("Database not initialized");
     };
 
@@ -357,7 +378,9 @@ fn handleCreateTodo(request: *Request) Response {
         return Response.errorResponse("Invalid JSON", 400);
     };
 
-    const orm = getORM() catch {
+    // Get ORM from app singleton (requires database to be initialized)
+    const E12 = @import("engine12");
+    const orm = E12.Engine12.getORM() catch {
         return Response.serverError("Database not initialized");
     };
 
@@ -396,7 +419,9 @@ fn handleUpdateTodo(request: *Request) Response {
         return Response.errorResponse("Invalid JSON", 400);
     };
 
-    const orm = getORM() catch {
+    // Get ORM from app singleton (requires database to be initialized)
+    const E12 = @import("engine12");
+    const orm = E12.Engine12.getORM() catch {
         return Response.serverError("Database not initialized");
     };
 
@@ -434,7 +459,9 @@ fn handleDeleteTodo(request: *Request) Response {
         return Response.errorResponse("Invalid ID", 400);
     };
 
-    const orm = getORM() catch {
+    // Get ORM from app singleton (requires database to be initialized)
+    const E12 = @import("engine12");
+    const orm = E12.Engine12.getORM() catch {
         return Response.serverError("Database not initialized");
     };
 
@@ -455,7 +482,9 @@ fn handleDeleteTodo(request: *Request) Response {
 ```zig
 fn handleGetStats(request: *Request) Response {
     _ = request;
-    const orm = getORM() catch {
+    // Get ORM from app singleton (requires database to be initialized)
+    const E12 = @import("engine12");
+    const orm = E12.Engine12.getORM() catch {
         return Response.status(500).withJson("{\"error\":\"Database not initialized\"}");
     };
 

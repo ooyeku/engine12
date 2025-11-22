@@ -54,7 +54,6 @@ project-root/
 ├── src/
 │   ├── main.zig             # Application entry point and route registration
 │   ├── root.zig             # Module root (re-exports public API, optional)
-│   ├── database.zig         # Database connection and ORM setup
 │   ├── models.zig           # Data models and types
 │   ├── utils.zig            # Shared utility functions
 │   ├── validators.zig       # Validation functions for restApi
@@ -150,18 +149,25 @@ try app.get("/api/todos/stats", handlers.stats.handleGetStats);
 ```zig
 // handlers/search.zig
 const std = @import("std");
-const Engine12 = @import("Engine12");
+const Engine12 = @import("engine12");
 const HandlerCtx = Engine12.HandlerCtx;
 
-fn getORM() !*Engine12.ORM {
-    // Your ORM getter function
-}
-
 pub fn handleSearchTodos(req: *Engine12.Request) Engine12.Response {
+    // Use app.getORM() - requires database to be initialized with app.initDatabaseWithMigrations()
+    const E12 = @import("engine12");
+    const orm = E12.Engine12.getORM() catch {
+        return Engine12.Response.serverError("Database not initialized");
+    };
+    
+    // Or use HandlerCtx for more advanced features
     var ctx = HandlerCtx.init(req, .{
         .require_auth = true,
         .require_orm = true,
-        .get_orm = getORM,
+        .get_orm = struct {
+            fn get() !*Engine12.ORM {
+                return E12.Engine12.getORM();
+            }
+        }.get,
     }) catch |err| {
         return switch (err) {
             error.AuthenticationRequired => HandlerCtx.init(req, .{}).unauthorized("Authentication required"),
@@ -498,28 +504,33 @@ pub const migrations = [_]Migration{
 
 **Running Migrations**:
 
-**Option 1: Manual Import (Recommended for Comptime Safety)**:
+**Recommended**: Use Engine12's built-in migration management:
+
 ```zig
-// In database.zig or main.zig
-const migrations = @import("migrations/init.zig");
-try orm.runMigrations(migrations.migrations);
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Initialize database and run migrations automatically
+    try app.initDatabaseWithMigrations("app.db", "src/migrations");
+    
+    // Migrations are automatically discovered and executed
+    // Supports both init.zig convention and numbered migration files
+}
 ```
 
-**Option 2: Auto-Discovery (Convenient for Development)**:
-```zig
-// In database.zig
-const migration_discovery = @import("engine12").orm.migration_discovery;
+**Alternative**: If you need more control:
 
-pub fn initDatabase() !void {
-    // ... database setup ...
-    
-    // Auto-discover migrations
-    var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
-    defer registry.deinit();
-    
-    // Run discovered migrations
-    try orm.runMigrationsFromRegistry(&registry);
-}
+```zig
+// Option 1: Manual Import (Comptime Safety)
+const migrations = @import("migrations/init.zig");
+try orm.runMigrations(migrations.migrations);
+
+// Option 2: Auto-Discovery (Convenient)
+const migration_discovery = @import("engine12").orm.migration_discovery;
+var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
+defer registry.deinit();
+try orm.runMigrationsFromRegistry(&registry);
 ```
 
 **Migration Auto-Discovery**:
@@ -550,13 +561,12 @@ pub fn initDatabase() !void {
 
 ```zig
 pub fn main() !void {
-    // 1. Initialize database and ORM (with migration auto-discovery)
-    try database.initDatabase();
-    const orm = try database.getORM();
-    
-    // 2. Create app
+    // 1. Create app
     var app = try Engine12.initDevelopment();
     defer app.deinit();
+    
+    // 2. Initialize database and run migrations automatically
+    try app.initDatabaseWithMigrations("app.db", "src/migrations");
     
     // 3. Enable OpenAPI docs (before restApi calls)
     try app.enableOpenApiDocs("/docs", .{
@@ -777,8 +787,8 @@ pub fn handleWebSocket(conn: *Engine12.WebSocketConnection) void {
 const std = @import("std");
 const Engine12 = @import("Engine12");
 
-// Database and migrations
-const database = @import("database.zig");
+// Models and migrations
+const models = @import("models.zig");
 const migrations = @import("migrations/init.zig");
 
 // Validators and auth
@@ -805,7 +815,6 @@ const Engine12 = @import("Engine12");
 const HandlerCtx = Engine12.HandlerCtx;
 
 // Relative imports for project modules
-const database = @import("../database.zig");
 const models = @import("../models.zig");
 const utils = @import("../utils.zig");
 ```
@@ -856,7 +865,6 @@ my-app/
 ├── .gitignore
 ├── src/
 │   ├── main.zig              # App initialization, routes, restApi setup
-│   ├── database.zig          # ORM initialization
 │   ├── models.zig            # Data models
 │   ├── validators.zig        # Validation functions for restApi
 │   ├── auth.zig              # Authentication helpers
@@ -899,6 +907,16 @@ Engine12 provides auto-discovery features that reduce boilerplate and follow con
 Automatically discover and load migrations from the `migrations/` directory:
 
 ```zig
+// In main.zig (recommended)
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Initialize database and run migrations automatically
+    try app.initDatabaseWithMigrations("app.db", "src/migrations");
+}
+
+// Alternative (if you need more control):
 // In database.zig
 const migration_discovery = @import("engine12").orm.migration_discovery;
 
@@ -997,6 +1015,30 @@ If migrating from a different structure:
 
 ### 1. ORM Initialization Pattern
 
+**Recommended**: Use Engine12's built-in database management:
+
+```zig
+// In main.zig
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Initialize database and run migrations automatically
+    try app.initDatabaseWithMigrations("app.db", "src/migrations");
+    
+    // Get ORM instance when needed
+    const orm = try app.getORM();
+    
+    // Use ORM for restApi or custom handlers
+    try app.restApi("/api/todos", Todo, .{
+        .orm = orm,
+        // ... other options
+    });
+}
+```
+
+**Alternative**: If you need more control, you can still create a `database.zig` file:
+
 ```zig
 // database.zig
 var global_orm: ?ORM = null;
@@ -1027,20 +1069,34 @@ pub fn initDatabase() !void {
     var registry = try migration_discovery.discoverMigrations(allocator, "src/migrations");
     defer registry.deinit();
     try global_orm.?.runMigrationsFromRegistry(&registry);
-    
-    // Or use manual import for comptime safety:
-    // const migrations = @import("migrations/init.zig");
-    // try global_orm.?.runMigrations(migrations.migrations);
 }
 ```
 
 ### 2. restApi Configuration Pattern
 
+**Recommended**: Use `restApiDefault` with automatic ORM:
+
 ```zig
 // In main.zig
-const orm = try getORM();
+// Initialize database first
+try app.initDatabaseWithMigrations("app.db", "src/migrations");
 
-try app.restApi("/api/todos", Todo, RestApiConfig(Todo){
+// Use restApiDefault - automatically uses app.getORM()
+try app.restApiDefault("/api/todos", Todo, .{
+    .validator = validators.validateTodo,
+    .authenticator = auth.requireAuthForRestApi,
+    .authorization = auth.canAccessTodo,
+    // Pagination, filtering, sorting enabled by default
+});
+```
+
+**Alternative**: Use `restApi` with explicit ORM:
+
+```zig
+// In main.zig
+const orm = try app.getORM();
+
+try app.restApi("/api/todos", Todo, .{
     .orm = orm,
     .validator = validators.validateTodo,
     .authenticator = auth.requireAuthForRestApi,
@@ -1057,10 +1113,15 @@ try app.restApi("/api/todos", Todo, RestApiConfig(Todo){
 ```zig
 // handlers/search.zig
 pub fn handleSearch(req: *Engine12.Request) Engine12.Response {
+    const E12 = @import("engine12");
     var ctx = HandlerCtx.init(req, .{
         .require_auth = true,
         .require_orm = true,
-        .get_orm = getORM,
+        .get_orm = struct {
+            fn get() !*Engine12.ORM {
+                return E12.Engine12.getORM();
+            }
+        }.get,
     }) catch |err| {
         return handleCtxError(err, req);
     };

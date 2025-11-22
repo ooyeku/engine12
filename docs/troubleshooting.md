@@ -120,7 +120,7 @@ Or use a signal handler for graceful shutdown.
    };
    ```
 
-3. **Legacy methods** - Still available for backward compatibility:
+3. **Alternative methods** - Still available for backward compatibility:
    ```zig
    // Optional parameter
    const limit = req.queryOptional("limit");
