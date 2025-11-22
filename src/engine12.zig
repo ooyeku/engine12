@@ -1166,11 +1166,16 @@ pub const Engine12 = struct {
                 // This avoids segfault from passing runtime-allocated strings to ziggurat
                 try server.get(mount_path, wrapper);
 
-                // Register common subpaths explicitly for better matching
-                // These are comptime strings so they're safe to pass to ziggurat
+                // Register wildcard routes for subpaths to handle any file under the mount path
+                // Use :file parameter pattern to match any filename
                 if (std.mem.eql(u8, mount_path, "/css")) {
-                    try server.get("/css/styles.css", wrapper);
+                    try server.get("/css/:file", wrapper);
+                    // Also register common paths explicitly for better matching
+                    try server.get("/css/style.css", wrapper);
+                    try server.get("/css/styles.css", wrapper); // Also support old name for compatibility
                 } else if (std.mem.eql(u8, mount_path, "/js")) {
+                    try server.get("/js/:file", wrapper);
+                    // Also register common paths explicitly for better matching
                     try server.get("/js/app.js", wrapper);
                 }
             }
