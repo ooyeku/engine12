@@ -172,6 +172,8 @@ fn parseMigrationFile(
 
     // Extract up SQL (string literal or raw string)
     var up_sql: []const u8 = undefined;
+    var up_allocated = false;
+
     if (pos < content.len and content[pos] == '"') {
         // Regular string
         pos += 1;
@@ -183,14 +185,49 @@ fn parseMigrationFile(
         up_sql = content[up_start..pos];
         pos += 1;
     } else if (pos < content.len and std.mem.startsWith(u8, content[pos..], "\\\\")) {
-        // Raw string: \\SQL HERE\\
-        pos += 2; // Skip \\
-        const up_start = pos;
-        while (pos < content.len - 1 and !std.mem.startsWith(u8, content[pos..], "\\\\")) {
-            pos += 1;
+        // Zig multiline string: \\line 1\n\\line 2
+        var list = std.ArrayListUnmanaged(u8){};
+        defer if (!up_allocated) list.deinit(allocator); // Only deinit if we haven't transferred ownership
+
+        while (pos < content.len) {
+            // Check indentation/whitespace before \\
+            var line_start_check = pos;
+            while (line_start_check < content.len and (content[line_start_check] == ' ' or content[line_start_check] == '\t')) {
+                line_start_check += 1;
+            }
+
+            if (line_start_check < content.len and std.mem.startsWith(u8, content[line_start_check..], "\\\\")) {
+                pos = line_start_check + 2; // Skip \\
+
+                const line_end = std.mem.indexOfScalarPos(u8, content, pos, '\n') orelse content.len;
+                try list.appendSlice(allocator, content[pos..line_end]);
+
+                pos = line_end;
+
+                // Check if there is a next line with \\
+                if (pos < content.len and content[pos] == '\n') {
+                    pos += 1; // Skip newline
+
+                    var next_check = pos;
+                    while (next_check < content.len and (content[next_check] == ' ' or content[next_check] == '\t')) {
+                        next_check += 1;
+                    }
+
+                    if (next_check < content.len and std.mem.startsWith(u8, content[next_check..], "\\\\")) {
+                        try list.append(allocator, '\n');
+                    } else {
+                        // Next line is not part of string, stop here
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
         }
-        up_sql = content[up_start..pos];
-        pos += 2; // Skip closing \\
+        up_sql = try list.toOwnedSlice(allocator);
+        up_allocated = true;
     } else {
         return error.InvalidMigrationFormat;
     }
@@ -202,6 +239,8 @@ fn parseMigrationFile(
 
     // Extract down SQL (same as up)
     var down_sql: []const u8 = undefined;
+    var down_allocated = false;
+
     if (pos < content.len and content[pos] == '"') {
         pos += 1;
         const down_start = pos;
@@ -212,20 +251,54 @@ fn parseMigrationFile(
         down_sql = content[down_start..pos];
         pos += 1;
     } else if (pos < content.len and std.mem.startsWith(u8, content[pos..], "\\\\")) {
-        pos += 2;
-        const down_start = pos;
-        while (pos < content.len - 1 and !std.mem.startsWith(u8, content[pos..], "\\\\")) {
-            pos += 1;
+        // Zig multiline string
+        var list = std.ArrayListUnmanaged(u8){};
+        defer if (!down_allocated) list.deinit(allocator);
+
+        while (pos < content.len) {
+            var line_start_check = pos;
+            while (line_start_check < content.len and (content[line_start_check] == ' ' or content[line_start_check] == '\t')) {
+                line_start_check += 1;
+            }
+
+            if (line_start_check < content.len and std.mem.startsWith(u8, content[line_start_check..], "\\\\")) {
+                pos = line_start_check + 2; // Skip \\
+
+                const line_end = std.mem.indexOfScalarPos(u8, content, pos, '\n') orelse content.len;
+                try list.appendSlice(allocator, content[pos..line_end]);
+
+                pos = line_end;
+
+                if (pos < content.len and content[pos] == '\n') {
+                    pos += 1;
+
+                    var next_check = pos;
+                    while (next_check < content.len and (content[next_check] == ' ' or content[next_check] == '\t')) {
+                        next_check += 1;
+                    }
+
+                    if (next_check < content.len and std.mem.startsWith(u8, content[next_check..], "\\\\")) {
+                        try list.append(allocator, '\n');
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
         }
-        down_sql = content[down_start..pos];
-        pos += 2;
+        down_sql = try list.toOwnedSlice(allocator);
+        down_allocated = true;
     } else {
+        if (up_allocated) allocator.free(up_sql);
         return error.InvalidMigrationFormat;
     }
 
-    // Allocate copies of SQL strings
-    const up_copy = try allocator.dupe(u8, up_sql);
-    const down_copy = try allocator.dupe(u8, down_sql);
+    // Allocate copies of SQL strings if they weren't allocated by multiline parser
+    const up_copy = if (up_allocated) up_sql else try allocator.dupe(u8, up_sql);
+    const down_copy = if (down_allocated) down_sql else try allocator.dupe(u8, down_sql);
 
     return Migration.init(version, name, up_copy, down_copy);
 }
