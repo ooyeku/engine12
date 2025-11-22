@@ -489,6 +489,74 @@ Engine12 provides WebSocket support using the `karlseguin/websocket.zig` library
 - **Room Management**: Built-in room system for broadcasting to groups of connections
 - **Type Safety**: WebSocket handlers are type-checked at compile time
 
+## OpenAPI Documentation Architecture
+
+Engine12 provides automatic OpenAPI 3.0 specification generation and Swagger UI integration. This feature uses Zig's comptime reflection to introspect model structs and generate complete API documentation.
+
+### Key Components
+
+- **OpenAPIGenerator** (`src/openapi.zig`): Core generator that builds the OpenAPI specification
+- **Schema Generation**: Uses `@typeInfo` and `std.meta.fields` to reflect on Zig structs
+- **Automatic Registration**: `restApi()` automatically registers resources with the generator
+- **Swagger UI Integration**: Serves an HTML page with embedded Swagger UI pointing to the JSON spec
+
+### Design Decisions
+
+- **Comptime Reflection**: Uses Zig's comptime features to generate schemas from struct definitions
+- **Zero Configuration**: Works automatically with `restApi()` - no manual endpoint registration needed
+- **Type Mapping**: Maps Zig types to OpenAPI types (e.g., `i64` → `integer`, `[]const u8` → `string`)
+- **Runtime Generation**: OpenAPI spec is generated at runtime based on registered routes
+- **Swagger UI**: Uses CDN-hosted Swagger UI for zero-dependency documentation serving
+
+### How It Works
+
+1. **Schema Generation**: When `restApi()` is called, it automatically calls `OpenAPIGenerator.registerResource()`
+2. **Type Introspection**: The generator uses `generateSchema()` to reflect on model structs:
+   - Inspects struct fields using `std.meta.fields()`
+   - Maps Zig types to OpenAPI types
+   - Handles optional fields, arrays, and nested structs
+   - Registers schemas in `components.schemas`
+3. **Endpoint Documentation**: For each resource, documents all CRUD operations:
+   - GET (list) with query parameters
+   - GET (by ID) with path parameters
+   - POST with request body schema
+   - PUT with path parameters and request body
+   - DELETE with path parameters
+4. **JSON Serialization**: Custom serialization logic converts the OpenAPI document to JSON
+5. **UI Serving**: Two endpoints are registered:
+   - `/docs/openapi.json` - Serves the JSON specification
+   - `/docs` - Serves HTML page with embedded Swagger UI
+
+### Type Mapping
+
+The generator maps Zig types to OpenAPI types:
+
+- `i32`, `i64` → `integer` (with `int32`/`int64` format)
+- `f32`, `f64` → `number` (with `float`/`double` format)
+- `bool` → `boolean`
+- `[]const u8` → `string`
+- `?T` → `T` with `nullable: true`
+- `[]T` → `array` with items schema
+- Structs → `object` with properties schema
+
+### Integration with restApi
+
+The `restApi()` function automatically integrates with OpenAPI generation:
+
+```zig
+pub fn restApi(...) !void {
+    // Register with OpenAPI generator if available
+    if (app.getOpenApiGenerator()) |generator| {
+        generator.registerResource(prefix, Model) catch |err| {
+            // Log error but don't fail route registration
+        };
+    }
+    // ... rest of route registration
+}
+```
+
+This ensures that all REST API resources are automatically documented without additional configuration.
+
 ## Hot Reloading Architecture
 
 Engine12 provides hot reloading support for development mode, enabling automatic reloading of templates and static files without server restart. Hot reloading is automatically enabled when using `initDevelopment()` and disabled in production.

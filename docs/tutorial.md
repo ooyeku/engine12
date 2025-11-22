@@ -693,9 +693,73 @@ zig build -Doptimize=ReleaseSafe
 - Configure logging
 - Set up reverse proxy (nginx, etc.)
 
-## Step 8: Advanced Features
+## Step 8: OpenAPI Documentation
 
-### 8.1 Type-Safe Parameter Parsing
+Engine12 provides automatic OpenAPI 3.0 specification generation and Swagger UI integration. This makes it easy to document and test your API.
+
+### 8.1 Enable OpenAPI Documentation
+
+Add OpenAPI documentation to your app with a single line:
+
+```zig
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Enable OpenAPI documentation
+    try app.enableOpenApiDocs("/docs", .{
+        .title = "Todo API",
+        .version = "1.0.0",
+        .description = "A simple todo management API",
+    });
+
+    // Your routes...
+    try app.get("/", handleRoot);
+    try app.restApi("/api/todos", Todo, .{
+        .orm = &my_orm,
+        .validator = validateTodo,
+    });
+
+    try app.start();
+}
+```
+
+### 8.2 Accessing the Documentation
+
+After starting your server:
+
+1. **Swagger UI**: Visit `http://127.0.0.1:8080/docs` to view the interactive API documentation
+2. **OpenAPI JSON**: Visit `http://127.0.0.1:8080/docs/openapi.json` to get the raw OpenAPI specification
+
+### 8.3 Automatic Documentation
+
+When you use `restApi()`, all CRUD endpoints are automatically documented:
+
+- Request/response schemas are generated from your model structs
+- Query parameters (filter, sort, pagination) are documented
+- Path parameters are documented
+- Request body schemas are generated automatically
+
+**Example**: If you have a `Todo` model, the OpenAPI spec will include:
+- `GET /api/todos` - List todos with query parameters
+- `GET /api/todos/{id}` - Get todo by ID
+- `POST /api/todos` - Create todo with request body schema
+- `PUT /api/todos/{id}` - Update todo with request body schema
+- `DELETE /api/todos/{id}` - Delete todo
+
+### 8.4 Testing with Swagger UI
+
+The Swagger UI interface allows you to:
+- Browse all available endpoints
+- View request/response schemas
+- Test API endpoints directly from the browser
+- See example request/response payloads
+
+This is especially useful during development for testing your API without writing separate test clients.
+
+## Step 9: Advanced Features
+
+### 9.1 Type-Safe Parameter Parsing
 
 Use `paramTyped()` and `queryParamTyped()` for type-safe parameter parsing:
 
@@ -714,7 +778,7 @@ fn handleGetTodo(req: *Request) Response {
 }
 ```
 
-### 8.2 Pagination Helper
+### 9.2 Pagination Helper
 
 Use the pagination helper for paginated endpoints:
 
@@ -739,7 +803,7 @@ fn handleGetTodos(req: *Request) Response {
 }
 ```
 
-### 8.3 Error Response Helpers
+### 9.3 Error Response Helpers
 
 Use standardized error response helpers:
 
@@ -760,7 +824,7 @@ if (!errors.isEmpty()) {
 return Response.notFound("Todo not found");
 ```
 
-### 8.4 JSON Serialization
+### 9.4 JSON Serialization
 
 Use `jsonFrom()` to automatically serialize structs:
 
@@ -769,11 +833,11 @@ const todo = Todo{ .id = 1, .title = "Hello", .completed = false };
 return Response.jsonFrom(Todo, todo, allocator);
 ```
 
-## Step 9: Using Valves
+## Step 10: Using Valves
 
 Valves provide a secure and simple plugin architecture for Engine12. Each valve is an isolated service that integrates deeply with the Engine12 runtime through controlled capabilities.
 
-### 9.1 Creating a Simple Valve
+### 10.1 Creating a Simple Valve
 
 Let's create a logging valve that tracks API requests:
 
@@ -823,7 +887,7 @@ const LoggingValve = struct {
 };
 ```
 
-### 9.2 Registering a Valve
+### 10.2 Registering a Valve
 
 Register the valve with your Engine12 app:
 
@@ -843,7 +907,7 @@ pub fn main() !void {
 }
 ```
 
-### 9.3 Creating a Valve with Routes
+### 10.3 Creating a Valve with Routes
 
 Here's an example of a valve that registers its own routes:
 
@@ -889,7 +953,7 @@ const ApiValve = struct {
 };
 ```
 
-### 9.4 Using Multiple Capabilities
+### 10.4 Using Multiple Capabilities
 
 A valve can request multiple capabilities:
 
@@ -956,7 +1020,7 @@ const FullFeatureValve = struct {
 };
 ```
 
-### 9.5 Lifecycle Hooks
+### 10.5 Lifecycle Hooks
 
 Valves can hook into app lifecycle events:
 
@@ -1010,7 +1074,7 @@ const LifecycleValve = struct {
 };
 ```
 
-### 9.6 Using Builtin Valves
+### 10.6 Using Builtin Valves
 
 Engine12 includes production-ready builtin valves. Here's how to use the `BasicAuthValve` for authentication:
 
@@ -1077,7 +1141,7 @@ The `BasicAuthValve` provides handler functions for:
 
 See the [API Reference](../api-reference.md#builtin-valves) for complete documentation.
 
-### 9.7 Best Practices
+### 10.7 Best Practices
 
 1. **Declare Only Required Capabilities**: Only request capabilities your valve actually needs
 2. **Handle Errors Gracefully**: Check for capability errors and provide clear error messages

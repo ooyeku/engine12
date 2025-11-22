@@ -486,6 +486,13 @@ pub fn main() !void {
     var app = try Engine12.initDevelopment();
     defer app.deinit();
 
+    // Enable OpenAPI documentation
+    try app.enableOpenApiDocs("/docs", .{
+        .title = "Todo API",
+        .version = "1.0.0",
+        .description = "A simple todo management API",
+    });
+
     // CORS middleware
     const cors = cors_middleware.CorsMiddleware.init(.{
         .allowed_origins = &[_][]const u8{"*"}, // Allow all origins for demo
@@ -520,6 +527,21 @@ pub fn main() !void {
     std.Thread.sleep(std.time.ns_per_min * 60);
 }
 ```
+
+### OpenAPI Documentation
+
+The todo app example includes OpenAPI documentation generation. After starting the server, you can:
+
+1. **View Swagger UI**: Visit `http://127.0.0.1:8080/docs` to see interactive API documentation
+2. **Get OpenAPI JSON**: Visit `http://127.0.0.1:8080/docs/openapi.json` to get the raw OpenAPI specification
+
+The documentation automatically includes:
+- All API endpoints with request/response schemas
+- Query parameters (for filtering, sorting, pagination)
+- Path parameters
+- Request body schemas generated from your model structs
+
+If you're using `restApi()` instead of manual route handlers, the documentation is even more comprehensive as it automatically documents all CRUD operations.
 
 ## Frontend Integration
 

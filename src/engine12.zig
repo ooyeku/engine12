@@ -22,6 +22,7 @@ const websocket_mod = @import("websocket/module.zig");
 const hot_reload_mod = @import("hot_reload/module.zig");
 const script_injector_mod = @import("hot_reload/script_injector.zig");
 const rest_api_mod = @import("rest_api.zig");
+const openapi = @import("openapi.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -117,6 +118,9 @@ pub var global_error_handler: ?*error_handler.ErrorHandlerRegistry = null;
 /// - Runtime route registry uses internal mutex for thread-safe access
 /// - Multiple threads can safely register/lookup routes concurrently
 pub var global_runtime_routes: ?*runtime_routes_mod.RuntimeRouteRegistry = null;
+
+/// Global OpenAPI generator pointer (for documentation handlers)
+var global_openapi_generator: ?*openapi.OpenAPIGenerator = null;
 
 /// Create a runtime route wrapper that dispatches to handlers stored in the runtime route registry
 /// This allows valves to register routes dynamically at runtime
@@ -371,6 +375,9 @@ pub const Engine12 = struct {
     // Hot Reload Manager (development only)
     hot_reload_manager: ?*hot_reload_mod.HotReloadManager = null,
 
+    // OpenAPI Generator
+    openapi_generator: ?openapi.OpenAPIGenerator = null,
+
     // Lifecycle
     supervisor: ?*anyopaque = null,
     http_server: ?*anyopaque = null,
@@ -432,6 +439,12 @@ pub const Engine12 = struct {
             manager.deinit();
             allocator.destroy(manager);
             self.hot_reload_manager = null;
+        }
+
+        // Cleanup OpenAPI generator
+        if (self.openapi_generator) |*generator| {
+            generator.deinit();
+            self.openapi_generator = null;
         }
 
         // Cleanup valve registry
@@ -746,6 +759,108 @@ pub const Engine12 = struct {
             .register_put = put_wrapper,
             .register_delete = delete_wrapper,
         };
+    }
+
+    /// Get the OpenAPI generator, initializing it if necessary with default info
+    pub fn getOpenApiGenerator(self: *Engine12) !*openapi.OpenAPIGenerator {
+        if (self.openapi_generator == null) {
+            self.openapi_generator = openapi.OpenAPIGenerator.init(self.allocator, .{
+                .title = "Engine12 API",
+                .version = "1.0.0",
+            });
+        }
+        return &self.openapi_generator.?;
+    }
+
+    /// Enable OpenAPI documentation (Swagger UI)
+    /// Serves the OpenAPI JSON spec and a Swagger UI page
+    ///
+    /// Example:
+    /// ```zig
+    /// try app.enableOpenApiDocs("/docs", .{ .title = "My API", .version = "1.0" });
+    /// ```
+    pub fn enableOpenApiDocs(self: *Engine12, mount_path: []const u8, info: openapi.OpenApiInfo) !void {
+        // Initialize generator if not present, or update info
+        if (self.openapi_generator == null) {
+            self.openapi_generator = openapi.OpenAPIGenerator.init(self.allocator, info);
+        } else {
+            self.openapi_generator.?.doc.info = info;
+        }
+
+        // Set global pointer for handlers
+        global_openapi_generator = &self.openapi_generator.?;
+
+        const json_path = try std.fmt.allocPrint(self.allocator, "{s}/openapi.json", .{mount_path});
+
+        // 1. JSON Endpoint
+        try self.get(json_path, struct {
+            fn handler(req: *Request) Response {
+                _ = req;
+                if (global_openapi_generator) |gen| {
+                    const json = gen.doc.toJson() catch return Response.serverError("Failed to generate OpenAPI JSON");
+                    // Response.text duplicates the string, so we must free our generated json
+                    // We use page_allocator because that's what gen.allocator is (from self.allocator)
+                    defer std.heap.page_allocator.free(json);
+                    return Response.text(json).withContentType("application/json");
+                }
+                return Response.serverError("OpenAPI generator not initialized");
+            }
+        }.handler);
+
+        // 2. UI Endpoint
+        try self.get(mount_path, struct {
+            // We need to bake the path into the handler via comptime string concat or similar,
+            // but we only have runtime string.
+            // Ziggurat and Engine12 support closures via this struct wrapper trick but values must be comptime known
+            // OR accessible via global/context.
+            //
+            // Since we can't easily pass runtime `json_path` to a static struct function without a global map or similar,
+            // we will use the request path to infer the JSON path relative to the mount point.
+            //
+            // Assumption: mount_path is what we are serving.
+            // If user visits /docs, we want /docs/openapi.json
+
+            fn handler(_: *Request) Response {
+                // Construct JSON URL relative to current path
+                // If we are at /docs, we want ./docs/openapi.json? No, just openapi.json if trailing slash
+                // or ./docs/openapi.json if no trailing slash.
+                // Safer to use absolute path if we knew it, but we don't inside static handler easily.
+                // BUT we can reconstruct it from request path + /openapi.json?
+
+                // Actually, let's just assume standard relative path "openapi.json" works if we ensure trailing slash
+                // or handle it in JS.
+
+                // Simple Swagger UI HTML
+                const html =
+                    \\<!DOCTYPE html>
+                    \\<html lang="en">
+                    \\<head>
+                    \\  <meta charset="utf-8" />
+                    \\  <meta name="viewport" content="width=device-width, initial-scale=1" />
+                    \\  <title>Swagger UI</title>
+                    \\  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui.css" />
+                    \\</head>
+                    \\<body>
+                    \\  <div id="swagger-ui"></div>
+                    \\  <script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-bundle.js" crossorigin></script>
+                    \\  <script>
+                    \\    window.onload = () => {
+                    \\      // Calculate JSON URL relative to current page
+                    \\      const path = window.location.pathname;
+                    \\      const jsonUrl = path.endsWith('/') ? path + 'openapi.json' : path + '/openapi.json';
+                    \\      
+                    \\      window.ui = SwaggerUIBundle({
+                    \\        url: jsonUrl,
+                    \\        dom_id: '#swagger-ui',
+                    \\      });
+                    \\    };
+                    \\  </script>
+                    \\</body>
+                    \\</html>
+                ;
+                return Response.html(html);
+            }
+        }.handler);
     }
 
     /// Register RESTful API endpoints for a model

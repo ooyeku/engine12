@@ -80,6 +80,7 @@ exe.linkLibC();
 - **Metrics & Health Checks** - Request timing and health monitoring
 - **Background Tasks** - Periodic and one-time task scheduling
 - **Static File Serving** - Serve static assets
+- **OpenAPI/Swagger Documentation** - Automatic API documentation generation with Swagger UI
 - **C API** - Language bindings for non-Zig code
 
 See [TODO.md](TODO.md) for a complete feature list and roadmap.

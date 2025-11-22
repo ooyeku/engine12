@@ -265,6 +265,118 @@ try app.restApi("/api/todos", Todo, .{
 - `after_update`: Called after updating a record
 - `before_delete`: Called before deleting a record, can prevent deletion by returning an error
 
+**OpenAPI Integration**:
+- When OpenAPI documentation is enabled, `restApi` automatically registers all CRUD endpoints with the OpenAPI generator
+- Schemas are automatically generated from your model structs using Zig's comptime reflection
+- All endpoints are documented with request/response schemas, parameters, and descriptions
+
+### OpenAPI Documentation
+
+Engine12 provides automatic OpenAPI 3.0 specification generation and Swagger UI integration. This feature automatically introspects your `restApi` resources and generates complete API documentation.
+
+#### `enableOpenApiDocs(mount_path: []const u8, info: OpenApiInfo) !void`
+
+Enable OpenAPI documentation generation and serve Swagger UI. This registers two endpoints:
+- `GET {mount_path}/openapi.json` - Serves the generated OpenAPI 3.0 JSON specification
+- `GET {mount_path}` - Serves an HTML page with embedded Swagger UI
+
+**OpenApiInfo**:
+```zig
+pub const OpenApiInfo = struct {
+    title: []const u8,           // API title (e.g., "My API")
+    version: []const u8,         // API version (e.g., "1.0.0")
+    description: ?[]const u8 = null, // Optional API description
+};
+```
+
+**Example: Basic Usage**
+```zig
+pub fn main() !void {
+    var app = try Engine12.initDevelopment();
+    defer app.deinit();
+
+    // Enable OpenAPI documentation
+    try app.enableOpenApiDocs("/docs", .{
+        .title = "Todo API",
+        .version = "1.0.0",
+        .description = "A simple todo management API",
+    });
+
+    // Register REST API resources (automatically added to OpenAPI spec)
+    try app.restApi("/api/todos", Todo, .{
+        .orm = &my_orm,
+        .validator = validateTodo,
+    });
+
+    try app.start();
+}
+```
+
+After starting the server, visit `http://127.0.0.1:8080/docs` to view the interactive Swagger UI documentation.
+
+**How It Works**:
+
+1. **Automatic Schema Generation**: When you call `restApi()`, Engine12 automatically:
+   - Generates OpenAPI schemas from your model structs using Zig's comptime reflection
+   - Maps Zig types to OpenAPI types (e.g., `i64` → `integer`, `[]const u8` → `string`, `bool` → `boolean`)
+   - Handles optional fields, arrays, and nested structs
+   - Registers schemas in the `components.schemas` section
+
+2. **CRUD Endpoint Documentation**: For each `restApi` resource, the following endpoints are automatically documented:
+   - `GET {prefix}` - List endpoint with query parameters (filter, sort, pagination)
+   - `GET {prefix}/{id}` - Get by ID endpoint with path parameter
+   - `POST {prefix}` - Create endpoint with request body schema
+   - `PUT {prefix}/{id}` - Update endpoint with path parameter and request body
+   - `DELETE {prefix}/{id}` - Delete endpoint with path parameter
+
+3. **Type Mapping**: The OpenAPI generator maps Zig types to OpenAPI types:
+   - `i32`, `i64` → `integer` (with appropriate format: `int32` or `int64`)
+   - `f32`, `f64` → `number` (with appropriate format: `float` or `double`)
+   - `bool` → `boolean`
+   - `[]const u8` → `string`
+   - `?T` → `T` with `nullable: true`
+   - `[]T` → `array` with items schema
+   - Structs → `object` with properties schema
+
+**Example: Custom API Info**
+```zig
+try app.enableOpenApiDocs("/api-docs", .{
+    .title = "My Application API",
+    .version = "2.1.0",
+    .description = "Complete API documentation for My Application",
+});
+```
+
+**Accessing the Documentation**:
+
+- **Swagger UI**: Visit `http://127.0.0.1:8080/docs` (or your configured mount path)
+- **OpenAPI JSON**: Visit `http://127.0.0.1:8080/docs/openapi.json` to get the raw OpenAPI specification
+
+The Swagger UI provides an interactive interface where you can:
+- Browse all available endpoints
+- View request/response schemas
+- Test API endpoints directly from the browser
+- See example request/response payloads
+
+**Integration with restApi**:
+
+When you use `restApi()`, endpoints are automatically registered with the OpenAPI generator. No additional configuration is needed - just enable OpenAPI docs and your REST APIs will be documented automatically.
+
+```zig
+// Enable OpenAPI docs first
+try app.enableOpenApiDocs("/docs", .{
+    .title = "My API",
+    .version = "1.0.0",
+});
+
+// All restApi calls after this will be automatically documented
+try app.restApi("/api/todos", Todo, config);
+try app.restApi("/api/users", User, config);
+try app.restApi("/api/posts", Post, config);
+```
+
+**Note**: OpenAPI documentation is generated at runtime based on your registered routes. If you add or remove `restApi` resources, the documentation will reflect those changes automatically.
+
 ### Server Lifecycle
 
 #### `start() !void`

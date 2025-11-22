@@ -12,6 +12,7 @@ const Pagination = pagination_mod.Pagination;
 const PaginationMeta = pagination_mod.PaginationMeta;
 const json_mod = @import("json.zig");
 const model_utils = @import("orm/model.zig");
+const openapi = @import("openapi.zig");
 
 const allocator = std.heap.page_allocator;
 
@@ -39,34 +40,34 @@ pub fn RestApiConfig(comptime Model: type) type {
         /// Optional authorization function for GET/PUT/DELETE by ID
         /// Should return true if user can access the resource, false otherwise
         authorization: ?*const fn (*Request, Model) anyerror!bool = null,
-    /// Optional cache TTL in milliseconds
-    cache_ttl_ms: ?u32 = null,
-    /// Enable pagination (default: true)
-    enable_pagination: bool = true,
-    /// Enable filtering via ?filter=field:value (default: true)
-    enable_filtering: bool = true,
-    /// Enable sorting via ?sort=field:asc|desc (default: true)
-    enable_sorting: bool = true,
-    /// Optional hook called before creating a record
-    /// Note: Hooks are not currently supported due to Zig type system limitations
-    /// This field is reserved for future use
-    _reserved_before_create: ?*const fn () void = null,
-    /// Optional hook called after creating a record
-    /// Note: Hooks are not currently supported due to Zig type system limitations
-    /// This field is reserved for future use
-    _reserved_after_create: ?*const fn () void = null,
-    /// Optional hook called before updating a record
-    /// Note: Hooks are not currently supported due to Zig type system limitations
-    /// This field is reserved for future use
-    _reserved_before_update: ?*const fn () void = null,
-    /// Optional hook called after updating a record
-    /// Note: Hooks are not currently supported due to Zig type system limitations
-    /// This field is reserved for future use
-    _reserved_after_update: ?*const fn () void = null,
-    /// Optional hook called before deleting a record
-    /// Note: Hooks are not currently supported due to Zig type system limitations
-    /// This field is reserved for future use
-    _reserved_before_delete: ?*const fn () void = null,
+        /// Optional cache TTL in milliseconds
+        cache_ttl_ms: ?u32 = null,
+        /// Enable pagination (default: true)
+        enable_pagination: bool = true,
+        /// Enable filtering via ?filter=field:value (default: true)
+        enable_filtering: bool = true,
+        /// Enable sorting via ?sort=field:asc|desc (default: true)
+        enable_sorting: bool = true,
+        /// Optional hook called before creating a record
+        /// Note: Hooks are not currently supported due to Zig type system limitations
+        /// This field is reserved for future use
+        _reserved_before_create: ?*const fn () void = null,
+        /// Optional hook called after creating a record
+        /// Note: Hooks are not currently supported due to Zig type system limitations
+        /// This field is reserved for future use
+        _reserved_after_create: ?*const fn () void = null,
+        /// Optional hook called before updating a record
+        /// Note: Hooks are not currently supported due to Zig type system limitations
+        /// This field is reserved for future use
+        _reserved_before_update: ?*const fn () void = null,
+        /// Optional hook called after updating a record
+        /// Note: Hooks are not currently supported due to Zig type system limitations
+        /// This field is reserved for future use
+        _reserved_after_update: ?*const fn () void = null,
+        /// Optional hook called before deleting a record
+        /// Note: Hooks are not currently supported due to Zig type system limitations
+        /// This field is reserved for future use
+        _reserved_before_delete: ?*const fn () void = null,
     };
 }
 
@@ -79,16 +80,16 @@ fn parseFilters(
 ) !void {
     const filter_params = try request.queryParams();
     var filter_iter = filter_params.iterator();
-    
+
     while (filter_iter.next()) |entry| {
         if (!std.mem.eql(u8, entry.key_ptr.*, "filter")) continue;
-        
+
         const filter_value = entry.value_ptr.*;
         const colon_pos = std.mem.indexOfScalar(u8, filter_value, ':') orelse continue;
-        
+
         const field_name = filter_value[0..colon_pos];
-        const field_value = filter_value[colon_pos + 1..];
-        
+        const field_value = filter_value[colon_pos + 1 ..];
+
         // Validate field name exists in struct (runtime check)
         var field_valid = false;
         inline for (std.meta.fields(T)) |field| {
@@ -97,11 +98,11 @@ fn parseFilters(
                 break;
             }
         }
-        
+
         if (!field_valid) {
             return error.InvalidFieldName;
         }
-        
+
         // Add where clause (using equals by default)
         _ = builder.whereEq(field_name, field_value);
     }
@@ -116,12 +117,12 @@ fn parseSort(
 ) !void {
     const sort_param = try request.query("sort");
     const sort_value = sort_param orelse return;
-    
+
     const colon_pos = std.mem.indexOfScalar(u8, sort_value, ':') orelse return;
-    
+
     const field_name = sort_value[0..colon_pos];
-    const direction = sort_value[colon_pos + 1..];
-    
+    const direction = sort_value[colon_pos + 1 ..];
+
     // Validate field name exists in struct (runtime check)
     var field_valid = false;
     inline for (std.meta.fields(T)) |field| {
@@ -130,11 +131,11 @@ fn parseSort(
             break;
         }
     }
-    
+
     if (!field_valid) {
         return error.InvalidFieldName;
     }
-    
+
     // Validate direction
     const ascending = if (std.mem.eql(u8, direction, "asc"))
         true
@@ -142,7 +143,7 @@ fn parseSort(
         false
     else
         return error.InvalidSortDirection;
-    
+
     _ = builder.orderBy(field_name, ascending);
 }
 
@@ -153,19 +154,19 @@ fn buildListCacheKey(
     user_id: ?i64,
 ) ![]const u8 {
     const arena = request.arena.allocator();
-    
+
     // Build key string directly
     var key_buf = std.ArrayListUnmanaged(u8){};
     defer key_buf.deinit(arena);
     const writer = key_buf.writer(arena);
-    
+
     try writer.print("{s}:list", .{prefix});
-    
+
     // Add user_id if authenticated
     if (user_id) |uid| {
         try writer.print(":user:{d}", .{uid});
     }
-    
+
     // Add filters
     const filter_params = try request.queryParams();
     var filter_iter = filter_params.iterator();
@@ -179,17 +180,17 @@ fn buildListCacheKey(
             try writer.print(":{s}", .{entry.value_ptr.*});
         }
     }
-    
+
     // Add sort
     if (try request.query("sort")) |sort| {
         try writer.print(":sort:{s}", .{sort});
     }
-    
+
     // Add pagination
     const page = (request.queryParamTyped(u32, "page") catch null) orelse 1;
     const limit = (request.queryParamTyped(u32, "limit") catch null) orelse 20;
     try writer.print(":page:{d}:limit:{d}", .{ page, limit });
-    
+
     return try key_buf.toOwnedSlice(arena);
 }
 
@@ -224,20 +225,20 @@ fn handleList(
             return Response.errorResponse("Authentication required", 401);
         };
     }
-    
+
     // Check cache
     if (config.cache_ttl_ms) |_| {
-            const cache_key = buildListCacheKey(prefix, request, if (user) |u| u.id else null) catch null;
-            if (cache_key) |key| {
-                // Note: key is allocated with request.arena.allocator(), so no manual free needed
-                if (request.cacheGet(key) catch null) |entry| {
+        const cache_key = buildListCacheKey(prefix, request, if (user) |u| u.id else null) catch null;
+        if (cache_key) |key| {
+            // Note: key is allocated with request.arena.allocator(), so no manual free needed
+            if (request.cacheGet(key) catch null) |entry| {
                 return Response.text(entry.body)
                     .withContentType(entry.content_type)
                     .withHeader("X-Cache", "HIT");
             }
         }
     }
-    
+
     // Parse pagination
     const pagination = if (config.enable_pagination)
         Pagination.fromRequest(request) catch {
@@ -245,14 +246,14 @@ fn handleList(
         }
     else
         Pagination{ .page = 1, .limit = 1000, .offset = 0 };
-    
+
     // Build query - get table name using model utilities
     const raw_table_name = model_utils.inferTableName(T);
     var table_name = model_utils.toLowercaseTableName(config.orm.allocator, raw_table_name) catch {
         return Response.serverError("Failed to get table name");
     };
     defer config.orm.allocator.free(table_name);
-    
+
     // Handle special case: "todo" -> "todos"
     if (std.mem.eql(u8, table_name, "todo")) {
         config.orm.allocator.free(table_name);
@@ -260,10 +261,10 @@ fn handleList(
             return Response.serverError("Failed to allocate table name");
         };
     }
-    
+
     var builder = QueryBuilder.init(config.orm.allocator, table_name);
     defer builder.deinit();
-    
+
     // Add filters
     if (config.enable_filtering) {
         parseFilters(T, &builder, request) catch |err| {
@@ -273,7 +274,7 @@ fn handleList(
             return Response.serverError("Failed to parse filters");
         };
     }
-    
+
     // Add sort
     if (config.enable_sorting) {
         parseSort(T, &builder, request) catch |err| {
@@ -285,21 +286,21 @@ fn handleList(
             }
         };
     }
-    
+
     // Add pagination
     _ = builder.limit(pagination.limit).offset(pagination.offset);
-    
+
     // Build and execute query
     const sql = builder.build() catch {
         return Response.serverError("Failed to build query");
     };
     defer config.orm.allocator.free(sql);
-    
+
     var query_result = config.orm.query(sql) catch {
         return Response.serverError("Failed to execute query");
     };
     defer query_result.deinit();
-    
+
     var items = query_result.toArrayList(T) catch {
         return Response.serverError("Failed to deserialize results");
     };
@@ -327,11 +328,11 @@ fn handleList(
         }
         items.deinit(config.orm.allocator);
     }
-    
+
     // Get total count for pagination
     var count_builder = QueryBuilder.init(config.orm.allocator, table_name);
     defer count_builder.deinit();
-    
+
     if (config.enable_filtering) {
         // Parse filters for count query - ignore errors as filtering is optional
         // If parsing fails, count query will proceed without filters
@@ -339,15 +340,15 @@ fn handleList(
             std.debug.print("[REST API] Warning: Failed to parse filters for count query: {}\n", .{err});
         };
     }
-    
+
     // Build COUNT query
     var count_sql_buf = std.ArrayListUnmanaged(u8){};
     defer count_sql_buf.deinit(config.orm.allocator);
-    
+
     count_sql_buf.writer(config.orm.allocator).print("SELECT COUNT(*) as count FROM {s}", .{table_name}) catch {
         return Response.serverError("Failed to build count query");
     };
-    
+
     // Add WHERE clause if filters exist
     if (count_builder.where_clauses.items.len > 0) {
         count_sql_buf.writer(config.orm.allocator).print(" WHERE ", .{}) catch {
@@ -382,31 +383,31 @@ fn handleList(
             };
         }
     }
-    
+
     const count_sql = count_sql_buf.toOwnedSlice(config.orm.allocator) catch {
         return Response.serverError("Failed to allocate count query");
     };
     defer config.orm.allocator.free(count_sql);
-    
+
     var count_result = config.orm.query(count_sql) catch {
         return Response.serverError("Failed to execute count query");
     };
     defer count_result.deinit();
-    
+
     const count_row = count_result.nextRow() orelse {
         return Response.serverError("Failed to get count");
     };
     const total = count_row.getInt64(0);
-    
+
     // Create paginated response
     const meta = pagination.toResponse(@intCast(total));
     const paginated = PaginatedResponse(T){
         .data = items.items,
         .meta = meta,
     };
-    
+
     const response = Response.jsonFrom(PaginatedResponse(T), paginated, config.orm.allocator);
-    
+
     // Cache the response
     if (config.cache_ttl_ms) |ttl| {
         const cache_key = buildListCacheKey(prefix, request, if (user) |u| u.id else null) catch null;
@@ -425,7 +426,7 @@ fn handleList(
             }
         }
     }
-    
+
     return response.withHeader("X-Cache", "MISS");
 }
 
@@ -443,12 +444,12 @@ fn handleShow(
             return Response.errorResponse("Authentication required", 401);
         };
     }
-    
+
     // Get ID from route params
     const id = request.paramTyped(i64, "id") catch {
         return Response.errorResponse("Invalid ID", 400);
     };
-    
+
     // Check cache
     if (config.cache_ttl_ms) |_| {
         const cache_key = buildShowCacheKey(prefix, id, if (user) |u| u.id else null) catch null;
@@ -461,12 +462,12 @@ fn handleShow(
             }
         }
     }
-    
+
     // Find record
     const found = config.orm.find(T, id) catch {
         return Response.serverError("Failed to fetch record");
     };
-    
+
     const record = found orelse {
         return Response.notFound("Record not found");
     };
@@ -491,7 +492,7 @@ fn handleShow(
             }
         }
     }
-    
+
     // Check authorization
     if (config.authorization) |authz_fn| {
         const allowed = authz_fn(request, record) catch {
@@ -501,9 +502,9 @@ fn handleShow(
             return Response.errorResponse("Access denied", 403);
         }
     }
-    
+
     const response = Response.jsonFrom(T, record, config.orm.allocator);
-    
+
     // Cache the response
     if (config.cache_ttl_ms) |ttl| {
         const cache_key = buildShowCacheKey(prefix, id, if (user) |u| u.id else null) catch null;
@@ -522,7 +523,7 @@ fn handleShow(
             }
         }
     }
-    
+
     return response.withHeader("X-Cache", "MISS");
 }
 
@@ -540,33 +541,33 @@ fn handleCreate(
             return Response.errorResponse("Authentication required", 401);
         };
     }
-    
+
     // Parse JSON body
     const parsed = request.jsonBody(T) catch {
         return Response.errorResponse("Invalid JSON", 400);
     };
-    
+
     // Validate
     var validation_errors = config.validator(request, parsed) catch {
         return Response.serverError("Validation error");
     };
     defer validation_errors.deinit();
-    
+
     if (!validation_errors.isEmpty()) {
         return Response.validationError(&validation_errors);
     }
-    
+
     // Create record
     // Note: Hooks are not currently supported due to Zig type system limitations
     // Set user_id and timestamps if needed (handled by validator/authorization)
     const model_to_create = parsed;
-    
+
     // Ensure user_id is set (should be done by authenticator/validator)
     // For now, we'll rely on the model being properly constructed
     config.orm.create(T, model_to_create) catch {
         return Response.serverError("Failed to create record");
     };
-    
+
     // Invalidate cache
     if (config.cache_ttl_ms) |_| {
         // Invalidate list cache
@@ -576,7 +577,7 @@ fn handleCreate(
             request.cacheInvalidate(key);
         }
     }
-    
+
     const response = Response.jsonFrom(T, model_to_create, config.orm.allocator);
     return response.withStatus(201);
 }
@@ -595,17 +596,17 @@ fn handleUpdate(
             return Response.errorResponse("Authentication required", 401);
         };
     }
-    
+
     // Get ID from route params
     const id = request.paramTyped(i64, "id") catch {
         return Response.errorResponse("Invalid ID", 400);
     };
-    
+
     // Find existing record
     const existing = config.orm.find(T, id) catch {
         return Response.serverError("Failed to fetch record");
     };
-    
+
     const existing_record = existing orelse {
         return Response.notFound("Record not found");
     };
@@ -630,7 +631,7 @@ fn handleUpdate(
             }
         }
     }
-    
+
     // Check authorization
     if (config.authorization) |authz_fn| {
         const allowed = authz_fn(request, existing_record) catch {
@@ -640,12 +641,12 @@ fn handleUpdate(
             return Response.errorResponse("Access denied", 403);
         }
     }
-    
+
     // Parse JSON body (partial update)
     const parsed = request.jsonBody(T) catch {
         return Response.errorResponse("Invalid JSON", 400);
     };
-    
+
     // Merge with existing record (copy non-null fields from parsed to existing)
     var updated_record = existing_record;
     inline for (std.meta.fields(T)) |field| {
@@ -659,31 +660,31 @@ fn handleUpdate(
             @field(updated_record, field.name) = parsed_value;
         }
     }
-    
+
     // Ensure ID is set
     @field(updated_record, "id") = id;
-    
+
     // Validate
     var validation_errors = config.validator(request, updated_record) catch {
         return Response.serverError("Validation error");
     };
     defer validation_errors.deinit();
-    
+
     if (!validation_errors.isEmpty()) {
         return Response.validationError(&validation_errors);
     }
-    
+
     // Update record
     // Note: Hooks are not currently supported due to Zig type system limitations
     var model_to_update = updated_record;
-    
+
     // Update timestamp if needed
     @field(model_to_update, "updated_at") = std.time.milliTimestamp();
-    
+
     config.orm.update(T, model_to_update) catch {
         return Response.serverError("Failed to update record");
     };
-    
+
     // Invalidate cache
     if (config.cache_ttl_ms) |_| {
         // Invalidate list cache
@@ -699,7 +700,7 @@ fn handleUpdate(
             request.cacheInvalidate(key);
         }
     }
-    
+
     const response = Response.jsonFrom(T, model_to_update, config.orm.allocator);
     return response;
 }
@@ -718,17 +719,17 @@ fn handleDelete(
             return Response.errorResponse("Authentication required", 401);
         };
     }
-    
+
     // Get ID from route params
     const id = request.paramTyped(i64, "id") catch {
         return Response.errorResponse("Invalid ID", 400);
     };
-    
+
     // Find existing record
     const existing = config.orm.find(T, id) catch {
         return Response.serverError("Failed to fetch record");
     };
-    
+
     const existing_record = existing orelse {
         return Response.notFound("Record not found");
     };
@@ -753,7 +754,7 @@ fn handleDelete(
             }
         }
     }
-    
+
     // Check authorization
     if (config.authorization) |authz_fn| {
         const allowed = authz_fn(request, existing_record) catch {
@@ -763,13 +764,13 @@ fn handleDelete(
             return Response.errorResponse("Access denied", 403);
         }
     }
-    
+
     // Delete record
     // Note: Hooks are not currently supported due to Zig type system limitations
     config.orm.delete(T, id) catch {
         return Response.serverError("Failed to delete record");
     };
-    
+
     // Invalidate cache
     if (config.cache_ttl_ms) |_| {
         // Invalidate list cache
@@ -785,7 +786,7 @@ fn handleDelete(
             request.cacheInvalidate(key);
         }
     }
-    
+
     return Response.text("").withStatus(204);
 }
 
@@ -810,15 +811,24 @@ pub fn restApi(
     config: RestApiConfig(Model),
 ) !void {
     initRestApiConfigs();
-    
+
+    // Register with OpenAPI generator
+    if (app.getOpenApiGenerator()) |generator| {
+        generator.registerResource(prefix, Model) catch |err| {
+            std.debug.print("Failed to register OpenAPI resource: {}\n", .{err});
+        };
+    } else |_| {
+        // Ignore error (generator init failed?)
+    }
+
     // Store config in global registry (allocate on heap so it persists)
     const config_ptr = try allocator.create(RestApiConfig(Model));
     config_ptr.* = config;
-    
+
     rest_api_configs_mutex.lock();
     defer rest_api_configs_mutex.unlock();
     try rest_api_configs.put(prefix, config_ptr);
-    
+
     // Register GET /prefix (list)
     try app.get(prefix, struct {
         const model_type = Model;
@@ -833,7 +843,7 @@ pub fn restApi(
             return handleList(model_type, api_prefix, api_config, req);
         }
     }.handler);
-    
+
     // Register GET /prefix/:id (show)
     const show_path = comptime prefix ++ "/:id";
     try app.get(show_path, struct {
@@ -849,7 +859,7 @@ pub fn restApi(
             return handleShow(model_type, api_prefix, api_config, req);
         }
     }.handler);
-    
+
     // Register POST /prefix (create)
     try app.post(prefix, struct {
         const model_type = Model;
@@ -864,7 +874,7 @@ pub fn restApi(
             return handleCreate(model_type, api_prefix, api_config, req);
         }
     }.handler);
-    
+
     // Register PUT /prefix/:id (update)
     const update_path = comptime prefix ++ "/:id";
     try app.put(update_path, struct {
@@ -880,7 +890,7 @@ pub fn restApi(
             return handleUpdate(model_type, api_prefix, api_config, req);
         }
     }.handler);
-    
+
     // Register DELETE /prefix/:id (delete)
     const delete_path = comptime prefix ++ "/:id";
     try app.delete(delete_path, struct {
@@ -897,4 +907,3 @@ pub fn restApi(
         }
     }.handler);
 }
-
