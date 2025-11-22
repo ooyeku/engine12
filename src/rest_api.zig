@@ -752,7 +752,7 @@ fn handleUpdate(
                 else => true, // Copy other types
             };
             if (should_copy) {
-                @field(updated_record, field.name) = parsed_value;
+            @field(updated_record, field.name) = parsed_value;
             }
         }
     }
@@ -777,7 +777,7 @@ fn handleUpdate(
     // Update timestamp if model has updated_at field
     inline for (std.meta.fields(T)) |field| {
         if (std.mem.eql(u8, field.name, "updated_at")) {
-            @field(model_to_update, "updated_at") = std.time.milliTimestamp();
+    @field(model_to_update, "updated_at") = std.time.milliTimestamp();
             break;
         }
     }

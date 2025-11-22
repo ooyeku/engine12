@@ -450,9 +450,9 @@ fn handleGetStats(request: *Request) Response {
     };
 
     if (ctx.cacheGet(cache_key) catch null) |entry| {
-        return Response.text(entry.body)
-            .withContentType(entry.content_type)
-            .withHeader("X-Cache", "HIT");
+            return Response.text(entry.body)
+                .withContentType(entry.content_type)
+                .withHeader("X-Cache", "HIT");
     }
 
     const orm = ctx.orm() catch {

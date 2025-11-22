@@ -15,7 +15,7 @@ pub const Escape = struct {
                 '<' => 4,  // "&lt;"
                 '>' => 4,  // "&gt;"
                 '"' => 6,  // "&quot;"
-                '\'' => 6, // "&#39;"
+                '\'' => 5, // "&#39;"
                 else => 1,
             };
         }
@@ -49,8 +49,8 @@ pub const Escape = struct {
                     out_index += 6;
                 },
                 '\'' => {
-                    @memcpy(output[out_index..out_index + 6], "&#39;");
-                    out_index += 6;
+                    @memcpy(output[out_index..out_index + 5], "&#39;");
+                    out_index += 5;
                 },
                 else => {
                     output[out_index] = char;
